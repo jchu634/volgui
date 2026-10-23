@@ -5,10 +5,12 @@ use gpui_kit::{
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt,
         button::{Button, ButtonVariants},
+        checkbox::Checkbox,
         input::{Input, InputEvent, InputState, Textarea, TextareaState},
         list::ListItem,
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
         progress::Progress,
+        tooltip::Tooltip,
         tree::{Tree, TreeItem, TreeState},
         v_virtual_list,
     },
@@ -29,13 +31,14 @@ use std::{
     time::{Duration, Instant},
 };
 use volgui_again::{
+    analyses::{AnalysisDraft, basic_label, chooser_plugins},
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, RunStatus, now},
     results::{
         BrowserEntry, ProcessNode, Query, ResultIndex, ResultStore, StoredRecord, process_forest,
     },
     settings::Settings,
-    volatility::{Installation, Outcome, display_value, format_arguments, parse_arguments},
+    volatility::{Installation, Outcome, display_value, format_arguments},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,7 +49,6 @@ enum View {
     Analyses,
     Bookmarks,
     CaseInfo,
-    Plugins,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DetailTab {
@@ -76,7 +78,7 @@ enum Event {
         u64,
         std::result::Result<(Vec<BrowserEntry>, Vec<ProcessNode>), String>,
     ),
-    Help(std::result::Result<String, String>),
+    Help(String, std::result::Result<String, String>),
     Exported(std::result::Result<PathBuf, String>),
 }
 struct Busy {
@@ -133,6 +135,10 @@ pub struct Workspace {
     plugin: Option<String>,
     plugin_help: String,
     plugin_os: OperatingSystem,
+    analysis_drafts: Vec<AnalysisDraft>,
+    analysis_active: usize,
+    show_advanced: bool,
+    analysis_error: Option<String>,
     query: Entity<InputState>,
     browser_query: Entity<InputState>,
     plugin_query: Entity<InputState>,
@@ -204,6 +210,7 @@ impl Workspace {
         let query = field("", "Search artifact fields...", window, cx);
         let browser_query = field("", "Filter artifacts...", window, cx);
         let plugin_query = field("", "Find a plugin...", window, cx);
+        let arguments = field("", "e.g. --pid 3488", window, cx);
         let browser_tree = cx.new(|cx| TreeState::new(cx));
         let subscriptions = vec![
             cx.subscribe(&query, |this, _, e: &InputEvent, cx| {
@@ -219,6 +226,16 @@ impl Workspace {
                 }
             }),
             cx.subscribe(&plugin_query, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe(&arguments, |this, input, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change)
+                    && let Some(id) = this.plugin.clone()
+                    && let Some(draft) = this.analysis_drafts.get_mut(this.analysis_active)
+                {
+                    draft
+                        .arguments
+                        .insert(id, input.read(cx).value().to_string());
+                }
+            }),
             cx.observe(&browser_tree, |this, tree, cx| {
                 let id = tree
                     .read(cx)
@@ -286,10 +303,14 @@ impl Workspace {
             plugin: None,
             plugin_help: String::new(),
             plugin_os: OperatingSystem::Windows,
+            analysis_drafts: Vec::new(),
+            analysis_active: 0,
+            show_advanced: false,
+            analysis_error: None,
             query,
             browser_query,
             plugin_query,
-            arguments: field("", "e.g. --pid 3488", window, cx),
+            arguments,
             note: cx.new(|cx| TextareaState::new(window, cx).placeholder("Investigator notes...")),
             case_name: field("", "Case name", window, cx),
             case_directory: field("", "Case directory", window, cx),
@@ -559,64 +580,125 @@ impl Workspace {
         });
         cx.notify();
     }
-    fn set_os(&mut self, os: OperatingSystem, cx: &mut Context<Self>) {
-        self.plugin_os = os;
-        self.plugin = self.plugin.take().filter(|p| os.accepts(p));
-        self.plugin_help.clear();
-        if let Some(case) = &mut self.case {
-            if let Some(e) = case
-                .document
-                .evidence
-                .iter_mut()
-                .find(|e| Some(&e.id) == self.selected_evidence.as_ref())
-            {
-                e.operating_system = os;
-            }
-            if let Err(e) = case.save() {
-                self.error = Some(e);
-            }
+    fn save_plugin_arguments(&mut self, cx: &App) {
+        if let Some(id) = self.plugin.clone()
+            && let Some(draft) = self.analysis_drafts.get_mut(self.analysis_active)
+        {
+            draft
+                .arguments
+                .insert(id, self.arguments.read(cx).value().to_string());
         }
+    }
+    fn focus_plugin(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_plugin_arguments(cx);
+        let value = self
+            .analysis_drafts
+            .get(self.analysis_active)
+            .and_then(|d| d.arguments.get(&id))
+            .cloned()
+            .unwrap_or_default();
+        self.plugin = Some(id);
+        self.plugin_help.clear();
+        self.arguments
+            .update(cx, |s, cx| s.set_value(value, window, cx));
         cx.notify();
     }
-    fn queue_analysis(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_analysis_evidence(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_plugin_arguments(cx);
+        self.analysis_active = index;
+        self.plugin = None;
+        self.plugin_help.clear();
+        self.analysis_error = None;
+        self.arguments
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+    }
+    fn set_os(&mut self, os: OperatingSystem, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_plugin_arguments(cx);
+        if let Some(draft) = self.analysis_drafts.get_mut(self.analysis_active) {
+            draft.set_os(os);
+        }
+        self.plugin = None;
+        self.plugin_help.clear();
+        self.analysis_error = None;
+        self.arguments
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+    }
+    fn queue_analyses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) {
             return;
         }
+        self.save_plugin_arguments(cx);
         let result = (|| {
             let engine = self
                 .installation
                 .as_ref()
                 .ok_or("Configure Volatility in settings")?;
-            let evidence = self.evidence().ok_or("Select a memory image")?;
-            let plugin = self.plugin.as_ref().ok_or("Select a plugin")?;
-            if !self.plugin_os.accepts(plugin) {
-                return Err("The plugin does not match the evidence OS".into());
+            let case = self.case.as_ref().ok_or("Open a case first")?;
+            let mut runs = Vec::new();
+            for draft in &self.analysis_drafts {
+                let evidence = case
+                    .document
+                    .evidence
+                    .iter()
+                    .find(|e| e.id == draft.evidence_id)
+                    .ok_or("Evidence is no longer available")?;
+                runs.extend(
+                    draft
+                        .prepare(engine, evidence, &case.directory.join("analyses"))
+                        .map_err(|error| format!("{}: {error}", evidence.name()))?,
+                );
             }
-            let run = engine.prepare(
-                evidence,
-                plugin,
-                parse_arguments(self.arguments.read(cx).value().as_ref())?,
-                &self.case.as_ref().unwrap().directory.join("analyses"),
-            )?;
-            self.case.as_mut().unwrap().queue(run)?;
-            Ok::<_, String>(())
+            if runs.is_empty() {
+                return Err("Select at least one analysis".into());
+            }
+            let count = runs.len();
+            let case = self.case.as_mut().unwrap();
+            let previous_os: Vec<_> = case
+                .document
+                .evidence
+                .iter()
+                .map(|e| e.operating_system)
+                .collect();
+            for draft in &self.analysis_drafts {
+                if let Some(evidence) = case
+                    .document
+                    .evidence
+                    .iter_mut()
+                    .find(|e| e.id == draft.evidence_id)
+                {
+                    evidence.operating_system = draft.os;
+                }
+            }
+            if let Err(error) = case.queue_batch(runs) {
+                for (evidence, os) in case.document.evidence.iter_mut().zip(previous_os) {
+                    evidence.operating_system = os;
+                }
+                return Err(error);
+            }
+            Ok::<_, String>(count)
         })();
         match result {
-            Ok(()) => {
-                if self.busy.is_none() && !self.has_queued() {
-                    self.batch_total = 0;
-                    self.batch_finished = 0;
-                }
+            Ok(count) => {
                 if self.batch_total == self.batch_finished {
                     self.batch_total = 0;
                     self.batch_finished = 0;
                 }
-                self.batch_total += 1;
-                self.message = "Analysis queued".into();
+                self.batch_total += count;
+                self.message = format!("Queued {count} analyses");
+                self.analysis_error = None;
+                self.sync_os();
+                window.close_dialog(cx);
                 self.start_next(window, cx);
                 self.view = View::Workspace;
             }
-            Err(e) => self.error = Some(e),
+            Err(error) => self.analysis_error = Some(error),
         }
         cx.notify();
     }
@@ -982,7 +1064,8 @@ impl Workspace {
         let cancel = self.start("Loading plugin options", None);
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let _ = tx.send(Event::Help(engine.help(&plugin, &cancel)));
+            let result = engine.help(&plugin, &cancel);
+            let _ = tx.send(Event::Help(plugin, result));
         });
         cx.notify();
     }
@@ -1093,7 +1176,7 @@ impl Workspace {
                 Event::Progress(s) => self.message = s,
                 Event::Imported(results) => {
                     self.busy = None;
-                    let mut added = 0;
+                    let mut added = Vec::new();
                     for result in results {
                         match result.and_then(|e| {
                             let id = e.id.clone();
@@ -1101,22 +1184,29 @@ impl Workspace {
                             Ok(id)
                         }) {
                             Ok(id) => {
-                                self.selected_evidence = Some(id);
-                                added += 1;
+                                self.selected_evidence = Some(id.clone());
+                                added.push(id);
                             }
                             Err(e) => self.error = Some(e),
                         }
                     }
-                    if added > 0 {
+                    if !added.is_empty() {
+                        self.query_epoch.fetch_add(1, Ordering::Relaxed);
+                        self.selection_epoch += 1;
                         self.selected = None;
                         self.selected_run = None;
                         self.selected_row = None;
                         self.scope.clear();
                         self.index = ResultIndex::default();
+                        self.row_cache.clear();
+                        self.inflight.clear();
                         self.refresh_browser(cx);
                         self.view = View::Workspace;
                     }
-                    self.message = format!("Added {added} evidence file(s)");
+                    self.message = format!("Added {} evidence file(s)", added.len());
+                    if !added.is_empty() {
+                        self.open_analysis_dialog(added, window, cx);
+                    }
                 }
                 Event::Verified(id, result) => {
                     self.busy = None;
@@ -1253,11 +1343,12 @@ impl Workspace {
                         Err(e) => self.error = Some(e),
                     }
                 }
-                Event::Help(result) => {
+                Event::Help(plugin, result) => {
                     self.busy = None;
                     match result {
-                        Ok(s) => self.plugin_help = s,
-                        Err(e) => self.error = Some(e),
+                        Ok(s) if self.plugin.as_ref() == Some(&plugin) => self.plugin_help = s,
+                        Ok(_) => {}
+                        Err(e) => self.analysis_error = Some(e),
                     }
                 }
                 Event::Exported(result) => match result {

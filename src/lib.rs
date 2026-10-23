@@ -1,3 +1,4 @@
+pub mod analyses;
 pub mod artifacts;
 pub mod case;
 pub mod results;

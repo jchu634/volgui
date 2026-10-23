@@ -369,21 +369,31 @@ impl Case {
     }
 
     pub fn queue(&mut self, run: Run) -> Result<()> {
-        if Uuid::parse_str(&run.id).is_err()
-            || self.document.runs.iter().any(|r| r.id == run.id)
-            || !self
-                .document
-                .evidence
-                .iter()
-                .any(|e| e.id == run.evidence_id)
-            || run.status != RunStatus::Queued
-            || run.command.is_empty()
+        self.queue_batch(vec![run])
+    }
+
+    pub fn queue_batch(&mut self, runs: Vec<Run>) -> Result<()> {
+        let mut ids: std::collections::HashSet<_> =
+            self.document.runs.iter().map(|r| r.id.as_str()).collect();
+        if runs.is_empty()
+            || runs.iter().any(|run| {
+                Uuid::parse_str(&run.id).is_err()
+                    || !ids.insert(&run.id)
+                    || !self
+                        .document
+                        .evidence
+                        .iter()
+                        .any(|e| e.id == run.evidence_id)
+                    || run.status != RunStatus::Queued
+                    || run.command.is_empty()
+            })
         {
             return Err("Invalid analysis request".into());
         }
-        self.document.runs.push(run);
+        let previous_len = self.document.runs.len();
+        self.document.runs.extend(runs);
         if let Err(error) = self.save() {
-            self.document.runs.pop();
+            self.document.runs.truncate(previous_len);
             return Err(error);
         }
         Ok(())
