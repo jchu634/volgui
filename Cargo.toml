@@ -1,0 +1,11 @@
+[package]
+name = "volgui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui-kit = "0.8.0"
+serde_json = "1"
+shell-words = "1"
+rfd = "0.17"
+tempfile = "3"
