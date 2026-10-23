@@ -5,3 +5,23 @@ edition = "2024"
 
 [dependencies]
 gpui-kit = "0.8.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+
+[features]
+test-engine = []
+
+[[bin]]
+name = "volgui-test-engine"
+path = "tests/support/engine.rs"
+required-features = ["test-engine"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[profile.dev.package.sha2]
+opt-level = 3
