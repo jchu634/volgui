@@ -1,74 +1,42 @@
 mod views;
 
+use gpui_kit::{
+    assets::IconName,
+    component::{
+        ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt,
+        button::{Button, ButtonVariants},
+        input::{Input, InputEvent, InputState, Textarea, TextareaState},
+        list::ListItem,
+        menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+        progress::Progress,
+        tree::{Tree, TreeItem, TreeState},
+        v_virtual_list,
+    },
+    prelude::FluentBuilder,
+    *,
+};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    ops::Range,
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread,
     time::{Duration, Instant},
 };
-
-use gpui_kit::{
-    assets::IconName,
-    component::{
-        ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar,
-        button::{Button, ButtonVariants},
-        input::{Input, InputEvent, InputState, Textarea, TextareaState},
-    },
-    prelude::FluentBuilder,
-    *,
-};
 use volgui_again::{
+    artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, RunStatus, now},
+    results::{
+        BrowserEntry, ProcessNode, Query, ResultIndex, ResultStore, StoredRecord, process_forest,
+    },
     settings::Settings,
-    volatility::{Installation, Outcome, Table, display_value, format_arguments, parse_arguments},
+    volatility::{Installation, Outcome, display_value, format_arguments, parse_arguments},
 };
-
-const PAGE_SIZE: usize = 100;
-fn key(kind: &str, id: &str) -> ElementId {
-    SharedString::from(format!("{kind}-{id}")).into()
-}
-const CATEGORIES: &[(&str, &str, IconName)] = &[
-    ("Processes", "windows.pslist.PsList", IconName::Cpu),
-    ("Process tree", "windows.pstree.PsTree", IconName::GitBranch),
-    ("Network", "windows.netscan.NetScan", IconName::Network),
-    (
-        "Files & handles",
-        "windows.handles.Handles",
-        IconName::Folder,
-    ),
-    (
-        "Registry",
-        "windows.registry.hivelist.HiveList",
-        IconName::Database,
-    ),
-    (
-        "Memory scan",
-        "windows.malware.malfind.Malfind",
-        IconName::Shield,
-    ),
-    ("System information", "windows.info.Info", IconName::Info),
-    (
-        "Command lines",
-        "windows.cmdline.CmdLine",
-        IconName::Terminal,
-    ),
-    (
-        "Loaded modules",
-        "windows.dlllist.DllList",
-        IconName::Layers,
-    ),
-    ("File scan", "windows.filescan.FileScan", IconName::File),
-    (
-        "User sessions",
-        "windows.sessions.Sessions",
-        IconName::Users,
-    ),
-];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -78,7 +46,6 @@ enum View {
     Analyses,
     Bookmarks,
     CaseInfo,
-    Settings,
     Plugins,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,18 +55,30 @@ enum DetailTab {
     Notes,
     Diagnostics,
 }
-
 enum Event {
+    Opened(std::result::Result<Case, String>),
     Validated(std::result::Result<Installation, String>),
     Imported(Vec<std::result::Result<Evidence, String>>),
     Verified(String, std::result::Result<Evidence, String>),
     Progress(String),
     Finished(String, Outcome),
-    Loaded(String, std::result::Result<Table, String>),
+    Indexed(
+        u64,
+        std::result::Result<(ResultIndex, Vec<StoredRecord>), String>,
+    ),
+    Rows(
+        u64,
+        Vec<i64>,
+        std::result::Result<Vec<StoredRecord>, String>,
+    ),
+    Selected(u64, std::result::Result<Option<StoredRecord>, String>),
+    Browser(
+        u64,
+        std::result::Result<(Vec<BrowserEntry>, Vec<ProcessNode>), String>,
+    ),
     Help(std::result::Result<String, String>),
     Exported(std::result::Result<PathBuf, String>),
 }
-
 struct Busy {
     label: String,
     cancel: Arc<AtomicBool>,
@@ -122,23 +101,40 @@ pub struct Workspace {
     selected_evidence: Option<String>,
     selected_run: Option<String>,
     selected_row: Option<usize>,
-    table: Option<Arc<Table>>,
-    cache: HashMap<String, Arc<Table>>,
-    indexes: Vec<usize>,
+    selected: Option<Arc<StoredRecord>>,
+    scope: Vec<String>,
+    scope_label: String,
+    index: ResultIndex,
+    row_cache: HashMap<i64, Arc<StoredRecord>>,
+    inflight: HashSet<i64>,
     sort: Option<(String, bool)>,
-    page: usize,
+    query_epoch: Arc<AtomicU64>,
+    query_due: Option<Instant>,
+    loading: bool,
+    selection_epoch: u64,
+    browser_group: ArtifactGroup,
+    browser_entries: Rc<Vec<BrowserEntry>>,
+    browser_sizes: Rc<Vec<Size<Pixels>>>,
+    browser_tree: Entity<TreeState>,
+    browser_tree_mode: bool,
+    browser_epoch: u64,
+    browser_due: Option<Instant>,
+    browser_loading: bool,
+    result_scroll: UniformListScrollHandle,
     sidebar_visible: bool,
     busy: Option<Busy>,
-    loading: Option<String>,
-    pending_row: Option<(String, usize)>,
     queue_paused: bool,
+    batch_total: usize,
+    batch_finished: usize,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     message: String,
     error: Option<String>,
     plugin: Option<String>,
     plugin_help: String,
+    plugin_os: OperatingSystem,
     query: Entity<InputState>,
+    browser_query: Entity<InputState>,
     plugin_query: Entity<InputState>,
     arguments: Entity<InputState>,
     note: Entity<TextareaState>,
@@ -149,7 +145,9 @@ pub struct Workspace {
     offline: bool,
     _subscriptions: Vec<Subscription>,
 }
-
+fn key(kind: &str, id: &str) -> ElementId {
+    SharedString::from(format!("{kind}-{id}")).into()
+}
 fn field(
     value: impl Into<SharedString>,
     placeholder: &'static str,
@@ -162,7 +160,6 @@ fn field(
             .placeholder(placeholder)
     })
 }
-
 fn heading(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .text_xs()
@@ -170,8 +167,7 @@ fn heading(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
 }
-
-fn section(title: impl Into<SharedString>, cx: &App) -> Div {
+fn section(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .flex()
         .flex_col()
@@ -180,16 +176,13 @@ fn section(title: impl Into<SharedString>, cx: &App) -> Div {
         .rounded_lg()
         .border_1()
         .border_color(cx.theme().border)
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(title.into()))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(text.into()))
 }
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.2} GiB", bytes as f64 / (1024. * 1024. * 1024.))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024. * 1024.))
+fn format_bytes(n: u64) -> String {
+    if n >= 1024 * 1024 * 1024 {
+        format!("{:.2} GiB", n as f64 / 1073741824.)
     } else {
-        format!("{bytes} bytes")
+        format!("{:.1} MiB", n as f64 / 1048576.)
     }
 }
 
@@ -204,24 +197,40 @@ impl Workspace {
         let loaded = Settings::load();
         let error = loaded.as_ref().err().cloned();
         let mut settings = loaded.unwrap_or_default();
-        if let Some(engine) = engine {
-            settings.executable = engine;
+        if let Some(e) = engine {
+            settings.executable = e;
         }
         let (tx, rx) = mpsc::channel();
-        let query = field("", "Search all artifact fields...", window, cx);
-        let plugin_query = field("", "Find a plugin, OS or capability...", window, cx);
+        let query = field("", "Search artifact fields...", window, cx);
+        let browser_query = field("", "Filter artifacts...", window, cx);
+        let plugin_query = field("", "Find a plugin...", window, cx);
+        let browser_tree = cx.new(|cx| TreeState::new(cx));
         let subscriptions = vec![
-            cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    if !this.save_note(cx) {
-                        return;
-                    }
-                    this.page = 0;
-                    this.refilter(cx);
+            cx.subscribe(&query, |this, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) && this.save_note(cx) {
+                    this.query_due = Some(Instant::now() + Duration::from_millis(180));
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&browser_query, |this, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    this.browser_due = Some(Instant::now() + Duration::from_millis(180));
                     cx.notify();
                 }
             }),
             cx.subscribe(&plugin_query, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.observe(&browser_tree, |this, tree, cx| {
+                let id = tree
+                    .read(cx)
+                    .selected_item()
+                    .and_then(|i| i.id.strip_prefix("record-"))
+                    .and_then(|s| s.parse::<i64>().ok());
+                if let Some(id) = id
+                    && this.selected.as_ref().is_none_or(|r| r.id != id)
+                {
+                    this.load_record(id, cx);
+                }
+            }),
         ];
         let mut this = Self {
             engine_path: field(
@@ -245,47 +254,61 @@ impl Workspace {
             selected_evidence: None,
             selected_run: None,
             selected_row: None,
-            table: None,
-            cache: HashMap::new(),
-            indexes: vec![],
+            selected: None,
+            scope: vec![],
+            scope_label: "Artifacts".into(),
+            index: ResultIndex::default(),
+            row_cache: HashMap::new(),
+            inflight: HashSet::new(),
             sort: None,
-            page: 0,
+            query_epoch: Arc::new(AtomicU64::new(0)),
+            query_due: None,
+            loading: false,
+            selection_epoch: 0,
+            browser_group: ArtifactGroup::Processes,
+            browser_entries: Rc::new(vec![]),
+            browser_sizes: Rc::new(vec![]),
+            browser_tree,
+            browser_tree_mode: true,
+            browser_epoch: 0,
+            browser_due: None,
+            browser_loading: false,
+            result_scroll: UniformListScrollHandle::default(),
             sidebar_visible: true,
             busy: None,
-            loading: None,
-            pending_row: None,
             queue_paused: false,
+            batch_total: 0,
+            batch_finished: 0,
             tx,
             rx,
             message: "Ready".into(),
             error,
             plugin: None,
             plugin_help: String::new(),
+            plugin_os: OperatingSystem::Windows,
             query,
+            browser_query,
             plugin_query,
             arguments: field("", "e.g. --pid 3488", window, cx),
-            note: cx.new(|cx| {
-                TextareaState::new(window, cx)
-                    .placeholder("Record your observations about this artifact...")
-            }),
+            note: cx.new(|cx| TextareaState::new(window, cx).placeholder("Investigator notes...")),
             case_name: field("", "Case name", window, cx),
-            case_directory: field("", "Choose a new case directory", window, cx),
+            case_directory: field("", "Case directory", window, cx),
             _subscriptions: subscriptions,
         };
         if let Some(path) = case_path {
             this.open_case(path, window, cx);
-        }
-        if !this.settings.executable.as_os_str().is_empty() {
+        } else if !this.settings.executable.as_os_str().is_empty() {
             this.validate_engine(cx);
         }
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(120))
+                    .timer(Duration::from_millis(100))
                     .await;
-                let alive =
-                    cx.update(|window, cx| this.update(cx, |this, cx| this.poll(window, cx)));
-                if !matches!(alive, Ok(Ok(()))) {
+                if !matches!(
+                    cx.update(|window, cx| this.update(cx, |this, cx| this.poll(window, cx))),
+                    Ok(Ok(()))
+                ) {
                     break;
                 }
             }
@@ -293,19 +316,17 @@ impl Workspace {
         .detach();
         cx.on_app_quit(|this, cx| {
             this.save_note(cx);
-            if let Some(busy) = &this.busy {
-                busy.cancel.store(true, Ordering::Relaxed);
+            if let Some(b) = &this.busy {
+                b.cancel.store(true, Ordering::Relaxed);
             }
             async {}
         })
         .detach();
         this
     }
-
     fn can_switch(&self) -> bool {
-        self.busy.is_none() && self.loading.is_none()
+        self.busy.is_none() && !self.has_queued()
     }
-
     fn has_queued(&self) -> bool {
         self.case.as_ref().is_some_and(|c| {
             c.document
@@ -314,7 +335,6 @@ impl Workspace {
                 .any(|r| r.status == RunStatus::Queued)
         })
     }
-
     fn start(&mut self, label: &str, run_id: Option<String>) -> Arc<AtomicBool> {
         let cancel = Arc::new(AtomicBool::new(false));
         self.busy = Some(Busy {
@@ -328,7 +348,17 @@ impl Workspace {
         self.error = None;
         cancel
     }
-
+    fn evidence(&self) -> Option<&Evidence> {
+        self.case
+            .as_ref()?
+            .document
+            .evidence
+            .iter()
+            .find(|e| Some(&e.id) == self.selected_evidence.as_ref())
+    }
+    fn store(&self) -> Option<ResultStore> {
+        Some(ResultStore::at(&self.case.as_ref()?.directory))
+    }
     fn validate_engine(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() || self.has_queued() {
             return;
@@ -339,61 +369,64 @@ impl Workspace {
             offline: self.offline,
             recent_cases: self.settings.recent_cases.clone(),
         };
-        let cancel = self.start("Checking Volatility installation", None);
+        let cancel = self.start("Checking Volatility", None);
         let tx = self.tx.clone();
         thread::spawn(move || {
             let _ = tx.send(Event::Validated(Installation::discover(settings, &cancel)));
         });
         cx.notify();
     }
-
-    fn open_case(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_switch() {
-            self.error = Some("Wait for background work to finish before switching cases".into());
+    fn open_case(&mut self, path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_switch() || !self.save_note(cx) {
             return;
         }
-        if !self.save_note(cx) {
-            return;
-        }
-        if self.case.as_ref().is_some_and(|case| {
+        if self.case.as_ref().is_some_and(|c| {
             path.canonicalize().ok().is_some_and(|p| {
-                p == case.directory || p == case.directory.join(volgui_again::case::MANIFEST)
+                p == c.directory || p == c.directory.join(volgui_again::case::MANIFEST)
             })
         }) {
             self.view = View::Workspace;
             cx.notify();
             return;
         }
-        match Case::open(&path) {
-            Ok(case) => self.use_case(case, window, cx),
-            Err(error) => self.error = Some(error),
-        }
+        let cancel = self.start("Opening case and indexing saved scans", None);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = Case::open(&path).and_then(|case| {
+                case.document.migrate_results(&case.directory, &cancel)?;
+                Ok(case)
+            });
+            let _ = tx.send(Event::Opened(result));
+        });
         cx.notify();
     }
-
     fn use_case(&mut self, case: Case, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.save_note(cx) {
-            return;
-        }
-        window.set_window_title(&format!("{} | VolGUI", case.document.name));
+        self.query_epoch.fetch_add(1, Ordering::Relaxed);
+        self.browser_epoch += 1;
+        self.selection_epoch += 1;
         self.selected_evidence = case.document.evidence.first().map(|e| e.id.clone());
-        let recent = case.directory.join(volgui_again::case::MANIFEST);
+        let path = case.directory.join(volgui_again::case::MANIFEST);
         self.case = Some(case);
-        self.cache.clear();
-        self.table = None;
-        self.indexes.clear();
+        self.selected = None;
         self.selected_run = None;
         self.selected_row = None;
-        self.loading = None;
-        self.error = None;
-        self.pending_row = None;
+        self.scope.clear();
+        self.row_cache.clear();
+        self.index = ResultIndex::default();
         self.queue_paused = false;
+        self.batch_total = 0;
+        self.batch_finished = 0;
         self.view = View::Workspace;
-        self.message = "Case saved locally. Original evidence is referenced in place.".into();
-        if let Err(error) = self.settings.remember(recent) {
-            self.error = Some(error);
+        self.message = "Case opened".into();
+        window.set_window_title("VolGUI");
+        if let Err(e) = self.settings.remember(path) {
+            self.error = Some(e);
         }
-        let id = self
+        self.sync_os();
+        self.refresh_browser(cx);
+        if !self.group_runs(self.browser_group).is_empty() {
+            self.choose_group(self.browser_group, window, cx);
+        } else if let Some(id) = self
             .case
             .as_ref()
             .unwrap()
@@ -402,14 +435,22 @@ impl Workspace {
             .iter()
             .rev()
             .find(|r| r.status == RunStatus::Completed)
-            .map(|r| r.id.clone());
-        if let Some(id) = id {
+            .map(|r| r.id.clone())
+        {
             self.select_run(id, window, cx);
         }
     }
-
+    fn sync_os(&mut self) {
+        if let Some(os) = self
+            .evidence()
+            .map(|e| e.operating_system)
+            .filter(|o| *o != OperatingSystem::Unknown)
+        {
+            self.plugin_os = os;
+        }
+    }
     fn create_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_switch() {
+        if !self.can_switch() || !self.save_note(cx) {
             return;
         }
         let directory = PathBuf::from(self.case_directory.read(cx).value().trim());
@@ -418,17 +459,16 @@ impl Workspace {
             return;
         }
         match Case::create(&directory, self.case_name.read(cx).value().as_ref()) {
-            Ok(case) => self.use_case(case, window, cx),
-            Err(error) => self.error = Some(error),
+            Ok(c) => self.use_case(c, window, cx),
+            Err(e) => self.error = Some(e),
         }
         cx.notify();
     }
-
     fn choose_path(&mut self, purpose: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let directories = matches!(purpose, "directory" | "symbols");
+        let dirs = matches!(purpose, "directory" | "symbols");
         let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: !directories,
-            directories,
+            files: !dirs,
+            directories: dirs,
             multiple: purpose == "evidence",
             prompt: Some(
                 match purpose {
@@ -448,18 +488,17 @@ impl Workspace {
                         if paths.is_empty() {
                             return;
                         }
-                        let path = &paths[0];
                         match purpose {
-                            "open" => this.open_case(path.clone(), window, cx),
+                            "open" => this.open_case(paths[0].clone(), window, cx),
                             "evidence" => this.import(paths, cx),
                             _ => {
-                                let input = match purpose {
+                                let field = match purpose {
                                     "engine" => &this.engine_path,
                                     "symbols" => &this.symbol_path,
                                     _ => &this.case_directory,
                                 };
-                                input.update(cx, |state, cx| {
-                                    state.set_value(path.display().to_string(), window, cx)
+                                field.update(cx, |s, cx| {
+                                    s.set_value(paths[0].display().to_string(), window, cx)
                                 });
                             }
                         }
@@ -467,9 +506,9 @@ impl Workspace {
                     })
                 });
             }
-            Ok(Err(error)) => {
+            Ok(Err(e)) => {
                 let _ = this.update(cx, |this, cx| {
-                    this.error = Some(error.to_string());
+                    this.error = Some(e.to_string());
                     cx.notify();
                 });
             }
@@ -477,12 +516,8 @@ impl Workspace {
         })
         .detach();
     }
-
     fn import(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if self.case.is_none() || self.busy.is_some() {
-            return;
-        }
-        if !self.save_note(cx) {
+        if self.case.is_none() || self.busy.is_some() || !self.save_note(cx) {
             return;
         }
         let cancel = self.start("Hashing evidence", None);
@@ -494,57 +529,55 @@ impl Workspace {
                     break;
                 }
                 let mut last = Instant::now() - Duration::from_secs(1);
-                let result = Evidence::inspect(&path, &cancel, |bytes, total| {
-                    if last.elapsed() > Duration::from_millis(200) {
+                results.push(Evidence::inspect(&path, &cancel, |n, total| {
+                    if last.elapsed() > Duration::from_millis(250) {
                         let _ = tx.send(Event::Progress(format!(
                             "Hashing {} · {:.0}%",
                             path.file_name().unwrap_or_default().to_string_lossy(),
-                            bytes as f64 / total as f64 * 100.
+                            n as f64 / total as f64 * 100.
                         )));
                         last = Instant::now();
                     }
-                });
-                results.push(result);
+                }));
             }
             let _ = tx.send(Event::Imported(results));
         });
         cx.notify();
     }
-
     fn verify(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
         }
-        let Some(evidence) = self.evidence().cloned() else {
+        let Some(e) = self.evidence().cloned() else {
             return;
         };
-        let cancel = self.start("Verifying evidence SHA-256", None);
+        let cancel = self.start("Verifying evidence", None);
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let mut last = Instant::now() - Duration::from_secs(1);
-            let result = Evidence::inspect(&evidence.path, &cancel, |bytes, total| {
-                if last.elapsed() > Duration::from_millis(200) {
-                    let _ = tx.send(Event::Progress(format!(
-                        "Verifying SHA-256 · {:.0}%",
-                        bytes as f64 / total as f64 * 100.
-                    )));
-                    last = Instant::now();
-                }
-            });
-            let _ = tx.send(Event::Verified(evidence.id, result));
+            let result = Evidence::inspect(&e.path, &cancel, |_, _| {});
+            let _ = tx.send(Event::Verified(e.id, result));
         });
         cx.notify();
     }
-
-    fn evidence(&self) -> Option<&Evidence> {
-        self.case
-            .as_ref()?
-            .document
-            .evidence
-            .iter()
-            .find(|e| Some(&e.id) == self.selected_evidence.as_ref())
+    fn set_os(&mut self, os: OperatingSystem, cx: &mut Context<Self>) {
+        self.plugin_os = os;
+        self.plugin = self.plugin.take().filter(|p| os.accepts(p));
+        self.plugin_help.clear();
+        if let Some(case) = &mut self.case {
+            if let Some(e) = case
+                .document
+                .evidence
+                .iter_mut()
+                .find(|e| Some(&e.id) == self.selected_evidence.as_ref())
+            {
+                e.operating_system = os;
+            }
+            if let Err(e) = case.save() {
+                self.error = Some(e);
+            }
+        }
+        cx.notify();
     }
-
     fn queue_analysis(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) {
             return;
@@ -553,33 +586,40 @@ impl Workspace {
             let engine = self
                 .installation
                 .as_ref()
-                .ok_or("Configure and validate Volatility in settings")?;
-            let evidence = self
-                .evidence()
-                .ok_or("Add and select a memory image first")?;
-            let case = self.case.as_ref().ok_or("Create or open a case first")?;
+                .ok_or("Configure Volatility in settings")?;
+            let evidence = self.evidence().ok_or("Select a memory image")?;
             let plugin = self.plugin.as_ref().ok_or("Select a plugin")?;
-            let arguments = parse_arguments(self.arguments.read(cx).value().as_ref())?;
+            if !self.plugin_os.accepts(plugin) {
+                return Err("The plugin does not match the evidence OS".into());
+            }
             let run = engine.prepare(
                 evidence,
                 plugin,
-                arguments,
-                &case.directory.join("analyses"),
+                parse_arguments(self.arguments.read(cx).value().as_ref())?,
+                &self.case.as_ref().unwrap().directory.join("analyses"),
             )?;
             self.case.as_mut().unwrap().queue(run)?;
             Ok::<_, String>(())
         })();
         match result {
             Ok(()) => {
-                self.view = View::Analyses;
+                if self.busy.is_none() && !self.has_queued() {
+                    self.batch_total = 0;
+                    self.batch_finished = 0;
+                }
+                if self.batch_total == self.batch_finished {
+                    self.batch_total = 0;
+                    self.batch_finished = 0;
+                }
+                self.batch_total += 1;
                 self.message = "Analysis queued".into();
                 self.start_next(window, cx);
+                self.view = View::Workspace;
             }
-            Err(error) => self.error = Some(error),
+            Err(e) => self.error = Some(e),
         }
         cx.notify();
     }
-
     fn start_next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.busy.is_some() || self.queue_paused {
             return;
@@ -587,10 +627,10 @@ impl Workspace {
         let Some(engine) = self.installation.clone() else {
             return;
         };
-        let Some(case) = self.case.as_mut() else {
+        let Some(case) = &mut self.case else {
             return;
         };
-        let Some(index) = case
+        let Some(i) = case
             .document
             .runs
             .iter()
@@ -598,364 +638,340 @@ impl Workspace {
         else {
             return;
         };
-        let evidence_id = case.document.runs[index].evidence_id.clone();
-        if let Some(evidence) = case.document.evidence.iter().find(|e| e.id == evidence_id)
-            && let Err(error) = evidence.check_metadata()
-        {
-            let run = &mut case.document.runs[index];
-            run.status = RunStatus::Failed;
-            run.message = error.clone();
-            run.finished_at = Some(now());
-            if let Err(save) = case.save() {
-                self.error = Some(save);
-            } else {
-                self.error = Some(error);
+        let evidence = case
+            .document
+            .evidence
+            .iter()
+            .find(|e| e.id == case.document.runs[i].evidence_id)
+            .unwrap();
+        if let Err(e) = evidence.check_metadata() {
+            case.document.runs[i].status = RunStatus::Failed;
+            case.document.runs[i].message = e.clone();
+            case.document.runs[i].finished_at = Some(now());
+            self.error = Some(e);
+            if let Err(e) = case.save() {
+                self.error = Some(e);
+                self.queue_paused = true;
             }
+            self.batch_finished += 1;
             cx.notify();
             return;
         }
-        case.document.runs[index].status = RunStatus::Running;
-        case.document.runs[index].started_at = Some(now());
-        if let Err(error) = case.save() {
-            case.document.runs[index].status = RunStatus::Queued;
-            case.document.runs[index].started_at = None;
-            self.error = Some(error);
+        case.document.runs[i].status = RunStatus::Running;
+        case.document.runs[i].started_at = Some(now());
+        if let Err(e) = case.save() {
+            case.document.runs[i].status = RunStatus::Queued;
+            self.error = Some(e);
             self.queue_paused = true;
-            cx.notify();
             return;
         }
-        let run = case.document.runs[index].clone();
+        let run = case.document.runs[i].clone();
         let directory = case.run_dir(&run.id);
+        let store = ResultStore::at(&case.directory);
         let cancel = self.start(&format!("Running {}", run.plugin), Some(run.id.clone()));
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let outcome = engine.execute(&run, &directory, &cancel);
+            let mut outcome = engine.execute(&run, &directory, &cancel);
+            if let Some(table) = outcome.table.take()
+                && let Err(e) = store.insert_cancellable(&run, &table, &cancel)
+            {
+                outcome.status = if cancel.load(Ordering::Relaxed) {
+                    RunStatus::Cancelled
+                } else {
+                    RunStatus::Failed
+                };
+                outcome.message =
+                    format!("Could not save scan to SQLite: {e}. Raw output is retained.");
+            }
             let _ = tx.send(Event::Finished(run.id, outcome));
         });
         cx.notify();
     }
-
-    fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut changed = false;
-        while let Ok(event) = self.rx.try_recv() {
-            changed = true;
-            match event {
-                Event::Progress(text) => {
-                    self.message = text;
-                }
-                Event::Validated(result) => {
-                    self.busy = None;
-                    match result {
-                        Ok(engine) => {
-                            self.message = format!(
-                                "{} · {} plugins available",
-                                engine.version,
-                                engine.plugins.len()
-                            );
-                            self.settings = engine.settings.clone();
-                            self.engine_path.update(cx, |state, cx| {
-                                state.set_value(
-                                    self.settings.executable.display().to_string(),
-                                    window,
-                                    cx,
-                                )
-                            });
-                            if let Err(error) = self.settings.save() {
-                                self.error = Some(error);
-                            }
-                            self.installation = Some(engine);
-                        }
-                        Err(error) => {
-                            self.installation = None;
-                            self.error = Some(error);
-                        }
-                    }
-                }
-                Event::Imported(results) => {
-                    self.busy = None;
-                    let mut added = 0;
-                    let mut failures = vec![];
-                    if let Some(case) = &mut self.case {
-                        for result in results {
-                            match result.and_then(|evidence| {
-                                let id = evidence.id.clone();
-                                case.add_evidence(evidence).map(|_| id)
-                            }) {
-                                Ok(id) => {
-                                    self.selected_evidence = Some(id);
-                                    added += 1;
-                                }
-                                Err(error) => failures.push(error),
-                            }
-                        }
-                    }
-                    self.message = format!("Added {added} evidence file(s). SHA-256 recorded.");
-                    if added > 0 {
-                        self.selected_run = None;
-                        self.selected_row = None;
-                        self.table = None;
-                        self.indexes.clear();
-                        self.view = View::Workspace;
-                    }
-                    if !failures.is_empty() {
-                        self.error = Some(failures.join("\n"));
-                    }
-                }
-                Event::Verified(id, result) => {
-                    self.busy = None;
-                    let checked = result.and_then(|current| {
-                        self.case
-                            .as_mut()
-                            .ok_or("No case open".to_string())?
-                            .record_verification(&id, &current)
-                    });
-                    match checked {
-                        Ok(true) => {
-                            self.message = "SHA-256 matches the imported evidence".into();
-                        },
-                        Ok(false) => self.error = Some("Evidence integrity mismatch. The file no longer matches its imported SHA-256.".into()),
-                        Err(error) => self.error = Some(error),
-                    }
-                }
-                Event::Finished(id, outcome) => {
-                    self.busy = None;
-                    if let Some(case) = &mut self.case
-                        && let Err(error) = case.finish(&id, &outcome)
-                    {
-                        self.error = Some(error);
-                        self.queue_paused = true;
-                    }
-                    self.message = format!("Analysis {}", outcome.status.label().to_lowercase());
-                    if let Some(table) = outcome.table {
-                        self.cache_table(id.clone(), Arc::new(table));
-                    }
-                    if outcome.status == RunStatus::Failed {
-                        self.error = Some(outcome.message.chars().take(1800).collect());
-                    }
-                    if self.selected_run.as_ref() == Some(&id) || self.selected_run.is_none() {
-                        self.select_run(id, window, cx);
-                    }
-                }
-                Event::Loaded(id, result) => {
-                    if self.loading.as_ref() == Some(&id) {
-                        self.loading = None;
-                    }
-                    match result {
-                        Ok(table) => {
-                            let table = Arc::new(table);
-                            self.cache_table(id.clone(), table.clone());
-                            if self.selected_run.as_ref() == Some(&id) {
-                                self.table = Some(table);
-                                self.refilter(cx);
-                                let row = self
-                                    .pending_row
-                                    .take()
-                                    .filter(|(run, _)| run == &id)
-                                    .map(|(_, row)| row)
-                                    .or_else(|| self.indexes.first().copied());
-                                self.select_row(row, window, cx);
-                                self.page = self
-                                    .indexes
-                                    .iter()
-                                    .position(|i| Some(*i) == row)
-                                    .unwrap_or(0)
-                                    / PAGE_SIZE;
-                            }
-                        }
-                        Err(error) => {
-                            if self.selected_run.as_ref() == Some(&id) {
-                                self.error = Some(error);
-                            }
-                        }
-                    }
-                }
-                Event::Help(result) => {
-                    self.busy = None;
-                    match result {
-                        Ok(help) => self.plugin_help = help,
-                        Err(error) => self.error = Some(error),
-                    }
-                }
-                Event::Exported(result) => match result {
-                    Ok(path) => self.message = format!("Exported {}", path.display()),
-                    Err(error) => self.error = Some(format!("Export failed: {error}")),
-                },
-            }
-        }
-        if self.busy.is_none() {
-            self.start_next(window, cx);
-        }
-        if let Some(busy) = &mut self.busy {
-            let seconds = busy.started.elapsed().as_secs();
-            if seconds != busy.displayed_seconds {
-                busy.displayed_seconds = seconds;
-                changed = true;
-            }
-        }
-        if changed {
-            cx.notify();
-        }
-    }
-
-    fn cache_table(&mut self, id: String, table: Arc<Table>) {
-        if self.cache.len() >= 3
-            && !self.cache.contains_key(&id)
-            && let Some(evict) = self
-                .cache
-                .keys()
-                .find(|k| Some(*k) != self.selected_run.as_ref())
-                .cloned()
-        {
-            self.cache.remove(&evict);
-        }
-        self.cache.insert(id, table);
-    }
-
-    fn select_run(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.save_note(cx) {
-            return;
-        }
+    fn group_runs(&self, group: ArtifactGroup) -> Vec<String> {
         let Some(case) = &self.case else {
-            return;
+            return vec![];
         };
-        let Some(run) = case.document.runs.iter().find(|r| r.id == id) else {
-            return;
-        };
-        let completed = run.status == RunStatus::Completed;
-        let path = case.run_dir(&id).join("stdout.json");
-        self.selected_evidence = Some(run.evidence_id.clone());
-        self.selected_run = Some(id.clone());
-        self.selected_row = None;
-        self.table = None;
-        self.pending_row = None;
-        self.indexes.clear();
-        self.page = 0;
-        self.sort = None;
-        self.detail = DetailTab::Overview;
-        self.view = View::Workspace;
-        self.query
-            .update(cx, |state, cx| state.set_value("", window, cx));
-        if let Some(table) = self.cache.get(&id).cloned() {
-            self.table = Some(table);
-            self.refilter(cx);
-            self.select_row(self.indexes.first().copied(), window, cx);
-        } else if completed {
-            self.loading = Some(id.clone());
-            let tx = self.tx.clone();
-            thread::spawn(move || {
-                let _ = tx.send(Event::Loaded(id, Table::read(&path)));
-            });
-        }
-        cx.notify();
+        let mut seen = HashSet::new();
+        case.document
+            .runs
+            .iter()
+            .rev()
+            .filter(|r| {
+                Some(&r.evidence_id) == self.selected_evidence.as_ref()
+                    && r.status == RunStatus::Completed
+                    && ArtifactGroup::for_plugin(&r.plugin) == group
+            })
+            .filter(|r| seen.insert(r.plugin.clone()))
+            .map(|r| r.id.clone())
+            .collect()
     }
-
-    fn select_row(&mut self, row: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+    fn group_count(&self, group: ArtifactGroup) -> usize {
+        let ids = self.group_runs(group);
+        self.case.as_ref().map_or(0, |c| {
+            c.document
+                .runs
+                .iter()
+                .filter(|r| ids.contains(&r.id))
+                .map(|r| r.row_count)
+                .sum()
+        })
+    }
+    fn select_evidence(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if !self.save_note(cx) {
             return;
         }
-        self.selected_row = row;
-        let note = self
-            .selected_run
-            .as_ref()
-            .and_then(|run| self.case.as_ref()?.annotation(run, row?))
-            .map(|a| a.note.clone())
-            .unwrap_or_default();
-        self.note
-            .update(cx, |state, cx| state.set_value(note, window, cx));
-        cx.notify();
+        self.selected_evidence = Some(id);
+        self.sync_os();
+        self.selected = None;
+        self.selected_row = None;
+        self.selected_run = None;
+        self.scope.clear();
+        self.index = ResultIndex::default();
+        self.refresh_browser(cx);
+        self.choose_group(self.browser_group, window, cx);
     }
-
-    fn refilter(&mut self, cx: &App) {
-        self.indexes = self
-            .table
-            .as_ref()
-            .map(|t| {
-                t.matching(
-                    self.query.read(cx).value().as_ref(),
-                    self.sort.as_ref().map(|(c, d)| (c.as_str(), *d)),
-                )
-            })
-            .unwrap_or_default();
-        self.page = self
-            .page
-            .min(self.indexes.len().saturating_sub(1) / PAGE_SIZE);
-        if self
-            .selected_row
-            .is_some_and(|row| !self.indexes.contains(&row))
-        {
-            self.selected_row = None;
-        }
+    fn choose_group(&mut self, group: ArtifactGroup, window: &mut Window, cx: &mut Context<Self>) {
+        let runs = self.group_runs(group);
+        self.set_scope(runs, group.label().into(), window, cx);
     }
-
-    fn annotate(&mut self, toggle: bool, cx: &mut Context<Self>) {
-        let (Some(case), Some(run), Some(row)) =
-            (&mut self.case, &self.selected_run, self.selected_row)
+    fn set_browser(&mut self, group: ArtifactGroup, window: &mut Window, cx: &mut Context<Self>) {
+        self.browser_group = group;
+        self.browser_query
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.refresh_browser(cx);
+        self.choose_group(group, window, cx);
+    }
+    fn select_run(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(run) = self
+            .case
+            .as_ref()
+            .and_then(|c| c.document.runs.iter().find(|r| r.id == id))
+            .cloned()
         else {
             return;
         };
-        let bookmarked = case.annotation(run, row).is_some_and(|a| a.bookmarked);
-        let note = self.note.read(cx).value().to_string();
-        if let Err(error) = case.annotate(
-            run,
-            row,
-            if toggle { !bookmarked } else { bookmarked },
-            note,
-        ) {
-            self.error = Some(error);
-        } else {
-            self.message = "Artifact annotation saved".into();
+        if Some(&run.evidence_id) != self.selected_evidence.as_ref() {
+            self.selected_evidence = Some(run.evidence_id.clone());
+            self.sync_os();
+            self.refresh_browser(cx);
+        }
+        self.set_scope(vec![id], run.plugin, window, cx);
+    }
+    fn set_scope(
+        &mut self,
+        runs: Vec<String>,
+        label: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.save_note(cx) {
+            return;
+        }
+        self.scope = runs;
+        self.scope_label = label;
+        self.selected = None;
+        self.selected_row = None;
+        self.selected_run = self.scope.first().cloned();
+        self.sort = None;
+        self.index = ResultIndex::default();
+        self.row_cache.clear();
+        self.detail = DetailTab::Overview;
+        self.view = View::Workspace;
+        self.query.update(cx, |s, cx| s.set_value("", window, cx));
+        self.query_due = None;
+        self.result_scroll = UniformListScrollHandle::default();
+        self.start_query(cx);
+        cx.notify();
+    }
+    fn active_query(&self, cx: &App) -> Query {
+        Query {
+            runs: self.scope.clone(),
+            text: self.query.read(cx).value().to_string(),
+            sort: self.sort.clone(),
+        }
+    }
+    fn start_query(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.store() else {
+            return;
+        };
+        let query = self.active_query(cx);
+        let epoch = self.query_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        let token = self.query_epoch.clone();
+        self.loading = true;
+        self.inflight.clear();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            if token.load(Ordering::Relaxed) != epoch {
+                return;
+            }
+            let result = store.query(&query).and_then(|index| {
+                let rows = store.fetch(&index.ids[..index.ids.len().min(128)])?;
+                Ok((index, rows))
+            });
+            let _ = tx.send(Event::Indexed(epoch, result));
+        });
+        cx.notify();
+    }
+    fn request_rows(&mut self, range: Range<usize>) {
+        let Some(store) = self.store() else {
+            return;
+        };
+        let ids: Vec<_> = self
+            .index
+            .ids
+            .get(range.start.min(self.index.ids.len())..range.end.min(self.index.ids.len()))
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .filter(|id| !self.row_cache.contains_key(id) && !self.inflight.contains(id))
+            .take(256)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.inflight.extend(&ids);
+        let epoch = self.query_epoch.load(Ordering::Relaxed);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = store.fetch(&ids);
+            let _ = tx.send(Event::Rows(epoch, ids, result));
+        });
+    }
+    fn load_record(&mut self, id: i64, cx: &mut Context<Self>) {
+        if !self.save_note(cx) {
+            return;
+        }
+        let Some(store) = self.store() else {
+            return;
+        };
+        self.selection_epoch += 1;
+        let epoch = self.selection_epoch;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Event::Selected(
+                epoch,
+                store.fetch(&[id]).map(|mut r| r.pop()),
+            ));
+        });
+    }
+    fn load_annotation(&mut self, run: String, row: usize, cx: &mut Context<Self>) {
+        if !self.save_note(cx) {
+            return;
+        }
+        let Some(store) = self.store() else {
+            return;
+        };
+        self.selection_epoch += 1;
+        let epoch = self.selection_epoch;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Event::Selected(epoch, store.record(&run, row)));
+        });
+    }
+    fn show_record(&mut self, record: StoredRecord, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_run = Some(record.run_id.clone());
+        self.selected_row = Some(record.row);
+        let note = self
+            .case
+            .as_ref()
+            .and_then(|c| c.annotation(&record.run_id, record.row))
+            .map(|a| a.note.clone())
+            .unwrap_or_default();
+        self.selected = Some(Arc::new(record));
+        self.note.update(cx, |s, cx| s.set_value(note, window, cx));
+        if self.browser_group == ArtifactGroup::Processes {
+            let item = self
+                .selected
+                .as_ref()
+                .map(|r| TreeItem::new(format!("record-{}", r.id), r.record.title()));
+            self.browser_tree
+                .update(cx, |tree, cx| tree.set_selected_item(item.as_ref(), cx));
         }
         cx.notify();
     }
-
+    fn refresh_browser(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.store() else {
+            return;
+        };
+        let mut runs = self.group_runs(self.browser_group);
+        if self.browser_group == ArtifactGroup::Processes
+            && let Some(c) = &self.case
+        {
+            runs.sort_by_key(|id| {
+                c.document.runs.iter().find(|r| &r.id == id).map_or(3, |r| {
+                    if r.plugin.contains(".pslist.") {
+                        0
+                    } else if r.plugin.contains(".pstree.") {
+                        1
+                    } else {
+                        2
+                    }
+                })
+            });
+        }
+        let query = Query {
+            runs,
+            text: self.browser_query.read(cx).value().to_string(),
+            sort: None,
+        };
+        self.browser_epoch += 1;
+        let epoch = self.browser_epoch;
+        self.browser_loading = true;
+        let tx = self.tx.clone();
+        let processes = self.browser_group == ArtifactGroup::Processes;
+        thread::spawn(move || {
+            let result = store.navigation(&query).map(|mut entries| {
+                if processes {
+                    let mut seen = HashSet::new();
+                    entries.retain(|e| e.pid.as_ref().is_none_or(|pid| seen.insert(pid.clone())));
+                }
+                let forest = if processes {
+                    process_forest(&entries)
+                } else {
+                    vec![]
+                };
+                (entries, forest)
+            });
+            let _ = tx.send(Event::Browser(epoch, result));
+        });
+        cx.notify();
+    }
     fn save_note(&mut self, cx: &mut Context<Self>) -> bool {
-        let (Some(case), Some(run), Some(row)) =
+        let (Some(c), Some(run), Some(row)) =
             (&mut self.case, &self.selected_run, self.selected_row)
         else {
             return true;
         };
-        let old = case.annotation(run, row);
+        let old = c.annotation(run, row);
         let note = self.note.read(cx).value().to_string();
         if old.map_or("", |a| a.note.as_str()) == note {
             return true;
         }
-        let bookmarked = old.is_some_and(|a| a.bookmarked);
-        if let Err(error) = case.annotate(run, row, bookmarked, note) {
-            self.error = Some(error);
-            cx.notify();
-            false
-        } else {
-            true
+        let marked = old.is_some_and(|a| a.bookmarked);
+        match c.annotate(run, row, marked, note) {
+            Ok(()) => true,
+            Err(e) => {
+                self.error = Some(e);
+                cx.notify();
+                false
+            }
         }
     }
-
-    fn choose_category(
-        &mut self,
-        plugin: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(id) = self.case.as_ref().and_then(|case| {
-            case.document
-                .runs
-                .iter()
-                .rev()
-                .find(|r| {
-                    r.plugin == plugin
-                        && Some(&r.evidence_id) == self.selected_evidence.as_ref()
-                        && r.status == RunStatus::Completed
-                })
-                .map(|r| r.id.clone())
-        }) {
-            self.select_run(id, window, cx);
+    fn annotate(&mut self, toggle: bool, cx: &mut Context<Self>) {
+        let (Some(c), Some(run), Some(row)) =
+            (&mut self.case, &self.selected_run, self.selected_row)
+        else {
+            return;
+        };
+        let marked = c.annotation(run, row).is_some_and(|a| a.bookmarked);
+        let note = self.note.read(cx).value().to_string();
+        if let Err(e) = c.annotate(run, row, if toggle { !marked } else { marked }, note) {
+            self.error = Some(e);
         } else {
-            self.plugin = Some(plugin.into());
-            self.plugin_help.clear();
-            self.view = View::Plugins;
+            self.message = "Annotation saved".into();
         }
         cx.notify();
     }
-
     fn plugin_help(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -970,25 +986,19 @@ impl Workspace {
         });
         cx.notify();
     }
-
     fn export(&mut self, report: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.save_note(cx) {
             return;
         }
-        let Some(case) = &self.case else {
+        let Some(c) = &self.case else {
             return;
         };
-        if !report && self.table.is_none() {
-            self.error = Some("Select completed results to export".into());
-            return;
-        }
-        let document = case.document.clone();
-        let directory = case.directory.clone();
-        let table = self.table.clone();
-        let indexes = self.indexes.clone();
+        let document = c.document.clone();
+        let directory = c.directory.clone();
+        let query = self.active_query(cx);
         let tx = self.tx.clone();
         let receiver = cx.prompt_for_new_path(
-            &case.directory,
+            &directory,
             Some(if report {
                 "case-report.html"
             } else {
@@ -1002,7 +1012,7 @@ impl Workspace {
                         let content = if report {
                             document.report(&directory)?
                         } else {
-                            table.unwrap().csv(&indexes)
+                            ResultStore::at(&directory).export_csv(&query)?
                         };
                         document.export(&directory, &path, content.as_bytes())?;
                         Ok(path)
@@ -1010,38 +1020,274 @@ impl Workspace {
                     let _ = tx.send(Event::Exported(result));
                 });
             }
-            Ok(Err(error)) => {
-                let _ = tx.send(Event::Exported(Err(error.to_string())));
+            Ok(Err(e)) => {
+                let _ = tx.send(Event::Exported(Err(e.to_string())));
             }
             _ => {}
         })
         .detach();
     }
-
     fn cancel_run(&mut self, id: String, cx: &mut Context<Self>) {
-        if let Some(busy) = &self.busy
-            && busy.run_id.as_ref() == Some(&id)
+        if let Some(b) = &self.busy
+            && b.run_id.as_ref() == Some(&id)
         {
-            busy.cancel.store(true, Ordering::Relaxed);
+            b.cancel.store(true, Ordering::Relaxed);
             self.message = "Cancelling analysis...".into();
             cx.notify();
             return;
         }
-        if let Some(case) = &mut self.case {
-            if let Some(run) = case
+        if let Some(c) = &mut self.case {
+            if let Some(r) = c
                 .document
                 .runs
                 .iter_mut()
                 .find(|r| r.id == id && r.status == RunStatus::Queued)
             {
-                run.status = RunStatus::Cancelled;
-                run.finished_at = Some(now());
-                run.message = "Cancelled before starting".into();
+                r.status = RunStatus::Cancelled;
+                r.finished_at = Some(now());
+                self.batch_finished += 1;
             }
-            if let Err(error) = case.save() {
-                self.error = Some(error);
+            if let Err(e) = c.save() {
+                self.error = Some(e);
             }
         }
         cx.notify();
+    }
+    fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut changed = false;
+        while let Ok(event) = self.rx.try_recv() {
+            changed = true;
+            match event {
+                Event::Opened(result) => {
+                    self.busy = None;
+                    match result {
+                        Ok(c) => {
+                            self.use_case(c, window, cx);
+                            if self.installation.is_none()
+                                && !self.settings.executable.as_os_str().is_empty()
+                            {
+                                self.validate_engine(cx);
+                            }
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Event::Validated(result) => {
+                    self.busy = None;
+                    match result {
+                        Ok(engine) => {
+                            self.settings = engine.settings.clone();
+                            if let Err(e) = self.settings.save() {
+                                self.error = Some(e);
+                            }
+                            self.message =
+                                format!("{} · {} plugins", engine.version, engine.plugins.len());
+                            self.installation = Some(engine);
+                        }
+                        Err(e) => {
+                            self.installation = None;
+                            self.error = Some(e);
+                        }
+                    }
+                }
+                Event::Progress(s) => self.message = s,
+                Event::Imported(results) => {
+                    self.busy = None;
+                    let mut added = 0;
+                    for result in results {
+                        match result.and_then(|e| {
+                            let id = e.id.clone();
+                            self.case.as_mut().unwrap().add_evidence(e)?;
+                            Ok(id)
+                        }) {
+                            Ok(id) => {
+                                self.selected_evidence = Some(id);
+                                added += 1;
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                    if added > 0 {
+                        self.selected = None;
+                        self.selected_run = None;
+                        self.selected_row = None;
+                        self.scope.clear();
+                        self.index = ResultIndex::default();
+                        self.refresh_browser(cx);
+                        self.view = View::Workspace;
+                    }
+                    self.message = format!("Added {added} evidence file(s)");
+                }
+                Event::Verified(id, result) => {
+                    self.busy = None;
+                    match result
+                        .and_then(|e| self.case.as_mut().unwrap().record_verification(&id, &e))
+                    {
+                        Ok(true) => self.message = "Evidence SHA-256 matches".into(),
+                        Ok(false) => self.error = Some("Evidence integrity mismatch".into()),
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Event::Finished(id, outcome) => {
+                    self.busy = None;
+                    self.batch_finished += 1;
+                    if let Some(c) = &mut self.case
+                        && let Err(e) = c.finish(&id, &outcome)
+                    {
+                        self.error = Some(e);
+                        self.queue_paused = true;
+                    }
+                    self.message = format!("Analysis {}", outcome.status.label().to_lowercase());
+                    if outcome.status == RunStatus::Failed {
+                        self.error = Some(outcome.message.chars().take(1500).collect());
+                    }
+                    self.refresh_browser(cx);
+                    if self.scope.is_empty() || self.scope.contains(&id) {
+                        self.select_run(id, window, cx);
+                    }
+                }
+                Event::Indexed(epoch, result) => {
+                    if epoch != self.query_epoch.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    self.loading = false;
+                    match result {
+                        Ok((index, rows)) => {
+                            self.index = index;
+                            self.row_cache.clear();
+                            for r in rows {
+                                self.row_cache.insert(r.id, Arc::new(r));
+                            }
+                            if self.selected.is_none() {
+                                if let Some(id) = self.index.ids.first().copied()
+                                    && let Some(r) = self.row_cache.get(&id)
+                                {
+                                    self.show_record((**r).clone(), window, cx);
+                                }
+                            } else if self
+                                .selected
+                                .as_ref()
+                                .is_some_and(|r| !self.index.ids.contains(&r.id))
+                            {
+                                self.selected = None;
+                                self.selected_row = None;
+                            }
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Event::Rows(epoch, ids, result) => {
+                    if epoch != self.query_epoch.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    for id in ids {
+                        self.inflight.remove(&id);
+                    }
+                    match result {
+                        Ok(rows) => {
+                            if self.row_cache.len() > 1024 {
+                                self.row_cache.clear();
+                            }
+                            for r in rows {
+                                self.row_cache.insert(r.id, Arc::new(r));
+                            }
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Event::Selected(epoch, result) => {
+                    if epoch != self.selection_epoch {
+                        continue;
+                    }
+                    match result {
+                        Ok(Some(r)) => {
+                            self.view = View::Workspace;
+                            if !self.scope.contains(&r.run_id) {
+                                let run = r.run_id.clone();
+                                self.set_scope(
+                                    vec![run.clone()],
+                                    self.case
+                                        .as_ref()
+                                        .and_then(|c| c.document.runs.iter().find(|s| s.id == run))
+                                        .map(|r| r.plugin.clone())
+                                        .unwrap_or_default(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            self.show_record(r, window, cx);
+                        }
+                        Ok(None) => {
+                            self.error =
+                                Some("Artifact no longer exists in the case database".into())
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Event::Browser(epoch, result) => {
+                    if epoch != self.browser_epoch {
+                        continue;
+                    }
+                    self.browser_loading = false;
+                    match result {
+                        Ok((entries, forest)) => {
+                            self.browser_sizes =
+                                Rc::new(vec![size(px(240.), px(30.)); entries.len()]);
+                            self.browser_entries = Rc::new(entries);
+                            fn item(node: ProcessNode) -> TreeItem {
+                                TreeItem::new(
+                                    format!("record-{}", node.entry.id),
+                                    format!(
+                                        "{}  {}",
+                                        node.entry.title,
+                                        node.entry.pid.as_deref().unwrap_or("")
+                                    ),
+                                )
+                                .expanded(false)
+                                .children(node.children.into_iter().map(item))
+                            }
+                            let items = forest.into_iter().map(item).collect::<Vec<_>>();
+                            self.browser_tree
+                                .update(cx, |tree, cx| tree.set_items(items, cx));
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Event::Help(result) => {
+                    self.busy = None;
+                    match result {
+                        Ok(s) => self.plugin_help = s,
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Event::Exported(result) => match result {
+                    Ok(p) => self.message = format!("Exported {}", p.display()),
+                    Err(e) => self.error = Some(format!("Export failed: {e}")),
+                },
+            }
+        }
+        if self.query_due.is_some_and(|t| Instant::now() >= t) {
+            self.query_due = None;
+            self.start_query(cx);
+            changed = true;
+        }
+        if self.browser_due.is_some_and(|t| Instant::now() >= t) {
+            self.browser_due = None;
+            self.refresh_browser(cx);
+            changed = true;
+        }
+        if self.busy.is_none() {
+            self.start_next(window, cx);
+        }
+        if let Some(b) = &mut self.busy {
+            let seconds = b.started.elapsed().as_secs();
+            if seconds != b.displayed_seconds {
+                b.displayed_seconds = seconds;
+                changed = true;
+            }
+        }
+        if changed {
+            cx.notify();
+        }
     }
 }

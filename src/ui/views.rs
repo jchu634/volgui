@@ -1,274 +1,454 @@
 use super::*;
+use gpui_kit::component::dialog::DialogButtonProps;
 
+#[derive(Clone)]
+enum FileCommand {
+    New,
+    Open,
+    Recent(PathBuf),
+    Evidence,
+    Settings,
+}
 impl Workspace {
+    fn file_item(
+        label: impl Into<SharedString>,
+        command: FileCommand,
+        disabled: bool,
+        weak: WeakEntity<Self>,
+    ) -> PopupMenuItem {
+        PopupMenuItem::new(label)
+            .disabled(disabled)
+            .on_click(move |_, window, cx| {
+                let _ = weak.update(cx, |this, cx| match &command {
+                    FileCommand::New => {
+                        if this.can_switch() {
+                            this.view = View::NewCase;
+                            cx.notify();
+                        }
+                    }
+                    FileCommand::Open => this.choose_path("open", window, cx),
+                    FileCommand::Recent(path) => this.open_case(path.clone(), window, cx),
+                    FileCommand::Evidence => this.choose_path("evidence", window, cx),
+                    FileCommand::Settings => this.open_settings(window, cx),
+                });
+            })
+    }
+    fn file_menu(
+        weak: WeakEntity<Self>,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let Some(workspace) = weak.upgrade() else {
+            return menu;
+        };
+        let ws = workspace.read(cx);
+        let disabled = !ws.can_switch();
+        let recent = ws.settings.recent_cases.clone();
+        let evidence_disabled = ws.case.is_none() || ws.busy.is_some();
+        let mut menu = menu
+            .item(Self::file_item(
+                "New case",
+                FileCommand::New,
+                disabled,
+                weak.clone(),
+            ))
+            .item(Self::file_item(
+                "Open case...",
+                FileCommand::Open,
+                disabled,
+                weak.clone(),
+            ));
+        let recent_weak = weak.clone();
+        menu = menu.submenu("Recent cases", window, cx, move |mut menu, _, _| {
+            if recent.is_empty() {
+                return menu.label("No recent cases");
+            }
+            for path in &recent {
+                menu = menu.item(Self::file_item(
+                    path.parent()
+                        .unwrap_or(path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    FileCommand::Recent(path.clone()),
+                    disabled,
+                    recent_weak.clone(),
+                ));
+            }
+            menu
+        });
+        menu.separator()
+            .item(Self::file_item(
+                "Add evidence...",
+                FileCommand::Evidence,
+                evidence_disabled,
+                weak.clone(),
+            ))
+            .separator()
+            .item(Self::file_item(
+                "Settings...",
+                FileCommand::Settings,
+                false,
+                weak,
+            ))
+    }
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx.entity().downgrade();
+        let panel = cx.new(|cx| {
+            let subscription = cx.observe(&workspace.upgrade().unwrap(), |_, _, cx| cx.notify());
+            SettingsPanel {
+                workspace: workspace.clone(),
+                _subscription: subscription,
+            }
+        });
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Settings")
+                .width(px(720.))
+                .button_props(DialogButtonProps::default().ok_text("Close"))
+                .child(panel.clone())
+        });
+    }
+    fn render_settings_content(&self, cx: &mut Context<Self>) -> AnyElement {
+        div().flex().flex_col().gap_3().w_full()
+            .child(heading("VOLATILITY INSTALLATION",cx))
+            .child(div().text_sm().child("Select the separately installed CLI. Its supporting files stay beside the executable."))
+            .child(heading("Executable",cx)).child(div().flex().gap_2().child(Input::new(&self.engine_path).id("engine-path").aria_label("Volatility executable").flex_1()).child(Button::new("browse-engine").small().label("Browse").disabled(self.busy.is_some()).on_click(cx.listener(|this,_,window,cx|this.choose_path("engine",window,cx)))))
+            .child(heading("Symbols directory",cx)).child(div().flex().gap_2().child(Input::new(&self.symbol_path).id("symbol-path").aria_label("Symbols directory").flex_1()).child(Button::new("browse-symbols").small().label("Browse").disabled(self.busy.is_some()).on_click(cx.listener(|this,_,window,cx|this.choose_path("symbols",window,cx)))))
+            .child(Button::new("offline-mode").small().label(if self.offline{"Offline mode enabled"}else{"Online symbol lookup enabled"}).selected(self.offline).disabled(self.busy.is_some()).on_click(cx.listener(|this,_,_,cx|{this.offline = !this.offline;cx.notify();})))
+            .child(div().flex().gap_2().child(Button::new("validate-engine").small().primary().label("Validate and save").disabled(self.busy.is_some()||self.has_queued()).on_click(cx.listener(|this,_,_,cx|this.validate_engine(cx))))
+                .when(self.busy.as_ref().is_some_and(|b|b.run_id.is_none()),|s|s.child(Button::new("cancel-settings-job").small().label("Cancel check").on_click(cx.listener(|this,_,_,cx|{if let Some(b)=&this.busy{b.cancel.store(true,Ordering::Relaxed);}cx.notify();})))))
+            .when_some(self.installation.as_ref(),|s,e|s.child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{} · {} plugins",e.version,e.plugins.len()))))
+            .when_some(self.error.clone(),|s,e|s.child(div().text_sm().text_color(cx.theme().danger).child(e)))
+            .into_any_element()
+    }
+    fn group_icon(group: ArtifactGroup) -> IconName {
+        match group {
+            ArtifactGroup::Processes => IconName::Cpu,
+            ArtifactGroup::Network => IconName::Network,
+            ArtifactGroup::Files => IconName::Folder,
+            ArtifactGroup::Registry => IconName::Database,
+            ArtifactGroup::Memory => IconName::Shield,
+            ArtifactGroup::System => IconName::Info,
+            ArtifactGroup::Commands => IconName::Terminal,
+            ArtifactGroup::Modules => IconName::Layers,
+            ArtifactGroup::Sessions => IconName::Users,
+            ArtifactGroup::Other => IconName::Archive,
+        }
+    }
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let case = self.case.as_ref().unwrap();
-        let mut sidebar = div()
-            .id("evidence-sidebar")
-            .w(px(252.))
-            .flex_shrink_0()
-            .h_full()
+        let mut evidence = div()
+            .id("evidence-list")
+            .max_h(px(112.))
             .overflow_y_scroll()
             .flex()
-            .flex_col()
-            .gap_4()
-            .p_3()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar);
-        sidebar = sidebar.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(heading("EVIDENCE", cx))
-                .child(
-                    Button::new("add-evidence")
-                        .accessibility_label("Add memory image")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Plus)
-                        .tooltip("Add memory image")
-                        .disabled(self.busy.is_some())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.choose_path("evidence", window, cx)
-                        })),
-                ),
-        );
-        if case.document.evidence.is_empty() {
-            sidebar = sidebar.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No memory images added. Use + to add an acquisition."),
-            );
-        }
-        for evidence in &case.document.evidence {
-            let id = evidence.id.clone();
-            sidebar = sidebar.child(
-                Button::new(key("evidence", &id))
-                    .ghost()
-                    .small()
-                    .w_full()
-                    .justify_start()
-                    .icon(IconName::HardDrive)
-                    .label(evidence.name())
-                    .tooltip(evidence.path.display().to_string())
+            .flex_col();
+        for image in &case.document.evidence {
+            let id = image.id.clone();
+            evidence = evidence.child(
+                ListItem::new(key("evidence", &id))
+                    .role(Role::Button)
+                    .h(px(32.))
                     .selected(self.selected_evidence.as_ref() == Some(&id))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !this.save_note(cx) {
-                            return;
-                        }
-                        this.selected_evidence = Some(id.clone());
-                        let run = this.case.as_ref().and_then(|c| {
-                            c.document
-                                .runs
-                                .iter()
-                                .rev()
-                                .find(|r| r.evidence_id == id && r.status == RunStatus::Completed)
-                                .map(|r| r.id.clone())
-                        });
-                        if let Some(run) = run {
-                            this.select_run(run, window, cx);
-                        } else {
-                            this.selected_run = None;
-                            this.table = None;
-                            this.indexes.clear();
-                            this.selected_row = None;
-                            this.view = View::Workspace;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        sidebar = sidebar.child(heading("ARTIFACT BROWSER", cx));
-        let mut categories = div().flex().flex_col().gap_1();
-        for &(name, plugin, ref icon) in CATEGORIES {
-            let last_run = case.document.runs.iter().rev().find(|r| {
-                r.plugin == plugin
-                    && Some(&r.evidence_id) == self.selected_evidence.as_ref()
-                    && r.status == RunStatus::Completed
-            });
-            let label =
-                last_run.map_or_else(|| name.to_string(), |r| format!("{name}  {}", r.row_count));
-            let active = self
-                .selected_run
-                .as_ref()
-                .is_some_and(|id| last_run.is_some_and(|r| &r.id == id));
-            categories = categories.child(
-                Button::new(key("category", plugin))
-                    .ghost()
-                    .small()
-                    .w_full()
-                    .justify_start()
-                    .icon(*icon)
-                    .label(label)
-                    .selected(active)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.choose_category(plugin, window, cx)
-                    })),
-            );
-        }
-        sidebar = sidebar
-            .child(heading("WINDOWS SHORTCUTS", cx))
-            .child(categories)
-            .child(
-                Button::new("all-plugins")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Search)
-                    .label("Browse all plugins")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::Plugins;
-                        cx.notify();
-                    })),
-            );
-        let runs: Vec<_> = case
-            .document
-            .runs
-            .iter()
-            .rev()
-            .filter(|r| Some(&r.evidence_id) == self.selected_evidence.as_ref())
-            .take(10)
-            .collect();
-        if !runs.is_empty() {
-            sidebar = sidebar.child(heading("RECENT ANALYSES", cx));
-            for run in runs {
-                let id = run.id.clone();
-                sidebar = sidebar.child(
-                    Button::new(key("recent-run", &id))
-                        .ghost()
-                        .small()
-                        .w_full()
-                        .justify_start()
-                        .label(format!(
-                            "{} · {}",
-                            run.plugin.split('.').next_back().unwrap_or(&run.plugin),
-                            run.status.label()
-                        ))
-                        .selected(self.selected_run.as_ref() == Some(&id))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_run(id.clone(), window, cx)
-                        })),
-                );
-            }
-        }
-        sidebar.into_any_element()
-    }
-
-    fn render_welcome(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut page = div().id("welcome-page").flex_1().overflow_y_scroll().p_8().flex().flex_col().gap_6()
-            .child(div().mt_6().text_color(rgb(0xd96b87)).child(Icon::new(IconName::Shield).size_8()))
-            .child(heading("VOLGUI / MEMORY FORENSICS",cx))
-            .child(div().text_3xl().font_weight(FontWeight::SEMIBOLD).child("An investigation starts with evidence."))
-            .child(div().max_w(px(630.)).text_color(cx.theme().muted_foreground)
-                .child("Organize memory acquisitions, run Volatility plugins, and keep a traceable record of your findings in a local case."))
-            .child(div().flex().gap_3()
-                .child(Button::new("welcome-new").primary().icon(IconName::Plus).label("Create a case").disabled(!self.can_switch())
-                    .on_click(cx.listener(|this,_,_,cx| { this.view = View::NewCase; cx.notify(); })))
-                .child(Button::new("welcome-open").icon(IconName::FolderOpen).label("Open existing case").disabled(!self.can_switch())
-                    .on_click(cx.listener(|this,_,window,cx| this.choose_path("open",window,cx)))));
-        let (label, description) = if let Some(engine) = &self.installation {
-            (
-                "Analysis engine connected",
-                format!(
-                    "{} · {} plugins. Ready to analyze an acquisition.",
-                    engine.version,
-                    engine.plugins.len()
-                ),
-            )
-        } else {
-            ("Connect your analysis engine","Select your separately installed Volatility 3 executable. Its supporting libraries stay in the installation directory.".into())
-        };
-        page = page.child(
-            section(label, cx)
-                .max_w(px(760.))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(description),
-                )
-                .child(
-                    Button::new("welcome-settings")
-                        .small()
-                        .label("Engine settings")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.view = View::Settings;
-                            cx.notify();
-                        })),
-                ),
-        );
-        if !self.settings.recent_cases.is_empty() {
-            let mut recent = section("Recent cases", cx).max_w(px(760.));
-            for (index, path) in self.settings.recent_cases.iter().enumerate() {
-                let path = path.clone();
-                recent = recent.child(
-                    Button::new(("recent-case", index))
-                        .ghost()
-                        .small()
-                        .label(path.parent().unwrap_or(&path).display().to_string())
-                        .disabled(!self.can_switch())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_case(path.clone(), window, cx)
-                        })),
-                );
-            }
-            page = page.child(recent);
-        }
-        page.into_any_element()
-    }
-
-    fn render_new_case(&self, cx: &mut Context<Self>) -> AnyElement {
-        div().id("new-case-page").flex_1().overflow_y_scroll().p_8().child(
-            div().max_w(px(720.)).flex().flex_col().gap_5()
-                .child(heading("NEW INVESTIGATION",cx))
-                .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Create a case"))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose a dedicated directory for the case manifest, analysis output, and annotations. Memory images remain in their original locations."))
-                .child(heading("CASE NAME",cx)).child(Input::new(&self.case_name).id("case-name").aria_label("Case name"))
-                .child(heading("CASE DIRECTORY",cx))
-                .child(div().flex().gap_2().child(Input::new(&self.case_directory).id("case-directory").aria_label("Case directory").flex_1())
-                    .child(Button::new("browse-case-directory").label("Browse").on_click(cx.listener(|this,_,window,cx| this.choose_path("directory",window,cx)))))
-                .child(Button::new("create-case").primary().label("Create case").disabled(!self.can_switch()).on_click(cx.listener(|this,_,window,cx| this.create_case(window,cx))))
-        ).into_any_element()
-    }
-
-    fn render_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut page = div().id("settings-page").flex_1().overflow_y_scroll().p_6().flex().flex_col().gap_5()
-            .child(heading("APPLICATION SETTINGS",cx))
-            .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Volatility installation"))
-            .child(div().max_w(px(800.)).text_sm().text_color(cx.theme().muted_foreground)
-                .child("VolGUI invokes your external Volatility 3 CLI. Select vol.exe or paste its installation directory. Keep all DLLs and support files beside the executable."))
-            .child(heading("EXECUTABLE",cx))
-            .child(div().flex().gap_2().max_w(px(1000.)).child(Input::new(&self.engine_path).id("engine-path").aria_label("Volatility executable").flex_1())
-                .child(Button::new("browse-engine").label("Browse").disabled(self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.choose_path("engine",window,cx)))))
-            .child(heading("SYMBOLS DIRECTORY",cx))
-            .child(div().flex().gap_2().max_w(px(1000.)).child(Input::new(&self.symbol_path).id("symbol-path").aria_label("Symbols directory").flex_1())
-                .child(Button::new("browse-symbols").label("Browse").disabled(self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.choose_path("symbols",window,cx)))))
-            .child(Button::new("offline-mode").label(if self.offline { "Offline mode enabled" } else { "Online symbol lookup enabled" }).selected(self.offline).disabled(self.busy.is_some())
-                .on_click(cx.listener(|this,_,_,cx| { this.offline = !this.offline; cx.notify(); })))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Offline mode passes --offline to Volatility. Online mode permits the engine to retrieve missing symbols."))
-            .child(Button::new("validate-engine").primary().label("Validate & save installation").disabled(self.busy.is_some() || self.has_queued())
-                .on_click(cx.listener(|this,_,_,cx| this.validate_engine(cx))));
-        if let Some(engine) = &self.installation {
-            page = page.child(
-                section("Connected engine", cx)
-                    .child(engine.version.clone())
+                    .accessibility_label(image.name())
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} discovered plugins · settings saved to {}",
-                                engine.plugins.len(),
-                                Settings::path().display()
-                            )),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .w_full()
+                            .child(Icon::new(IconName::HardDrive).size_4())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .truncate()
+                                    .child(image.name()),
+                            ),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_evidence(id.clone(), window, cx)
+                    })),
+            );
+        }
+        let mut tabs = div().flex().gap_1();
+        for group in ArtifactGroup::BROWSER {
+            let label = if group == ArtifactGroup::Files {
+                "Files"
+            } else {
+                group.label()
+            };
+            tabs = tabs.child(
+                Button::new(key("browser", label))
+                    .small()
+                    .ghost()
+                    .icon(Self::group_icon(group))
+                    .label(label)
+                    .flex_1()
+                    .selected(self.browser_group == group)
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.set_browser(group, window, cx)),
                     ),
             );
         }
-        page.into_any_element()
+        let mut mode = div().flex().items_center().gap_1().child(
+            div()
+                .flex_1()
+                .text_xs()
+                .child(format!("{} items", self.browser_entries.len())),
+        );
+        if self.browser_group == ArtifactGroup::Processes {
+            for (id, label, value) in [("tree", "Tree", true), ("list", "List", false)] {
+                mode = mode.child(
+                    Button::new(id)
+                        .xsmall()
+                        .ghost()
+                        .label(label)
+                        .selected(self.browser_tree_mode == value)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.browser_tree_mode = value;
+                            cx.notify();
+                        })),
+                );
+            }
+        }
+        let browser = if self.browser_loading {
+            div()
+                .p_2()
+                .text_xs()
+                .child("Loading artifacts...")
+                .into_any_element()
+        } else if self.browser_entries.is_empty() {
+            div()
+                .p_2()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("No matching scan data. Run an analysis to populate this browser.")
+                .into_any_element()
+        } else if self.browser_group == ArtifactGroup::Processes && self.browser_tree_mode {
+            Tree::new(&self.browser_tree, move |ix, entry, _, _, _| {
+                ListItem::new(("process-node", ix))
+                    .h(px(30.))
+                    .accessibility_label(entry.item().label.clone())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .w_full()
+                            .pl(px(entry.depth().min(30) as f32 * 12.))
+                            .when(entry.is_folder(), |s| {
+                                s.child(
+                                    Icon::new(if entry.is_expanded() {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .size_3(),
+                                )
+                            })
+                            .when(!entry.is_folder(), |s| s.child(div().w_3()))
+                            .child(Icon::new(IconName::Cpu).size_3())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .truncate()
+                                    .child(entry.item().label.clone()),
+                            ),
+                    )
+            })
+            .into_any_element()
+        } else {
+            v_virtual_list(
+                cx.entity(),
+                "artifact-virtual-list",
+                self.browser_sizes.clone(),
+                |this, range, _, cx| {
+                    range
+                        .map(|i| {
+                            let entry = &this.browser_entries[i];
+                            let id = entry.id;
+                            ListItem::new(("browser-record", id as u64))
+                                .role(Role::Button)
+                                .h(px(30.))
+                                .selected(this.selected.as_ref().is_some_and(|r| r.id == id))
+                                .accessibility_label(entry.title.clone())
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .w_full()
+                                        .child(
+                                            Icon::new(Self::group_icon(this.browser_group))
+                                                .size_3(),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_xs()
+                                                .truncate()
+                                                .child(entry.title.clone()),
+                                        ),
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.load_record(id, cx)),
+                                )
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .into_any_element()
+        };
+        let mut shortcuts = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(heading("INVESTIGATION ARTIFACTS", cx));
+        for group in ArtifactGroup::SHORTCUTS {
+            let available = !self.group_runs(group).is_empty();
+            let count = self.group_count(group);
+            let label = group.label();
+            shortcuts =
+                shortcuts.child(
+                    ListItem::new(key("shortcut", label))
+                        .role(Role::Button)
+                        .h(px(30.))
+                        .disabled(!available)
+                        .accessibility_label(if available {
+                            format!("{label}, {count} records")
+                        } else {
+                            format!("{label}, scan data not ready")
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .w_full()
+                                .child(Icon::new(Self::group_icon(group)).size_4())
+                                .child(div().flex_1().text_xs().child(label))
+                                .when(available, |s| {
+                                    s.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(count.to_string()),
+                                    )
+                                }),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_group(group, window, cx)
+                        })),
+                );
+        }
+        div()
+            .w(px(282.))
+            .flex_shrink_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_3()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
+            .child(heading("EVIDENCE", cx))
+            .child(evidence)
+            .child(heading("ARTIFACT BROWSER", cx))
+            .child(tabs)
+            .child(
+                Input::new(&self.browser_query)
+                    .id("artifact-filter")
+                    .aria_label("Filter artifact browser")
+                    .small()
+                    .cleanable(true),
+            )
+            .child(mode)
+            .child(div().flex_1().min_h_0().overflow_hidden().child(browser))
+            .child(shortcuts)
+            .into_any_element()
     }
-
+    fn render_welcome(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(div().text_2xl().child("No case open"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Use File to create a case or open an existing one."),
+            )
+            .when(self.installation.is_none(), |s| {
+                s.child(
+                    Button::new("configure-engine")
+                        .small()
+                        .label("Configure Volatility")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+    fn render_new_case(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_1()
+            .p_6()
+            .child(
+                div()
+                    .max_w(px(720.))
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(div().text_2xl().child("New case"))
+                    .child(heading("Name", cx))
+                    .child(
+                        Input::new(&self.case_name)
+                            .id("case-name")
+                            .aria_label("Case name"),
+                    )
+                    .child(heading("Directory", cx))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                Input::new(&self.case_directory)
+                                    .id("case-directory")
+                                    .aria_label("Case directory")
+                                    .flex_1(),
+                            )
+                            .child(Button::new("browse-case").label("Browse").on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.choose_path("directory", window, cx)
+                                }),
+                            )),
+                    )
+                    .child(
+                        Button::new("create-case")
+                            .primary()
+                            .w(px(150.))
+                            .label("Create case")
+                            .disabled(!self.can_switch())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.create_case(window, cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
     fn render_plugins(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut page = div()
             .flex_1()
@@ -276,102 +456,172 @@ impl Workspace {
             .min_h_0()
             .flex()
             .flex_col()
+            .gap_3()
             .p_5()
-            .gap_4()
-            .child(heading("ANALYSIS / PLUGIN LIBRARY", cx))
-            .child(
-                div()
-                    .text_2xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("New analysis"),
+            .child(div().text_xl().child("New analysis"));
+        let mut os = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(heading("EVIDENCE OS", cx));
+        for target in OperatingSystem::TARGETS {
+            os = os.child(
+                Button::new(key("os", target.label()))
+                    .small()
+                    .label(target.label())
+                    .selected(target == self.plugin_os)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_os(target, cx))),
             );
-        if self.installation.is_none() {
-            return page.child(section("Connect Volatility to discover plugins",cx)
-                .child("The plugin catalog is read from your installation, including its Windows, Linux and macOS plugins.")
-                .child(Button::new("plugins-settings").label("Configure engine").on_click(cx.listener(|this,_,_,cx| { this.view = View::Settings; cx.notify(); })))).into_any_element();
         }
-        let engine = self.installation.as_ref().unwrap();
-        page = page.child(
-            Input::new(&self.plugin_query)
-                .id("plugin-search")
-                .aria_label("Search plugins")
-                .small()
-                .cleanable(true),
-        );
+        page = page.child(os);
+        let Some(engine) = &self.installation else {
+            return page
+                .child(
+                    Button::new("plugin-settings")
+                        .label("Configure Volatility")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
+                        ),
+                )
+                .into_any_element();
+        };
         let query = self.plugin_query.read(cx).value().to_lowercase();
-        let matching: Vec<_> = engine
+        let plugins: Vec<_> = engine
             .plugins
             .iter()
             .filter(|p| {
-                format!("{} {}", p.id, p.description)
-                    .to_lowercase()
-                    .contains(&query)
+                self.plugin_os.accepts(&p.id)
+                    && format!("{} {}", p.id, p.description)
+                        .to_lowercase()
+                        .contains(&query)
             })
+            .map(|p| (p.id.clone(), p.description.clone()))
             .collect();
-        let mut list = div()
-            .id("plugin-list")
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .overflow_y_scroll()
+        page = page
+            .child(
+                Input::new(&self.plugin_query)
+                    .id("plugin-search")
+                    .aria_label("Search plugins")
+                    .small()
+                    .cleanable(true),
+            )
+            .child(heading(
+                format!(
+                    "{} plugins for {} · common plugins included",
+                    plugins.len(),
+                    self.plugin_os.label()
+                ),
+                cx,
+            ));
+        let len = plugins.len();
+        let selected = self.plugin.clone();
+        let list = uniform_list(
+            "plugin-library",
+            len,
+            cx.processor(move |_, range: Range<usize>, _, cx| {
+                range
+                    .map(|i| {
+                        let (id, description) = &plugins[i];
+                        let id = id.clone();
+                        let active = selected.as_ref() == Some(&id);
+                        div()
+                            .id(key("plugin", &id))
+                            .role(Role::Button)
+                            .aria_label(id.clone())
+                            .h(px(66.))
+                            .p_3()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .bg(if active {
+                                cx.theme().accent
+                            } else {
+                                cx.theme().background
+                            })
+                            .hover(|s| s.bg(cx.theme().accent))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_sm().truncate().child(id.clone()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .truncate()
+                                    .child(description.clone()),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.plugin = Some(id.clone());
+                                this.plugin_help.clear();
+                                cx.notify();
+                            }))
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .flex_1()
+        .min_w_0()
+        .h_full();
+        let valid = self.plugin.as_ref().is_some_and(|id| {
+            self.plugin_os.accepts(id) && engine.plugins.iter().any(|p| &p.id == id)
+        });
+        let mut setup = div()
+            .w(px(340.))
+            .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap_1();
-        for plugin in matching.iter().take(400) {
-            let id = plugin.id.clone();
-            list = list.child(
+            .gap_3()
+            .pl_4()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(heading("PLUGIN OPTIONS", cx))
+            .child(
+                div().text_sm().child(
+                    self.plugin
+                        .clone()
+                        .unwrap_or_else(|| "Select a plugin".into()),
+                ),
+            )
+            .child(
                 div()
-                    .id(key("plugin", &id))
-                    .role(Role::Button)
-                    .aria_label(format!("{}: {}", id, plugin.description))
-                    .p_3()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .bg(if self.plugin.as_ref() == Some(&id) {
-                        cx.theme().accent
-                    } else {
-                        cx.theme().background
-                    })
-                    .hover(|s| s.bg(cx.theme().accent))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        self.evidence()
+                            .map_or_else(|| "Select evidence first".into(), |e| e.name()),
+                    ),
+            )
+            .child(
+                Input::new(&self.arguments)
+                    .id("plugin-arguments")
+                    .aria_label("Plugin arguments")
+                    .small(),
+            )
+            .child(
+                div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
+                    .gap_2()
                     .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(id.clone()),
+                        Button::new("load-options")
+                            .small()
+                            .label("Load options")
+                            .disabled(!valid || self.busy.is_some())
+                            .on_click(cx.listener(|this, _, _, cx| this.plugin_help(cx))),
                     )
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(plugin.description.clone()),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.plugin = Some(id.clone());
-                        this.plugin_help.clear();
-                        cx.notify();
-                    })),
+                        Button::new("queue-analysis")
+                            .small()
+                            .primary()
+                            .label("Queue analysis")
+                            .disabled(
+                                !valid
+                                    || self.evidence().is_none()
+                                    || self.busy.as_ref().is_some_and(|b| b.run_id.is_none()),
+                            )
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.queue_analysis(window, cx)),
+                            ),
+                    ),
             );
-        }
-        let selected = self
-            .plugin
-            .as_ref()
-            .and_then(|id| engine.plugins.iter().find(|p| &p.id == id));
-        let mut setup = div().w(px(390.)).flex_shrink_0().flex().flex_col().gap_3().pl_4().border_l_1().border_color(cx.theme().border)
-            .child(heading("CONFIGURE ANALYSIS",cx))
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(self.plugin.clone().unwrap_or_else(|| "Select a plugin".into())))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(self.evidence().map_or_else(|| "Add and select evidence first".into(),|e| format!("Evidence: {}",e.name()))))
-            .child(heading("PLUGIN ARGUMENTS",cx))
-            .child(Input::new(&self.arguments).id("plugin-arguments").aria_label("Plugin arguments").small())
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Use the plugin's CLI options. Quote paths containing spaces. Arguments are passed directly to the executable."))
-            .child(div().flex().gap_2()
-                .child(Button::new("plugin-options").small().label("Load options").disabled(selected.is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,_,cx| this.plugin_help(cx))))
-                .child(Button::new("queue-analysis").small().primary().icon(IconName::Play).label("Queue analysis")
-                    .disabled(selected.is_none() || self.evidence().is_none() || self.busy.as_ref().is_some_and(|b| b.run_id.is_none()))
-                    .on_click(cx.listener(|this,_,window,cx| this.queue_analysis(window,cx)))));
         if !self.plugin_help.is_empty() {
             setup = setup.child(
                 div()
@@ -379,9 +629,6 @@ impl Workspace {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .p_3()
-                    .bg(cx.theme().muted)
-                    .rounded_md()
                     .text_xs()
                     .font_family("Consolas")
                     .child(self.plugin_help.clone()),
@@ -389,70 +636,48 @@ impl Workspace {
         }
         page.child(
             div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(format!(
-                    "{} plugins match · {} installed",
-                    matching.len(),
-                    engine.plugins.len()
-                )),
-        )
-        .child(
-            div()
                 .flex()
                 .flex_1()
                 .min_h_0()
+                .min_w_0()
                 .gap_4()
                 .child(list)
                 .child(setup),
         )
         .into_any_element()
     }
-
     fn render_analyses(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut page = div().id("analysis-history").flex_1().overflow_y_scroll().p_5().flex().flex_col().gap_4()
-            .child(heading("CASE / ANALYSIS HISTORY",cx))
-            .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Analyses"))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Jobs run one at a time. Commands, diagnostics and generated files are retained in the case directory."));
+        let mut page = div()
+            .id("analyses")
+            .flex_1()
+            .overflow_y_scroll()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(div().text_xl().child("Analysis history"));
         let Some(case) = &self.case else {
-            return page
-                .child("Open a case to run analyses.")
-                .into_any_element();
+            return page.into_any_element();
         };
         if self.queue_paused {
             page = page.child(
                 Button::new("resume-queue")
-                    .label("Retry save & resume queue")
+                    .label("Retry save and resume queue")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let result = this.case.as_mut().map(|c| c.save());
-                        if let Some(Err(error)) = result {
-                            this.error = Some(error);
-                        } else {
-                            this.queue_paused = false;
-                            this.error = None;
+                        match this.case.as_mut().unwrap().save() {
+                            Ok(()) => this.queue_paused = false,
+                            Err(e) => this.error = Some(e),
                         }
                         cx.notify();
                     })),
             );
         }
-        if case.document.runs.is_empty() {
-            page = page.child(section("No analyses yet", cx).child(
-                "Add a memory image, then choose New analysis to explore the installed plugins.",
-            ));
-        }
         for run in case.document.runs.iter().rev() {
             let id = run.id.clone();
-            let cancel_id = id.clone();
-            let rerun_id = id.clone();
-            let evidence = case
-                .document
-                .evidence
-                .iter()
-                .find(|e| e.id == run.evidence_id)
-                .map(|e| e.name())
-                .unwrap_or_default();
+            let cancel = id.clone();
+            let rerun = id.clone();
             let mut actions = div().flex().gap_2().child(
-                Button::new(key("view-run", &id))
+                Button::new(key("inspect", &id))
                     .small()
                     .label("Inspect")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -461,31 +686,34 @@ impl Workspace {
             );
             if matches!(run.status, RunStatus::Running | RunStatus::Queued) {
                 actions = actions.child(
-                    Button::new(key("cancel-run", &cancel_id))
+                    Button::new(key("cancel", &cancel))
                         .small()
                         .label("Cancel")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.cancel_run(cancel_id.clone(), cx)
-                        })),
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.cancel_run(cancel.clone(), cx)),
+                        ),
                 );
             } else {
                 actions = actions.child(
-                    Button::new(key("rerun", &rerun_id))
+                    Button::new(key("rerun", &rerun))
                         .small()
                         .label("Rerun setup")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if let Some(run) = this
                                 .case
                                 .as_ref()
-                                .and_then(|c| c.document.runs.iter().find(|r| r.id == rerun_id))
+                                .and_then(|c| c.document.runs.iter().find(|r| r.id == rerun))
                                 .cloned()
                             {
+                                this.plugin_os = OperatingSystem::for_plugin(&run.plugin);
+                                if this.plugin_os == OperatingSystem::Unknown {
+                                    this.plugin_os = OperatingSystem::Windows;
+                                }
                                 this.plugin = Some(run.plugin);
                                 this.selected_evidence = Some(run.evidence_id);
-                                this.plugin_help.clear();
-                                let args = format_arguments(&run.arguments);
-                                this.arguments
-                                    .update(cx, |state, cx| state.set_value(args, window, cx));
+                                this.arguments.update(cx, |s, cx| {
+                                    s.set_value(format_arguments(&run.arguments), window, cx)
+                                });
                                 this.view = View::Plugins;
                                 cx.notify();
                             }
@@ -497,13 +725,13 @@ impl Workspace {
                     .child(
                         div()
                             .flex()
+                            .items_center()
                             .justify_between()
-                            .gap_4()
+                            .gap_3()
                             .child(div().text_sm().child(format!(
-                                "{} · {} rows · {}",
+                                "{} · {} records",
                                 run.status.label(),
-                                run.row_count,
-                                evidence
+                                run.row_count
                             )))
                             .child(actions),
                     )
@@ -511,23 +739,19 @@ impl Workspace {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("{} · {}", run.created_at, run.engine_version)),
+                            .child(run.created_at.clone()),
                     )
-                    .when(
-                        !run.message.is_empty() && run.status != RunStatus::Completed,
-                        |s| {
-                            s.child(
-                                div()
-                                    .text_xs()
-                                    .child(run.message.chars().take(500).collect::<String>()),
-                            )
-                        },
-                    ),
+                    .when(run.status == RunStatus::Failed, |s| {
+                        s.child(
+                            div()
+                                .text_xs()
+                                .child(run.message.chars().take(500).collect::<String>()),
+                        )
+                    }),
             );
         }
         page.into_any_element()
     }
-
     fn render_bookmarks(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut page = div()
             .id("bookmarks-page")
@@ -536,66 +760,43 @@ impl Workspace {
             .p_5()
             .flex()
             .flex_col()
-            .gap_4()
-            .child(heading("CASE / FINDINGS", cx))
-            .child(
-                div()
-                    .text_2xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Bookmarks & notes"),
-            );
-        let Some(case) = &self.case else {
-            return page.into_any_element();
-        };
-        if case.document.annotations.is_empty() {
-            page = page.child("Select an artifact to bookmark it or write an observation.");
-        }
-        for (index, a) in case.document.annotations.iter().enumerate() {
-            let id = a.run_id.clone();
-            let row = a.row;
-            let plugin = case
-                .document
-                .runs
-                .iter()
-                .find(|r| r.id == id)
-                .map(|r| r.plugin.clone())
-                .unwrap_or_default();
-            page = page.child(
-                section(
-                    format!(
-                        "{} · artifact {}{}",
-                        plugin,
-                        row + 1,
-                        if a.bookmarked { " · bookmarked" } else { "" }
+            .gap_3()
+            .child(div().text_xl().child("Bookmarks and notes"));
+        if let Some(case) = &self.case {
+            for (i, a) in case.document.annotations.iter().enumerate() {
+                let run = a.run_id.clone();
+                let row = a.row;
+                let title = case
+                    .document
+                    .runs
+                    .iter()
+                    .find(|r| r.id == run)
+                    .map(|r| r.plugin.clone())
+                    .unwrap_or_default();
+                page = page.child(
+                    section(
+                        format!(
+                            "{title} · row {}{}",
+                            row + 1,
+                            if a.bookmarked { " · bookmarked" } else { "" }
+                        ),
+                        cx,
+                    )
+                    .child(div().text_sm().child(a.note.clone()))
+                    .child(
+                        Button::new(("open-note", i))
+                            .small()
+                            .w(px(130.))
+                            .label("Open artifact")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.load_annotation(run.clone(), row, cx)
+                            })),
                     ),
-                    cx,
-                )
-                .child(div().text_sm().child(if a.note.is_empty() {
-                    "No observation added".into()
-                } else {
-                    a.note.clone()
-                }))
-                .child(
-                    Button::new(("open-bookmark", index))
-                        .small()
-                        .label("Open artifact")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_run(id.clone(), window, cx);
-                            if this.table.is_some() {
-                                this.select_row(Some(row), window, cx);
-                                this.page =
-                                    this.indexes.iter().position(|i| *i == row).unwrap_or(0)
-                                        / PAGE_SIZE;
-                            } else {
-                                this.pending_row = Some((id.clone(), row));
-                            }
-                        })),
-                ),
-            );
+                );
+            }
         }
         page.into_any_element()
     }
-
     fn render_case_info(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut page = div()
             .id("case-info-page")
@@ -605,131 +806,96 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_4()
-            .child(heading("CASE / EVIDENCE REGISTER", cx));
-        let Some(case) = &self.case else {
-            return page.into_any_element();
-        };
-        page = page
-            .child(
-                div()
-                    .text_2xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(case.document.name.clone()),
-            )
-            .child(div().text_sm().child(format!(
-                "Created {} · {} evidence file(s) · {} analyses",
-                case.document.created_at,
-                case.document.evidence.len(),
-                case.document.runs.len()
-            )))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(case.directory.display().to_string()),
-            )
-            .child(
-                Button::new("case-report")
-                    .small()
-                    .label("Export case report")
-                    .on_click(cx.listener(|this, _, window, cx| this.export(true, window, cx))),
-            );
-        for evidence in &case.document.evidence {
-            let id = evidence.id.clone();
-            page = page.child(
-                section(evidence.name(), cx)
-                    .child(div().text_sm().child(evidence.path.display().to_string()))
-                    .child(div().text_xs().child(format!(
-                        "{} · added {}",
-                        format_bytes(evidence.size),
-                        evidence.added_at
-                    )))
-                    .child(heading("SHA-256 AT IMPORT", cx))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_family("Consolas")
-                            .child(evidence.sha256.clone()),
-                    )
-                    .when_some(evidence.verification.as_ref(), |s, v| {
-                        s.child(div().text_xs().child(format!(
-                            "Last verification {} · {}",
-                            v.checked_at,
-                            if v.matches { "MATCH" } else { "MISMATCH" }
+            .child(div().text_xl().child("Case information"));
+        if let Some(case) = &self.case {
+            page = page
+                .child(div().text_sm().child(case.document.name.clone()))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(case.directory.display().to_string()),
+                )
+                .child(
+                    Button::new("export-report")
+                        .small()
+                        .w(px(160.))
+                        .label("Export case report")
+                        .on_click(cx.listener(|this, _, window, cx| this.export(true, window, cx))),
+                );
+            for e in &case.document.evidence {
+                let id = e.id.clone();
+                page = page.child(
+                    section(e.name(), cx)
+                        .child(div().text_xs().child(e.path.display().to_string()))
+                        .child(div().text_xs().child(format!(
+                            "{} · OS: {}",
+                            format_bytes(e.size),
+                            e.operating_system.label()
                         )))
-                    })
-                    .child(
-                        Button::new(key("verify", &id))
-                            .small()
-                            .label("Verify integrity")
-                            .disabled(self.busy.is_some())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.selected_evidence = Some(id.clone());
-                                this.verify(cx);
-                            })),
-                    ),
-            );
+                        .child(heading("SHA-256", cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family("Consolas")
+                                .child(e.sha256.clone()),
+                        )
+                        .child(
+                            Button::new(key("verify", &id))
+                                .small()
+                                .w(px(140.))
+                                .label("Verify integrity")
+                                .disabled(self.busy.is_some())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.selected_evidence = Some(id.clone());
+                                    this.verify(cx);
+                                })),
+                        ),
+                )
+            }
         }
         page.into_any_element()
     }
-}
-
-impl Workspace {
     fn render_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut page = div().flex_1().min_w_0().min_h_0().flex().flex_col();
+        let record = self.selected.as_ref().map(|r| &r.record);
         let run = self.case.as_ref().and_then(|c| {
             c.document
                 .runs
                 .iter()
                 .find(|r| Some(&r.id) == self.selected_run.as_ref())
         });
-        let record = self
-            .table
-            .as_ref()
-            .and_then(|t| self.selected_row.and_then(|row| t.rows.get(row)));
-        let bookmarked = self
+        let marked = self
             .case
             .as_ref()
             .and_then(|c| c.annotation(self.selected_run.as_deref()?, self.selected_row?))
             .is_some_and(|a| a.bookmarked);
-        let title = record.map(|r| r.title()).unwrap_or_else(|| {
-            if run.is_some() {
-                "Analysis results".into()
-            } else {
-                "Evidence workspace".into()
-            }
-        });
         let mut header = div()
-            .p_5()
+            .p_4()
             .flex()
             .flex_col()
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(heading(
-                run.map(|r| r.plugin.to_uppercase())
-                    .unwrap_or_else(|| "INVESTIGATION WORKSPACE".into()),
-                cx,
-            ))
+            .child(heading(self.scope_label.clone(), cx))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_3()
                     .child(
-                        div()
-                            .text_2xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
+                        div().text_xl().font_weight(FontWeight::SEMIBOLD).child(
+                            record
+                                .map(|r| r.title())
+                                .unwrap_or_else(|| "Evidence workspace".into()),
+                        ),
                     )
                     .when(record.is_some(), |s| {
                         s.child(
-                            Button::new("bookmark-artifact")
+                            Button::new("bookmark")
                                 .small()
                                 .icon(IconName::Bookmark)
-                                .label(if bookmarked { "Bookmarked" } else { "Bookmark" })
-                                .selected(bookmarked)
+                                .label(if marked { "Bookmarked" } else { "Bookmark" })
+                                .selected(marked)
                                 .on_click(cx.listener(|this, _, _, cx| this.annotate(true, cx))),
                         )
                     }),
@@ -739,62 +905,43 @@ impl Workspace {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(self.evidence().map_or_else(
-                        || "No acquisition selected".into(),
-                        |e| format!("{} · {} · SHA-256 recorded", e.name(), format_bytes(e.size)),
+                        || "No evidence selected".into(),
+                        |e| format!("{} · {}", e.name(), format_bytes(e.size)),
                     )),
             );
-        if run.is_some() {
-            let mut tabs = div().flex().gap_1().mt_2();
-            for (id, label, tab) in [
-                ("overview", "Overview", DetailTab::Overview),
-                ("raw", "Raw JSON", DetailTab::Raw),
-                ("notes", "Notes", DetailTab::Notes),
-                ("diagnostics", "Run details", DetailTab::Diagnostics),
-            ] {
-                tabs = tabs.child(
-                    Button::new(id)
-                        .small()
-                        .ghost()
-                        .label(label)
-                        .selected(self.detail == tab)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.detail = tab;
-                            cx.notify();
-                        })),
-                );
-            }
-            header = header.child(tabs);
+        let mut tabs = div().flex().gap_1();
+        for (id, label, tab) in [
+            ("overview", "Overview", DetailTab::Overview),
+            ("raw", "Raw JSON", DetailTab::Raw),
+            ("notes", "Notes", DetailTab::Notes),
+            ("details", "Run details", DetailTab::Diagnostics),
+        ] {
+            tabs = tabs.child(
+                Button::new(id)
+                    .small()
+                    .ghost()
+                    .label(label)
+                    .selected(self.detail == tab)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.detail = tab;
+                        cx.notify();
+                    })),
+            );
         }
-        page = page.child(header);
-        if self.selected_run.is_none() {
-            let has_evidence = self.evidence().is_some();
-            return page.child(div().flex_1().p_8().flex().flex_col().gap_4()
-                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(if has_evidence { "Ready to examine this acquisition" } else { "Add your first memory image" }))
-                .child(div().max_w(px(650.)).text_sm().text_color(cx.theme().muted_foreground).child(if has_evidence {
-                    "Start with system information and process enumeration, then examine network connections, files or registry artifacts. Every run is saved with its original output."
-                } else { "Choose an acquired memory image. VolGUI will record its size and SHA-256 before adding it to this case." }))
-                .child(Button::new("workspace-start").primary().label(if has_evidence { "Choose an analysis" } else { "Add memory image" })
-                    .disabled(self.busy.is_some()).on_click(cx.listener(move |this,_,window,cx| { if has_evidence { this.view = View::Plugins; } else { this.choose_path("evidence",window,cx); } cx.notify(); })))
-            ).into_any_element();
-        }
+        header = header.child(tabs);
         let mut detail = div()
-            .id("artifact-detail")
+            .id("artifact-details")
             .flex_1()
-            .min_h(px(100.))
+            .min_h_0()
             .overflow_y_scroll()
-            .p_5();
+            .p_4();
         match self.detail {
             DetailTab::Overview => {
                 if let Some(record) = record {
-                    let mut fields = div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(heading("RECOVERED FIELDS", cx));
-                    for (index, (name, value)) in record.fields.iter().enumerate() {
-                        fields = fields.child(
+                    for (i, (name, value)) in record.fields.iter().enumerate() {
+                        detail = detail.child(
                             div()
-                                .id(("field", index))
+                                .id(("field", i))
                                 .flex()
                                 .gap_4()
                                 .py_2()
@@ -802,7 +949,7 @@ impl Workspace {
                                 .border_color(cx.theme().border)
                                 .child(
                                     div()
-                                        .w(px(190.))
+                                        .w(px(170.))
                                         .flex_shrink_0()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
@@ -817,33 +964,8 @@ impl Workspace {
                                 ),
                         );
                     }
-                    detail = detail.child(fields);
                 } else {
-                    detail = detail.child(
-                        section(
-                            if self.loading.is_some() {
-                                "Loading saved results..."
-                            } else {
-                                "No artifact selected"
-                            },
-                            cx,
-                        )
-                        .child(run.map_or_else(
-                            || "Select a result row below".into(),
-                            |r| {
-                                format!(
-                                    "{} · {} records. {}",
-                                    r.status.label(),
-                                    r.row_count,
-                                    if r.status == RunStatus::Completed {
-                                        "The plugin returned no records, or no row is selected."
-                                    } else {
-                                        "Open Run details for diagnostics."
-                                    }
-                                )
-                            },
-                        )),
-                    );
+                    detail=detail.child(div().text_sm().text_color(cx.theme().muted_foreground).child(if self.loading{"Loading saved scan data..."}else if self.evidence().is_none(){"Use File > Add evidence to import a memory image."}else if self.scope.is_empty(){"Run an analysis to populate the artifact browser. Shortcuts become available when their scan data is ready."}else{"Select an artifact. No matching records are currently displayed."}));
                 }
             }
             DetailTab::Raw => {
@@ -851,11 +973,9 @@ impl Workspace {
                     div().text_xs().font_family("Consolas").child(
                         record
                             .map(|r| serde_json::to_string_pretty(&r.fields).unwrap_or_default())
-                            .unwrap_or_else(|| {
-                                "Select an artifact to inspect its raw fields.".into()
-                            }),
+                            .unwrap_or_default(),
                     ),
-                );
+                )
             }
             DetailTab::Notes => {
                 detail = detail.child(
@@ -863,7 +983,6 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .child(heading("INVESTIGATOR OBSERVATIONS", cx))
                         .child(
                             Textarea::new(&self.note)
                                 .accessibility_id("artifact-note")
@@ -873,70 +992,192 @@ impl Workspace {
                             Button::new("save-note")
                                 .small()
                                 .primary()
+                                .w(px(110.))
                                 .label("Save note")
                                 .disabled(record.is_none())
                                 .on_click(cx.listener(|this, _, _, cx| this.annotate(false, cx))),
                         ),
-                );
+                )
             }
             DetailTab::Diagnostics => {
                 if let Some(run) = run {
                     let output = self.case.as_ref().unwrap().run_dir(&run.id);
-                    detail = detail.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(heading(
-                                format!(
-                                    "{} · EXIT {:?} · {} ROWS",
-                                    run.status.label().to_uppercase(),
-                                    run.exit_code,
-                                    run.row_count
-                                ),
-                                cx,
-                            ))
-                            .child(div().text_xs().child(format!(
-                                "{}\nQueued {}\nStarted {}\nFinished {}\nRun {}",
+                    detail =
+                        detail
+                            .child(div().text_sm().child(format!(
+                                "{} · {} records · exit {:?}\n{}\nStarted {}\nFinished {}",
+                                run.status.label(),
+                                run.row_count,
+                                run.exit_code,
                                 run.engine_version,
-                                run.created_at,
                                 run.started_at.as_deref().unwrap_or("Not started"),
-                                run.finished_at.as_deref().unwrap_or("Not finished"),
-                                run.id
+                                run.finished_at.as_deref().unwrap_or("Not finished")
                             )))
-                            .child(heading("COMMAND ARGUMENT VECTOR", cx))
-                            .child(div().text_xs().font_family("Consolas").child(
+                            .child(div().mt_3().text_xs().font_family("Consolas").child(
                                 serde_json::to_string_pretty(&run.command).unwrap_or_default(),
                             ))
                             .child(
-                                Button::new("reveal-output")
+                                Button::new("show-output")
                                     .small()
                                     .label("Show output directory")
                                     .on_click(move |_, _, cx| cx.reveal_path(&output)),
                             )
-                            .child(heading("DIAGNOSTICS", cx))
-                            .child(div().text_xs().font_family("Consolas").child(
-                                if run.message.is_empty() {
-                                    "No diagnostics recorded".into()
-                                } else {
-                                    run.message.clone()
-                                },
-                            )),
-                    );
+                            .child(
+                                div()
+                                    .mt_3()
+                                    .text_xs()
+                                    .font_family("Consolas")
+                                    .child(run.message.clone()),
+                            );
                 }
             }
         }
-        page.child(detail)
+        div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(detail)
             .child(self.render_results(cx))
             .into_any_element()
     }
-
+    fn render_result_rows(
+        &mut self,
+        range: Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        self.request_rows(range.clone());
+        let multiple = self.scope.len() > 1;
+        let width = (self.index.columns.len() + usize::from(multiple)).max(1) as f32 * 160.;
+        range
+            .filter_map(|i| self.index.ids.get(i).copied())
+            .map(|id| {
+                let record = self.row_cache.get(&id);
+                let mut row = div()
+                    .id(("result-row", id as u64))
+                    .role(Role::ListBoxOption)
+                    .aria_label(
+                        record
+                            .map(|r| r.record.title())
+                            .unwrap_or_else(|| "Loading artifact".into()),
+                    )
+                    .aria_selected(self.selected.as_ref().is_some_and(|r| r.id == id))
+                    .h(px(30.))
+                    .w(px(width))
+                    .min_w_full()
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .bg(if self.selected.as_ref().is_some_and(|r| r.id == id) {
+                        cx.theme().accent
+                    } else {
+                        cx.theme().background
+                    })
+                    .hover(|s| s.bg(cx.theme().muted))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .on_click(cx.listener(move |this, _, _, cx| this.load_record(id, cx)));
+                if multiple {
+                    let source = record
+                        .and_then(|r| {
+                            self.case
+                                .as_ref()?
+                                .document
+                                .runs
+                                .iter()
+                                .find(|s| s.id == r.run_id)
+                        })
+                        .map(|r| r.plugin.clone())
+                        .unwrap_or_default();
+                    row = row.child(
+                        div()
+                            .w(px(160.))
+                            .min_w(px(160.))
+                            .flex_1()
+                            .px_3()
+                            .text_xs()
+                            .truncate()
+                            .child(source),
+                    );
+                }
+                for column in &self.index.columns {
+                    row = row.child(
+                        div()
+                            .w(px(160.))
+                            .min_w(px(160.))
+                            .flex_1()
+                            .px_3()
+                            .text_xs()
+                            .truncate()
+                            .child(
+                                record
+                                    .map(|r| r.record.text(column))
+                                    .unwrap_or_else(|| "...".into()),
+                            ),
+                    );
+                }
+                row.into_any_element()
+            })
+            .collect()
+    }
     fn render_results(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(table) = &self.table else {
-            return div().into_any_element();
-        };
-        let mut panel = div()
-            .h(px(290.))
+        let multiple = self.scope.len() > 1;
+        let width = (self.index.columns.len() + usize::from(multiple)).max(1) as f32 * 160.;
+        let mut headers = div()
+            .flex()
+            .h(px(30.))
+            .w(px(width))
+            .min_w_full()
+            .bg(cx.theme().muted)
+            .items_center();
+        if multiple {
+            headers = headers.child(
+                div()
+                    .w(px(160.))
+                    .min_w(px(160.))
+                    .flex_1()
+                    .px_3()
+                    .text_xs()
+                    .child("Source scan"),
+            );
+        }
+        for (i, column) in self.index.columns.iter().enumerate() {
+            let column = column.clone();
+            let suffix = self
+                .sort
+                .as_ref()
+                .filter(|(c, _)| c == &column)
+                .map_or("", |(_, desc)| if *desc { " ↓" } else { " ↑" });
+            headers = headers.child(
+                div()
+                    .id(("sort", i))
+                    .w(px(160.))
+                    .min_w(px(160.))
+                    .flex_1()
+                    .px_3()
+                    .text_xs()
+                    .cursor_pointer()
+                    .child(format!("{column}{suffix}"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let desc = this.sort.as_ref().is_some_and(|(c, d)| c == &column && !*d);
+                        this.sort = Some((column.clone(), desc));
+                        this.start_query(cx);
+                    })),
+            );
+        }
+        let list = uniform_list(
+            "result-virtual-list",
+            self.index.ids.len(),
+            cx.processor(|this, range, _, cx| this.render_result_rows(range, cx)),
+        )
+        .track_scroll(&self.result_scroll)
+        .w(px(width))
+        .min_w_full()
+        .h_full();
+        div()
+            .h(px(270.))
             .flex_shrink_0()
             .min_w_0()
             .flex()
@@ -948,26 +1189,15 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .px_4()
+                    .px_3()
                     .py_2()
+                    .child(div().text_sm().child(format!(
+                        "{} results{}",
+                        self.index.ids.len(),
+                        if self.loading { " · searching" } else { "" }
+                    )))
                     .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_sm()
-                            .child("Artifact results"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} matched / {} total",
-                                self.indexes.len(),
-                                table.rows.len()
-                            )),
-                    )
-                    .child(
-                        div().ml_auto().w(px(300.)).child(
+                        div().ml_auto().w(px(280.)).child(
                             Input::new(&self.query)
                                 .id("result-search")
                                 .aria_label("Search artifacts")
@@ -980,173 +1210,138 @@ impl Workspace {
                             .small()
                             .ghost()
                             .label("Export CSV")
+                            .disabled(self.scope.is_empty())
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.export(false, window, cx)),
                             ),
                     ),
-            );
-        let width = table.columns.len().max(1) as f32 * 160.;
-        let mut grid = div()
-            .id("result-list")
-            .role(Role::ListBox)
-            .aria_label("Artifact results")
-            .w(px(width))
-            .min_w_full()
-            .flex()
-            .flex_col();
-        let mut header = div()
-            .flex()
-            .h_8()
-            .flex_shrink_0()
-            .bg(cx.theme().muted)
-            .items_center();
-        for (index, column) in table.columns.iter().enumerate() {
-            let column = column.clone();
-            let suffix = self
-                .sort
-                .as_ref()
-                .filter(|(c, _)| c == &column)
-                .map_or("", |(_, d)| if *d { " ↓" } else { " ↑" });
-            header = header.child(
-                div()
-                    .id(("sort", index))
-                    .w(px(160.))
-                    .min_w(px(160.))
-                    .flex_1()
-                    .px_3()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .cursor_pointer()
-                    .child(format!("{column}{suffix}"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let descending =
-                            this.sort.as_ref().is_some_and(|(c, d)| c == &column && !d);
-                        this.sort = Some((column.clone(), descending));
-                        this.page = 0;
-                        this.refilter(cx);
-                        cx.notify();
-                    })),
-            );
-        }
-        grid = grid.child(header);
-        for &index in self
-            .indexes
-            .iter()
-            .skip(self.page * PAGE_SIZE)
-            .take(PAGE_SIZE)
-        {
-            let record = &table.rows[index];
-            let mut row =
-                div()
-                    .id(("result-row", index))
-                    .role(Role::ListBoxOption)
-                    .aria_label(format!("Artifact {}: {}", index + 1, record.title()))
-                    .aria_selected(self.selected_row == Some(index))
-                    .flex()
-                    .items_center()
-                    .h_8()
-                    .flex_shrink_0()
-                    .cursor_pointer()
-                    .bg(if self.selected_row == Some(index) {
-                        cx.theme().accent
-                    } else {
-                        cx.theme().background
-                    })
-                    .hover(|s| s.bg(cx.theme().muted))
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_row(Some(index), window, cx)
-                    }));
-            for (col, column) in table.columns.iter().enumerate() {
-                row = row.child(
-                    div()
-                        .w(px(160.))
-                        .min_w(px(160.))
-                        .flex_1()
-                        .px_3()
-                        .text_xs()
-                        .truncate()
-                        .when(col == 0, |s| {
-                            s.pl(px(12. + record.depth.min(6) as f32 * 10.))
-                        })
-                        .child(record.text(column)),
-                );
-            }
-            grid = grid.child(row);
-        }
-        if self.indexes.is_empty() {
-            grid = grid.child(
-                div()
-                    .p_4()
-                    .text_sm()
-                    .child("No artifacts match this search."),
-            );
-        }
-        panel = panel.child(
-            div()
-                .id("results-scroll")
-                .flex_1()
-                .min_h_0()
-                .overflow_scroll()
-                .child(grid),
-        );
-        let pages = self.indexes.len().div_ceil(PAGE_SIZE).max(1);
-        panel
+            )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .py_1()
-                    .text_xs()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(format!(
-                        "Page {} of {pages} · click a column to sort",
-                        self.page + 1
-                    ))
+                    .id("table-horizontal-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_x_scroll()
                     .child(
                         div()
+                            .w(px(width))
+                            .min_w_full()
+                            .h_full()
                             .flex()
-                            .gap_1()
+                            .flex_col()
+                            .child(headers)
                             .child(
-                                Button::new("previous-page")
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Previous")
-                                    .disabled(self.page == 0)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.page = this.page.saturating_sub(1);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("next-page")
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Next")
-                                    .disabled(self.page + 1 >= pages)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.page += 1;
-                                        cx.notify();
-                                    })),
+                                div()
+                                    .id("artifact-results-list")
+                                    .role(Role::ListBox)
+                                    .aria_label("Artifact results")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(list),
                             ),
                     ),
             )
             .into_any_element()
     }
+    fn queue_menu(
+        weak: WeakEntity<Self>,
+        mut menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let Some(entity) = weak.upgrade() else {
+            return menu;
+        };
+        cx.observe(&entity, |_, _, cx| cx.notify()).detach();
+        let ws = entity.read(cx);
+        let runs = ws
+            .case
+            .as_ref()
+            .map(|c| {
+                c.document
+                    .runs
+                    .iter()
+                    .rev()
+                    .take(12)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        menu = menu.label("Analysis queue");
+        if runs.is_empty() {
+            return menu.label("No analyses yet");
+        }
+        for run in runs {
+            let id = run.id.clone();
+            let render_id = id.clone();
+            let render_weak = weak.clone();
+            let click_weak = weak.clone();
+            menu = menu.item(
+                PopupMenuItem::element(move |_, cx| {
+                    let text = render_weak
+                        .upgrade()
+                        .and_then(|w| {
+                            w.read(cx)
+                                .case
+                                .as_ref()
+                                .and_then(|c| c.document.runs.iter().find(|r| r.id == render_id))
+                                .map(|r| {
+                                    format!(
+                                        "{} · {} · {} records",
+                                        r.plugin,
+                                        r.status.label(),
+                                        r.row_count
+                                    )
+                                })
+                        })
+                        .unwrap_or_default();
+                    div().text_xs().child(text)
+                })
+                .on_click(move |_, window, cx| {
+                    let _ =
+                        click_weak.update(cx, |this, cx| this.select_run(id.clone(), window, cx));
+                }),
+            );
+            if matches!(run.status, RunStatus::Running | RunStatus::Queued) {
+                let id = run.id;
+                let w = weak.clone();
+                menu = menu.item(PopupMenuItem::new("Cancel analysis").on_click(
+                    move |_, _, cx| {
+                        let _ = w.update(cx, |this, cx| this.cancel_run(id.clone(), cx));
+                    },
+                ));
+            }
+        }
+        let w = weak.clone();
+        menu.separator()
+            .item(
+                PopupMenuItem::new("Analysis history...").on_click(move |_, _, cx| {
+                    let _ = w.update(cx, |this, cx| {
+                        this.view = View::Analyses;
+                        cx.notify();
+                    });
+                }),
+            )
+    }
+}
+
+struct SettingsPanel {
+    workspace: WeakEntity<Workspace>,
+    _subscription: Subscription,
+}
+impl Render for SettingsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.workspace
+            .update(cx, |w, cx| w.render_settings_content(cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+        let file_weak = weak.clone();
         let case_open = self.case.is_some();
-        let case_name = self
-            .case
-            .as_ref()
-            .map(|c| c.document.name.clone())
-            .unwrap_or_else(|| "No case open".into());
         let title = TitleBar::new().child(
             div()
                 .flex()
@@ -1160,131 +1355,73 @@ impl Render for Workspace {
                 )
                 .child(
                     div()
-                        .font_weight(FontWeight::SEMIBOLD)
                         .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
                         .child("volgui"),
                 )
+                .child(div().h_4().w_px().bg(cx.theme().border))
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("MEMORY FORENSICS"),
-                )
-                .child(div().ml_auto().mr_3().text_xs().child(case_name)),
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            Button::new("file-menu")
+                                .ghost()
+                                .xsmall()
+                                .label("File")
+                                .dropdown_caret(true)
+                                .dropdown_menu(move |menu, window, cx| {
+                                    Self::file_menu(file_weak.clone(), menu, window, cx)
+                                }),
+                        ),
+                ),
         );
-        let toolbar = div()
+        let mut toolbar = div()
             .flex()
             .flex_shrink_0()
             .items_center()
+            .gap_1()
             .px_3()
             .py_2()
-            .gap_2()
             .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Button::new("new-case")
+            .border_color(cx.theme().border);
+        for (id, label, view) in [
+            ("nav-workspace", "Workspace", View::Workspace),
+            ("nav-bookmarks", "Bookmarks", View::Bookmarks),
+            ("nav-case", "Case info", View::CaseInfo),
+        ] {
+            toolbar = toolbar.child(
+                Button::new(id)
                     .small()
                     .ghost()
-                    .label("New case")
-                    .disabled(!self.can_switch() || self.has_queued())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::NewCase;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("open-case")
-                    .small()
-                    .ghost()
-                    .label("Open case")
-                    .disabled(!self.can_switch() || self.has_queued())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.choose_path("open", window, cx)),
-                    ),
-            )
-            .child(div().w_px().h_4().mx_1().bg(cx.theme().border))
-            .child(
-                Button::new("nav-workspace")
-                    .small()
-                    .ghost()
-                    .label("Workspace")
-                    .selected(self.view == View::Workspace)
+                    .label(label)
                     .disabled(!case_open)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::Workspace;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("nav-analyses")
-                    .small()
-                    .ghost()
-                    .label("Analyses")
-                    .selected(self.view == View::Analyses)
-                    .disabled(!case_open)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::Analyses;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("nav-bookmarks")
-                    .small()
-                    .ghost()
-                    .label("Bookmarks")
-                    .selected(self.view == View::Bookmarks)
-                    .disabled(!case_open)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::Bookmarks;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("nav-case")
-                    .small()
-                    .ghost()
-                    .label("Case info")
-                    .selected(self.view == View::CaseInfo)
-                    .disabled(!case_open)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::CaseInfo;
-                        cx.notify();
-                    })),
-            )
-            .child(div().ml_auto())
-            .child(
-                Button::new("new-analysis")
-                    .small()
-                    .primary()
-                    .icon(IconName::Plus)
-                    .label("New analysis")
-                    .disabled(!case_open)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::Plugins;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("settings")
-                    .accessibility_label("Application settings")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Settings)
-                    .tooltip("Application settings")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = View::Settings;
+                    .selected(self.view == view)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.view = view;
                         cx.notify();
                     })),
             );
+        }
+        toolbar = toolbar.child(div().ml_auto()).child(
+            Button::new("new-analysis")
+                .small()
+                .primary()
+                .icon(IconName::Plus)
+                .label("New analysis")
+                .disabled(!case_open)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.view = View::Plugins;
+                    cx.notify();
+                })),
+        );
         let content = match self.view {
             View::Welcome => self.render_welcome(cx),
             View::NewCase => self.render_new_case(cx),
-            View::Settings => self.render_settings(cx),
+            View::Workspace => self.render_workspace(cx),
             View::Plugins => self.render_plugins(cx),
             View::Analyses => self.render_analyses(cx),
             View::Bookmarks => self.render_bookmarks(cx),
             View::CaseInfo => self.render_case_info(cx),
-            View::Workspace => self.render_workspace(cx),
         };
         let body = div()
             .flex()
@@ -1302,23 +1439,36 @@ impl Render for Workspace {
                 .filter(|r| r.status == RunStatus::Queued)
                 .count()
         });
+        let running = self.busy.as_ref().is_some_and(|b| b.run_id.is_some());
+        let label = if running || queued > 0 {
+            format!("{} running · {queued} queued", usize::from(running))
+        } else {
+            format!(
+                "{} analyses · Ready",
+                self.case.as_ref().map_or(0, |c| c.document.runs.len())
+            )
+        };
+        let progress = if self.batch_total == 0 {
+            0.
+        } else {
+            self.batch_finished as f32 / self.batch_total as f32 * 100.
+        };
+        let queue_weak = weak;
         let status = div()
             .flex()
             .flex_shrink_0()
-            .h_8()
+            .h(px(38.))
             .items_center()
             .px_3()
             .gap_3()
             .border_t_1()
             .border_color(cx.theme().border)
-            .text_xs()
             .child(
                 Button::new("toggle-sidebar")
-                    .accessibility_label("Toggle evidence sidebar")
                     .xsmall()
                     .ghost()
                     .icon(IconName::PanelLeft)
-                    .tooltip("Toggle evidence sidebar")
+                    .accessibility_label("Toggle evidence sidebar")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.sidebar_visible = !this.sidebar_visible;
                         cx.notify();
@@ -1328,31 +1478,61 @@ impl Render for Workspace {
                 div()
                     .flex_1()
                     .min_w_0()
+                    .text_xs()
                     .truncate()
                     .text_color(cx.theme().muted_foreground)
                     .child(self.message.clone()),
             )
-            .when_some(self.busy.as_ref(), |s, busy| {
-                s.child(div().text_color(rgb(0xd96b87)).child(format!(
-                    "{} · {}s",
-                    busy.label,
-                    busy.started.elapsed().as_secs()
-                )))
-                .child(
-                    Button::new("cancel-background")
-                        .xsmall()
-                        .ghost()
-                        .label("Cancel")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(busy) = &this.busy {
-                                busy.cancel.store(true, Ordering::Relaxed);
-                                this.message = "Cancelling...".into();
-                            }
-                            cx.notify();
-                        })),
-                )
-            })
-            .child(format!("{queued} queued"));
+            .when(
+                self.busy.as_ref().is_some_and(|b| b.run_id.is_none()),
+                |s| {
+                    s.child(
+                        Button::new("cancel-work")
+                            .xsmall()
+                            .ghost()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(b) = &this.busy {
+                                    b.cancel.store(true, Ordering::Relaxed);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .w(px(250.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        Button::new("queue-indicator")
+                            .xsmall()
+                            .ghost()
+                            .label(label)
+                            .tooltip(
+                                self.busy
+                                    .as_ref()
+                                    .map(|busy| busy.label.clone())
+                                    .unwrap_or_else(|| "Recent analyses and queue".into()),
+                            )
+                            .dropdown_caret(true)
+                            .dropdown_menu_with_anchor(
+                                Anchor::BottomRight,
+                                move |menu, window, cx| {
+                                    Self::queue_menu(queue_weak.clone(), menu, window, cx)
+                                },
+                            ),
+                    )
+                    .child(
+                        Progress::new("queue-progress")
+                            .xsmall()
+                            .value(progress)
+                            .loading(running && self.batch_finished == 0)
+                            .accessibility_label("Finished analyses in current batch"),
+                    ),
+            );
         div()
             .flex()
             .flex_col()
@@ -1361,25 +1541,23 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .child(title)
             .child(toolbar)
-            .when_some(self.error.clone(), |s, error| {
+            .when_some(self.error.clone(), |s, e| {
                 s.child(
                     div()
                         .flex()
                         .items_start()
-                        .gap_3()
                         .px_4()
                         .py_2()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
+                        .gap_3()
                         .bg(rgb(0x321d25))
                         .child(
                             div()
                                 .id("error-message")
                                 .flex_1()
-                                .max_h(px(100.))
+                                .max_h(px(70.))
                                 .overflow_y_scroll()
                                 .text_xs()
-                                .child(error),
+                                .child(e),
                         )
                         .child(
                             Button::new("dismiss-error")

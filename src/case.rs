@@ -13,6 +13,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::volatility::{Outcome, Table};
+use crate::{
+    artifacts::OperatingSystem,
+    results::{DATABASE, ResultStore},
+};
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const MANIFEST: &str = "case.volgui.json";
@@ -43,6 +47,8 @@ pub struct Evidence {
     pub added_at: String,
     #[serde(default)]
     pub verification: Option<Verification>,
+    #[serde(default)]
+    pub operating_system: OperatingSystem,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -111,6 +117,7 @@ impl Evidence {
             sha256: format!("{:x}", hash.finalize()),
             added_at: now(),
             verification: None,
+            operating_system: OperatingSystem::Unknown,
         })
     }
 
@@ -238,6 +245,7 @@ impl Case {
                 annotations: vec![],
             },
         };
+        ResultStore::open(&case.directory)?;
         case.save()?;
         Ok(case)
     }
@@ -289,6 +297,20 @@ impl Case {
             document,
             _lock: lock,
         };
+        ResultStore::open(&case.directory)?;
+        for evidence in &mut case.document.evidence {
+            if evidence.operating_system == OperatingSystem::Unknown {
+                evidence.operating_system = case
+                    .document
+                    .runs
+                    .iter()
+                    .rev()
+                    .filter(|r| r.evidence_id == evidence.id)
+                    .map(|r| OperatingSystem::for_plugin(&r.plugin))
+                    .find(|os| *os != OperatingSystem::Unknown)
+                    .unwrap_or_default();
+            }
+        }
         let mut changed = false;
         for run in &mut case.document.runs {
             if matches!(run.status, RunStatus::Running | RunStatus::Queued) {
@@ -372,6 +394,21 @@ impl Case {
     }
 
     pub fn finish(&mut self, id: &str, outcome: &Outcome) -> Result<()> {
+        let store = ResultStore::at(&self.directory);
+        if let Some(table) = &outcome.table {
+            let run = self
+                .document
+                .runs
+                .iter()
+                .find(|r| r.id == id)
+                .ok_or("Unknown analysis")?;
+            store.insert(run, table)?;
+        }
+        let count = if outcome.status == RunStatus::Completed {
+            store.count(id)?
+        } else {
+            0
+        };
         let run = self
             .document
             .runs
@@ -382,7 +419,7 @@ impl Case {
         run.exit_code = outcome.exit_code;
         run.finished_at = Some(now());
         run.message = outcome.message.clone();
-        run.row_count = outcome.table.as_ref().map_or(0, |t| t.rows.len());
+        run.row_count = count;
         self.save()
     }
 
@@ -390,7 +427,12 @@ impl Case {
         if !self.document.runs.iter().any(|r| r.id == id) {
             return Err("Unknown analysis".into());
         }
-        Table::read(&self.run_dir(id).join("stdout.json"))
+        let store = ResultStore::at(&self.directory);
+        if !store.contains(id)? {
+            self.document
+                .migrate_results(&self.directory, &AtomicBool::new(false))?;
+        }
+        store.table(id)
     }
 
     pub fn annotation(&self, run: &str, row: usize) -> Option<&Annotation> {
@@ -440,6 +482,24 @@ impl Case {
 }
 
 impl CaseDocument {
+    pub fn migrate_results(&self, directory: &Path, cancel: &AtomicBool) -> Result<()> {
+        let store = ResultStore::open(directory)?;
+        for run in self
+            .runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Completed)
+        {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Case loading cancelled".into());
+            }
+            if !store.contains(&run.id)? {
+                let table =
+                    Table::read(&directory.join("analyses").join(&run.id).join("stdout.json"))?;
+                store.insert_cancellable(run, &table, cancel)?;
+            }
+        }
+        Ok(())
+    }
     pub fn export(&self, directory: &Path, path: &Path, content: &[u8]) -> Result<()> {
         let parent = path
             .parent()
@@ -454,7 +514,9 @@ impl CaseDocument {
             .any(|e| e.path == canonical || e.path == target)
             || target.file_name().is_some_and(|n| {
                 let name = n.to_string_lossy();
-                name.eq_ignore_ascii_case(MANIFEST) || name.eq_ignore_ascii_case(".volgui.lock")
+                name.eq_ignore_ascii_case(MANIFEST)
+                    || name.eq_ignore_ascii_case(".volgui.lock")
+                    || name.to_ascii_lowercase().starts_with(DATABASE)
             })
             || canonical.starts_with(directory.join("analyses"))
         {
@@ -495,26 +557,13 @@ impl CaseDocument {
             html.push_str(&format!("<tr><td>{}<br>{}</td><td>{}<br>{}</td><td>{} · {} rows<br>Queued {}<br>Started {}<br>Finished {}<br>Exit {:?}</td><td><pre>{}</pre>{}</td></tr>", escape_html(&r.plugin), escape_html(&r.engine_version), escape_html(&r.evidence_id), r.id, r.status.label(), r.row_count, escape_html(&r.created_at), escape_html(r.started_at.as_deref().unwrap_or("Not started")), escape_html(r.finished_at.as_deref().unwrap_or("Not finished")), r.exit_code, escape_html(&serde_json::to_string(&r.command).unwrap_or_default()), escape_html(&r.message)));
         }
         html.push_str("</table><h2>Bookmarked and annotated artifacts</h2>");
-        let mut cached: Option<(String, Table)> = None;
+        let store = ResultStore::at(directory);
         for a in &self.annotations {
-            if cached.as_ref().is_none_or(|(id, _)| id != &a.run_id) {
-                if !self.runs.iter().any(|r| r.id == a.run_id) {
-                    return Err("Unknown annotated analysis".into());
-                }
-                cached = Some((
-                    a.run_id.clone(),
-                    Table::read(
-                        &directory
-                            .join("analyses")
-                            .join(&a.run_id)
-                            .join("stdout.json"),
-                    )?,
-                ));
+            if !self.runs.iter().any(|r| r.id == a.run_id) {
+                return Err("Unknown annotated analysis".into());
             }
-            let table = &cached.as_ref().unwrap().1;
-            let row = table
-                .rows
-                .get(a.row)
+            let row = store
+                .record(&a.run_id, a.row)?
                 .ok_or("Annotated artifact is missing from its output")?;
             html.push_str(&format!(
                 "<h3>{} · row {}{}</h3><p>{}</p><pre>{}</pre>",
@@ -522,7 +571,9 @@ impl CaseDocument {
                 a.row + 1,
                 if a.bookmarked { " · bookmarked" } else { "" },
                 escape_html(&a.note),
-                escape_html(&serde_json::to_string_pretty(&row.fields).map_err(|e| e.to_string())?)
+                escape_html(
+                    &serde_json::to_string_pretty(&row.record.fields).map_err(|e| e.to_string())?
+                )
             ));
         }
         html.push_str("<p>Original evidence is referenced, not copied. Hashes reflect import time unless separately verified. Plugin records are observations and require investigator interpretation.</p></html>");

@@ -13,16 +13,21 @@ let mut case = Case::create(directory, name)?;
 let evidence = Evidence::inspect(image_path, cancel, progress)?;
 case.add_evidence(evidence)?;
 let installation = Installation::discover(settings, cancel)?;
-let run = case.queue(evidence_id, plugin, arguments, &installation)?;
+let run = installation.prepare(&evidence, plugin, arguments, &case.directory.join("analyses"))?;
+case.queue(run.clone())?;
 let outcome = installation.execute(&run, &case.run_dir(&run.id), cancel)?;
-case.finish(&run.id, outcome)?;
-let records = case.results(&run.id)?;
+case.finish(&run.id, &outcome)?;
+let store = ResultStore::at(&case.directory);
+let index = store.query(&Query { runs: vec![run.id], ..Default::default() })?;
+let visible = store.fetch(&index.ids[..index.ids.len().min(128)])?;
 ```
 
 ## Shape
 
 - `case.rs` owns case validation, evidence fingerprints, durable manifests, run history, bookmarks, annotations, exports and recovery of interrupted jobs. Cases contain an ordered run history; each run has its own output directory. Original images are opened read-only.
 - `volatility.rs` owns the external command protocol, plugin discovery, argument tokenization, process cancellation and JSON-tree conversion. Commands use an argument vector without a shell. Output streams go directly to separate files so progress cannot fill a pipe and stall a child.
+- `results.rs` owns the SQLite schema, transactional imports, FTS substring index, numeric sorting, lightweight result IDs, visible-record batches and process hierarchy projection. Connections are short-lived and use WAL with a busy timeout. Existing completed output is imported once on case opening.
+- `artifacts.rs` classifies related plugins into investigator-facing groups and defines evidence OS filters. Several scans can populate one shortcut. Empty groups stay visible and disabled.
 - `ui.rs` owns GPUI state and the reference-inspired workspace. Background threads return events through a channel. Only the UI mutates the active case. Case switching is disabled during background work. A serial analysis queue limits memory pressure and permits cancellation.
 - `settings.rs` owns per-user installation configuration and recent case locations. An installer or launch argument can supply the engine path. No engine executable or Python module enters the application package.
 
@@ -35,7 +40,7 @@ let records = case.results(&run.id)?;
 
 ## Tradeoffs
 
-- Keep case metadata in an atomic JSON manifest and large results in separate files. A database can replace this when cross-case indexing is needed.
+- Keep case metadata in an atomic JSON manifest and completed records in SQLite. Raw JSON remains an audit artifact. UI searches and sorts run on workers; only visible row fields enter a bounded cache. Search text is debounced and stale worker responses are ignored.
 - Run analyses serially to avoid several plugins loading a large memory image simultaneously.
 - Show actual plugin output and field names instead of assigning unverified threat scores or inventing artifacts unavailable in the installed engine.
 - Keep evidence at its original location. Moving a case does not copy large or sensitive images.
