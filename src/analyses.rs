@@ -71,6 +71,7 @@ pub struct AnalysisDraft {
     pub os: OperatingSystem,
     pub selected: BTreeSet<String>,
     pub arguments: BTreeMap<String, String>,
+    selection_anchor: Option<String>,
 }
 impl AnalysisDraft {
     pub fn new(evidence: &Evidence) -> Self {
@@ -83,11 +84,36 @@ impl AnalysisDraft {
             },
             selected: BTreeSet::new(),
             arguments: BTreeMap::new(),
+            selection_anchor: None,
         }
     }
     pub fn set_os(&mut self, os: OperatingSystem) {
         self.os = os;
         self.selected.retain(|id| os.accepts(id));
+        self.selection_anchor = None;
+    }
+    /// Apply a checkbox action in the current displayed order, including filtered ranges.
+    pub fn select(&mut self, id: &str, checked: bool, shift: bool, visible: &[String]) {
+        let target = visible.iter().position(|item| item == id);
+        let anchor = self
+            .selection_anchor
+            .as_ref()
+            .and_then(|anchor| visible.iter().position(|item| item == anchor));
+        let range = match (shift, anchor, target) {
+            (true, Some(anchor), Some(target)) => anchor.min(target)..=anchor.max(target),
+            (_, _, Some(target)) => {
+                self.selection_anchor = Some(id.into());
+                target..=target
+            }
+            _ => return,
+        };
+        for id in &visible[range] {
+            if checked {
+                self.selected.insert(id.clone());
+            } else {
+                self.selected.remove(id);
+            }
+        }
     }
     pub fn prepare(
         &self,

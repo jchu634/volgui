@@ -15,6 +15,56 @@ fn plugin(id: &str) -> Plugin {
 }
 
 #[test]
+fn shift_selection_uses_visible_order_in_both_directions_and_can_clear_ranges() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"synthetic selection fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut draft = AnalysisDraft::new(&evidence);
+    let visible: Vec<String> = ["d", "b", "a", "c", "e"].map(String::from).into();
+
+    draft.select("d", true, false, &visible);
+    draft.select("b", true, false, &visible);
+    draft.select("c", true, true, &visible);
+    assert_eq!(
+        draft.selected,
+        ["a", "b", "c", "d"].map(String::from).into()
+    );
+    draft.select("a", false, true, &visible);
+    assert_eq!(draft.selected, ["c", "d"].map(String::from).into());
+
+    draft.select("e", true, false, &visible);
+    draft.select("a", true, true, &visible);
+    assert_eq!(
+        draft.selected,
+        ["a", "c", "d", "e"].map(String::from).into()
+    );
+}
+
+#[test]
+fn shift_selection_respects_filters_and_separate_evidence_drafts() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"synthetic selection fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut draft = AnalysisDraft::new(&evidence);
+    let all = ["a", "b", "c", "d"].map(String::from);
+    let filtered = ["b", "d"].map(String::from);
+    draft.select("b", true, false, &all);
+    draft.select("d", true, true, &filtered);
+    assert_eq!(draft.selected, ["b", "d"].map(String::from).into());
+
+    let mut other = AnalysisDraft::new(&evidence);
+    other.select("d", true, true, &all);
+    assert_eq!(other.selected, [String::from("d")].into());
+
+    // A hidden anchor falls back to the clicked checkbox, without touching hidden rows.
+    draft.select("a", true, false, &all);
+    draft.select("d", false, true, &filtered);
+    assert_eq!(draft.selected, ["a", "b"].map(String::from).into());
+}
+
+#[test]
 fn basic_catalog_includes_the_requested_tasks_and_sorts_before_advanced() {
     let requested = [
         "windows.info.Info",

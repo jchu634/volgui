@@ -49,6 +49,11 @@ pub struct ProcessNode {
     pub entry: BrowserEntry,
     pub children: Vec<ProcessNode>,
 }
+#[derive(Clone, Debug, Default)]
+pub struct ProcessRelations {
+    pub parent: Option<BrowserEntry>,
+    pub children: Vec<BrowserEntry>,
+}
 
 impl ResultStore {
     pub fn open(directory: &Path) -> Result<Self> {
@@ -67,6 +72,7 @@ impl ResultStore {
             CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,run_id TEXT NOT NULL REFERENCES scans(run_id) ON DELETE CASCADE,row_index INTEGER NOT NULL,depth INTEGER NOT NULL,fields_json TEXT NOT NULL,title TEXT NOT NULL,pid TEXT,ppid TEXT,path TEXT,search_text TEXT NOT NULL,UNIQUE(run_id,row_index));
             CREATE INDEX IF NOT EXISTS records_run ON records(run_id,row_index);
             CREATE INDEX IF NOT EXISTS records_pid ON records(run_id,pid);
+            CREATE INDEX IF NOT EXISTS records_ppid ON records(run_id,ppid);
             CREATE VIRTUAL TABLE IF NOT EXISTS record_search USING fts5(search_text,tokenize='trigram');
             PRAGMA user_version=1;") .map_err(|e|format!("Cannot initialize results database: {e}"))?;
         Ok(store)
@@ -201,18 +207,20 @@ impl ResultStore {
         }
         let db = self.connect()?;
         let mut columns = BTreeSet::new();
+        let mut groups = HashSet::new();
         for run in &query.runs {
-            if let Some(json) = db
+            if let Some((json, plugin)) = db
                 .query_row(
-                    "SELECT columns_json FROM scans WHERE run_id=?1",
+                    "SELECT columns_json,plugin FROM scans WHERE run_id=?1",
                     [run],
-                    |r| r.get::<_, String>(0),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
                 )
                 .optional()
                 .map_err(|e| e.to_string())?
             {
                 columns
                     .extend(serde_json::from_str::<Vec<String>>(&json).map_err(|e| e.to_string())?);
+                groups.insert(ArtifactGroup::for_plugin(&plugin));
             }
         }
         let mut columns: Vec<_> = columns.into_iter().collect();
@@ -252,15 +260,44 @@ impl ResultStore {
             if !columns.contains(column) {
                 return Err("Unknown sort column".into());
             }
-            sql.push_str(if *descending {
-                " ORDER BY json_extract(r.fields_json,?) DESC,r.id"
-            } else {
-                " ORDER BY json_extract(r.fields_json,?) ASC,r.id"
-            });
-            values.push(SqlValue::Text(format!(
-                "$.{}",
-                serde_json::to_string(column).map_err(|e| e.to_string())?
-            )));
+            let direction = if *descending { "DESC" } else { "ASC" };
+            sql.push_str(" ORDER BY ");
+            let group = (groups.len() == 1)
+                .then(|| groups.iter().next().copied())
+                .flatten();
+            let displayed = crate::result_table::columns(group, &columns);
+            let sort_fields: Vec<_> = displayed
+                .iter()
+                .find(|c| &c.key == column)
+                .map(|c| c.sort_fields().collect())
+                .unwrap_or_else(|| vec![std::slice::from_ref(column)]);
+            for (i, fields) in sort_fields.iter().enumerate() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                if fields.len() > 1 {
+                    sql.push_str("COALESCE(");
+                }
+                for (j, field) in fields.iter().enumerate() {
+                    if j > 0 {
+                        sql.push(',');
+                    }
+                    sql.push_str(if fields.len() > 1 {
+                        "NULLIF(json_extract(r.fields_json,?),'')"
+                    } else {
+                        "json_extract(r.fields_json,?)"
+                    });
+                    values.push(SqlValue::Text(format!(
+                        "$.{}",
+                        serde_json::to_string(field).map_err(|e| e.to_string())?
+                    )));
+                }
+                if fields.len() > 1 {
+                    sql.push(')');
+                }
+                sql.push_str(&format!(" {direction}"));
+            }
+            sql.push_str(",r.id");
         } else {
             sql.push_str(" ORDER BY r.id");
         }
@@ -356,6 +393,71 @@ impl ResultStore {
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())
+    }
+    pub fn process_record(&self, runs: &[String], pid: &str) -> Result<Option<StoredRecord>> {
+        let db = self.connect()?;
+        for run in runs {
+            let id = db
+                .query_row(
+                    "SELECT id FROM records WHERE run_id=?1 AND pid=?2 ORDER BY row_index LIMIT 1",
+                    params![run, pid],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(id) = id {
+                return self.fetch(&[id]).map(|mut records| records.pop());
+            }
+        }
+        Ok(None)
+    }
+    pub fn process_relations(&self, runs: &[String], pid: &str) -> Result<ProcessRelations> {
+        if runs.is_empty() || pid.is_empty() {
+            return Ok(ProcessRelations::default());
+        }
+        let db = self.connect()?;
+        let find = |field: &str, value: &str| -> Result<Vec<BrowserEntry>> {
+            let marks = std::iter::repeat_n("?", runs.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut sql = format!(
+                "SELECT id,title,pid,ppid,path FROM records WHERE run_id IN ({marks}) AND {field}=? ORDER BY CASE run_id "
+            );
+            let mut values: Vec<_> = runs.iter().cloned().map(SqlValue::Text).collect();
+            values.push(SqlValue::Text(value.into()));
+            for (i, run) in runs.iter().enumerate() {
+                sql.push_str(&format!("WHEN ? THEN {i} "));
+                values.push(SqlValue::Text(run.clone()));
+            }
+            sql.push_str("END,row_index");
+            let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
+            stmt.query_map(params_from_iter(values), |r| {
+                Ok(BrowserEntry {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    pid: r.get(2)?,
+                    ppid: r.get(3)?,
+                    path: r.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
+        };
+        let current = find("pid", pid)?.into_iter().next();
+        let parent = match current.and_then(|r| r.ppid).filter(|p| p != pid) {
+            Some(ppid) => find("pid", &ppid)?.into_iter().next(),
+            None => None,
+        };
+        let mut seen = HashSet::new();
+        let children = find("ppid", pid)?
+            .into_iter()
+            .filter(|r| {
+                r.pid.as_deref() != Some(pid)
+                    && r.pid.as_ref().is_some_and(|p| seen.insert(p.clone()))
+            })
+            .collect();
+        Ok(ProcessRelations { parent, children })
     }
     pub fn table(&self, run: &str) -> Result<Table> {
         let index = self.query(&Query {

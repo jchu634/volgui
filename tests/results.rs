@@ -31,6 +31,149 @@ fn run(id: &str, plugin: &str) -> Run {
 }
 
 #[test]
+fn combined_network_endpoint_sort_uses_address_then_numeric_port() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let scan = run("network", "windows.netscan.NetScan");
+    let table = Table::parse(
+        &json!([
+            {"ForeignAddr":"198.51.100.2", "ForeignPort":80},
+            {"ForeignAddr":"198.51.100.1", "ForeignPort":443},
+            {"ForeignAddr":"198.51.100.1", "ForeignPort":80},
+            {"ForeignAddr":"198.51.100.1", "ForeignPort":9},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    store.insert(&scan, &table).unwrap();
+    let column = volgui_again::result_table::columns(Some(ArtifactGroup::Network), &table.columns)
+        .into_iter()
+        .find(|c| c.label == "Target")
+        .unwrap();
+    for (descending, expected) in [
+        (
+            false,
+            vec![
+                "198.51.100.1:9",
+                "198.51.100.1:80",
+                "198.51.100.1:443",
+                "198.51.100.2:80",
+            ],
+        ),
+        (
+            true,
+            vec![
+                "198.51.100.2:80",
+                "198.51.100.1:443",
+                "198.51.100.1:80",
+                "198.51.100.1:9",
+            ],
+        ),
+    ] {
+        let index = store
+            .query(&Query {
+                runs: vec![scan.id.clone()],
+                text: String::new(),
+                sort: Some((column.key.clone(), descending)),
+            })
+            .unwrap();
+        let rows = store.fetch(&index.ids).unwrap();
+        let ordered = index
+            .ids
+            .iter()
+            .map(|id| column.text(&rows.iter().find(|r| r.id == *id).unwrap().record))
+            .collect::<Vec<_>>();
+        assert_eq!(ordered, expected);
+    }
+}
+
+#[test]
+fn file_name_column_reads_and_sorts_across_plugins_with_different_field_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let files = run("files", "windows.filescan.FileScan");
+    let handles = run("handles", "windows.handles.Handles");
+    store
+        .insert(
+            &files,
+            &Table::parse(r#"[{"FileName":"alpha.txt"}]"#).unwrap(),
+        )
+        .unwrap();
+    store
+        .insert(
+            &handles,
+            &Table::parse(r#"[{"Name":"zulu.txt"},{"Name":null,"FileName":"middle.txt"}]"#)
+                .unwrap(),
+        )
+        .unwrap();
+    let query = Query {
+        runs: vec![files.id, handles.id],
+        text: String::new(),
+        sort: Some(("Name".into(), false)),
+    };
+    let index = store.query(&query).unwrap();
+    let columns = volgui_again::result_table::columns(Some(ArtifactGroup::Files), &index.columns);
+    assert_eq!(columns.len(), 1);
+    let rows = store.fetch(&index.ids).unwrap();
+    let names = index
+        .ids
+        .iter()
+        .map(|id| columns[0].text(&rows.iter().find(|r| r.id == *id).unwrap().record))
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["alpha.txt", "middle.txt", "zulu.txt"]);
+}
+
+#[test]
+fn process_relationships_use_saved_rows_and_respect_source_priority() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let list = run("list", "windows.pslist.PsList");
+    let scan = run("scan", "windows.psscan.PsScan");
+    store.insert(&list,&Table::parse(r#"[{"PID":1,"PPID":0,"ImageFileName":"parent"},{"PID":2,"PPID":1,"ImageFileName":"selected"},{"PID":3,"PPID":2,"ImageFileName":"child"},{"PID":4,"PPID":2,"ImageFileName":"second child"}]"#).unwrap()).unwrap();
+    store
+        .insert(
+            &scan,
+            &Table::parse(r#"[{"PID":3,"PPID":2,"ImageFileName":"duplicate child"}]"#).unwrap(),
+        )
+        .unwrap();
+    let sources = vec!["list".into(), "scan".into()];
+    let relations = store.process_relations(&sources, "2").unwrap();
+    assert_eq!(relations.parent.unwrap().title, "parent");
+    assert_eq!(relations.children.len(), 2);
+    assert!(relations.children.iter().any(|r| r.title == "child"));
+    assert!(
+        !relations
+            .children
+            .iter()
+            .any(|r| r.title == "duplicate child")
+    );
+    assert_eq!(
+        store
+            .process_record(&sources, "3")
+            .unwrap()
+            .unwrap()
+            .record
+            .title(),
+        "child"
+    );
+    assert!(store.process_record(&sources, "999").unwrap().is_none());
+    assert!(
+        store
+            .process_relations(&sources, "1")
+            .unwrap()
+            .parent
+            .is_none()
+    );
+    assert!(
+        store
+            .process_relations(&[], "2")
+            .unwrap()
+            .children
+            .is_empty()
+    );
+}
+
+#[test]
 fn sqlite_preserves_rows_and_supports_literal_search_numeric_sort_and_grouped_sources() {
     let temp = tempfile::tempdir().unwrap();
     let store = ResultStore::open(temp.path()).unwrap();

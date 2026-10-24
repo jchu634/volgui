@@ -69,8 +69,25 @@ fn main() -> Result<(), String> {
                 ),
                 (
                     "ImageFileName".into(),
-                    json!(format!("test-process-{i}.exe")),
+                    json!(if i == 4999 {
+                        "longest-process-name-outside-the-initial-row-cache.exe".into()
+                    } else {
+                        format!("test-process-{i}.exe")
+                    }),
                 ),
+                (
+                    "CreateTime".into(),
+                    json!("2026-10-24T18:03:09.123456+11:00"),
+                ),
+                ("ExitTime".into(), json!("N/A")),
+                ("Threads".into(), json!(14)),
+                ("SessionId".into(), json!(1)),
+                ("Audit".into(), json!("Synthetic audit data")),
+                ("Cmd".into(), json!("synthetic-process --fixture")),
+                ("File output".into(), json!("Disabled")),
+                ("Handles".into(), json!("N/A")),
+                ("Offset(V)".into(), json!(156735441006912_u64 + i)),
+                ("Wow64".into(), json!(false)),
             ]),
         })
         .collect();

@@ -1,15 +1,23 @@
+mod artifacts_view;
+mod navigation;
+mod popups;
 mod views;
 
 use gpui_kit::{
     assets::IconName,
+    base::{Button as ActionButton, InteractiveElementExt, Link as TextLink, SelectableText},
     component::{
-        ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt,
+        ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar, VirtualListScrollHandle,
+        WindowExt,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
         input::{Input, InputEvent, InputState, Textarea, TextareaState},
         list::ListItem,
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
-        progress::Progress,
+        popover::Popover,
+        progress::ProgressCircle,
+        resizable::{HandleEdge, resizable_panel, resize_handle, v_resizable},
+        scroll::{ScrollableElement, Scrollbar, ScrollbarMode},
         tooltip::Tooltip,
         tree::{Tree, TreeItem, TreeState},
         v_virtual_list,
@@ -18,7 +26,8 @@ use gpui_kit::{
     *,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    cell::{Cell, RefCell},
+    collections::{BTreeSet, HashMap, HashSet},
     ops::Range,
     path::PathBuf,
     rc::Rc,
@@ -34,8 +43,10 @@ use volgui_again::{
     analyses::{AnalysisDraft, basic_label, chooser_plugins},
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, RunStatus, now},
+    result_table as table,
     results::{
-        BrowserEntry, ProcessNode, Query, ResultIndex, ResultStore, StoredRecord, process_forest,
+        BrowserEntry, ProcessNode, ProcessRelations, Query, ResultIndex, ResultStore, StoredRecord,
+        process_forest,
     },
     settings::Settings,
     volatility::{Installation, Outcome, display_value, format_arguments},
@@ -73,11 +84,13 @@ enum Event {
         Vec<i64>,
         std::result::Result<Vec<StoredRecord>, String>,
     ),
+    ColumnFitted(u64, u64, String, std::result::Result<Pixels, String>),
     Selected(u64, std::result::Result<Option<StoredRecord>, String>),
     Browser(
         u64,
         std::result::Result<(Vec<BrowserEntry>, Vec<ProcessNode>), String>,
     ),
+    Relations(u64, std::result::Result<ProcessRelations, String>),
     Help(String, std::result::Result<String, String>),
     Exported(std::result::Result<PathBuf, String>),
 }
@@ -99,6 +112,8 @@ pub struct Workspace {
     installation: Option<Installation>,
     case: Option<Case>,
     view: View,
+    back_stack: Vec<navigation::Location>,
+    workspace_focus: FocusHandle,
     detail: DetailTab,
     selected_evidence: Option<String>,
     selected_run: Option<String>,
@@ -123,6 +138,22 @@ pub struct Workspace {
     browser_due: Option<Instant>,
     browser_loading: bool,
     result_scroll: UniformListScrollHandle,
+    table_x_scroll: ScrollHandle,
+    browser_scroll: VirtualListScrollHandle,
+    details_scroll: ScrollHandle,
+    relations_scroll: UniformListScrollHandle,
+    column_widths: HashMap<String, Pixels>,
+    column_drag_origin: Rc<Cell<Pixels>>,
+    column_fit_epoch: Arc<AtomicU64>,
+    relations: ProcessRelations,
+    relation_epoch: u64,
+    raw_expanded: HashSet<String>,
+    raw_expand_all: bool,
+    queue_open: bool,
+    popup_panels: RefCell<HashMap<popups::PanelKind, Entity<popups::PopupPanel>>>,
+    artifact_open: Option<ArtifactGroup>,
+    artifact_choices: HashMap<ArtifactGroup, BTreeSet<String>>,
+    analysis_group_filter: Option<ArtifactGroup>,
     sidebar_visible: bool,
     busy: Option<Busy>,
     queue_paused: bool,
@@ -171,6 +202,13 @@ fn heading(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(cx.theme().muted_foreground)
+        .child(text.into())
+}
+fn record_link(id: impl Into<ElementId>, text: impl Into<SharedString>, cx: &App) -> TextLink {
+    TextLink::new(id)
+        .text_color(cx.theme().link)
+        .underline()
+        .cursor_pointer()
         .child(text.into())
 }
 fn section(text: impl Into<SharedString>, cx: &App) -> Div {
@@ -267,6 +305,8 @@ impl Workspace {
             installation: None,
             case: None,
             view: View::Welcome,
+            back_stack: Vec::new(),
+            workspace_focus: cx.focus_handle(),
             detail: DetailTab::Overview,
             selected_evidence: None,
             selected_run: None,
@@ -291,6 +331,22 @@ impl Workspace {
             browser_due: None,
             browser_loading: false,
             result_scroll: UniformListScrollHandle::default(),
+            table_x_scroll: ScrollHandle::default(),
+            browser_scroll: VirtualListScrollHandle::new(),
+            details_scroll: ScrollHandle::default(),
+            relations_scroll: UniformListScrollHandle::default(),
+            column_widths: HashMap::new(),
+            column_drag_origin: Rc::new(Cell::new(px(0.))),
+            column_fit_epoch: Arc::new(AtomicU64::new(0)),
+            relations: ProcessRelations::default(),
+            relation_epoch: 0,
+            raw_expanded: HashSet::new(),
+            raw_expand_all: false,
+            queue_open: false,
+            popup_panels: RefCell::new(HashMap::new()),
+            artifact_open: None,
+            artifact_choices: HashMap::new(),
+            analysis_group_filter: None,
             sidebar_visible: true,
             busy: None,
             queue_paused: false,
@@ -438,6 +494,7 @@ impl Workspace {
         self.batch_total = 0;
         self.batch_finished = 0;
         self.view = View::Workspace;
+        self.artifact_choices.clear();
         self.message = "Case opened".into();
         window.set_window_title("VolGUI");
         if let Err(e) = self.settings.remember(path) {
@@ -460,6 +517,7 @@ impl Workspace {
         {
             self.select_run(id, window, cx);
         }
+        self.back_stack.clear();
     }
     fn sync_os(&mut self) {
         if let Some(os) = self
@@ -802,6 +860,9 @@ impl Workspace {
         if !self.save_note(cx) {
             return;
         }
+        self.remember_location(cx);
+        self.artifact_choices.clear();
+        self.artifact_open = None;
         self.selected_evidence = Some(id);
         self.sync_os();
         self.selected = None;
@@ -810,18 +871,25 @@ impl Workspace {
         self.scope.clear();
         self.index = ResultIndex::default();
         self.refresh_browser(cx);
-        self.choose_group(self.browser_group, window, cx);
+        self.set_scope(
+            self.group_runs(self.browser_group),
+            self.browser_group.label().into(),
+            window,
+            cx,
+        );
     }
     fn choose_group(&mut self, group: ArtifactGroup, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_location(cx);
         let runs = self.group_runs(group);
         self.set_scope(runs, group.label().into(), window, cx);
     }
     fn set_browser(&mut self, group: ArtifactGroup, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_location(cx);
         self.browser_group = group;
         self.browser_query
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.refresh_browser(cx);
-        self.choose_group(group, window, cx);
+        self.set_scope(self.group_runs(group), group.label().into(), window, cx);
     }
     fn select_run(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(run) = self
@@ -832,7 +900,9 @@ impl Workspace {
         else {
             return;
         };
+        self.remember_location(cx);
         if Some(&run.evidence_id) != self.selected_evidence.as_ref() {
+            self.artifact_choices.clear();
             self.selected_evidence = Some(run.evidence_id.clone());
             self.sync_os();
             self.refresh_browser(cx);
@@ -850,6 +920,9 @@ impl Workspace {
             return;
         }
         self.scope = runs;
+        self.selection_epoch += 1;
+        self.relation_epoch += 1;
+        self.relations = ProcessRelations::default();
         self.scope_label = label;
         self.selected = None;
         self.selected_row = None;
@@ -926,6 +999,9 @@ impl Workspace {
         let Some(store) = self.store() else {
             return;
         };
+        if self.selected.as_ref().is_none_or(|r| r.id != id) {
+            self.remember_location(cx);
+        }
         self.selection_epoch += 1;
         let epoch = self.selection_epoch;
         let tx = self.tx.clone();
@@ -936,6 +1012,28 @@ impl Workspace {
             ));
         });
     }
+    fn open_process(&mut self, pid: String, cx: &mut Context<Self>) {
+        if !self.save_note(cx) {
+            return;
+        }
+        let Some(store) = self.store() else {
+            return;
+        };
+        self.remember_location(cx);
+        self.selection_epoch += 1;
+        let epoch = self.selection_epoch;
+        let mut runs = self.group_runs(ArtifactGroup::Processes);
+        runs.sort_by_key(|id| {
+            self.case
+                .as_ref()
+                .and_then(|c| c.document.runs.iter().find(|r| &r.id == id))
+                .is_none_or(|r| !r.plugin.ends_with("pslist.PsList"))
+        });
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Event::Selected(epoch, store.process_record(&runs, &pid)));
+        });
+    }
     fn load_annotation(&mut self, run: String, row: usize, cx: &mut Context<Self>) {
         if !self.save_note(cx) {
             return;
@@ -943,6 +1041,7 @@ impl Workspace {
         let Some(store) = self.store() else {
             return;
         };
+        self.remember_location(cx);
         self.selection_epoch += 1;
         let epoch = self.selection_epoch;
         let tx = self.tx.clone();
@@ -960,6 +1059,32 @@ impl Workspace {
             .map(|a| a.note.clone())
             .unwrap_or_default();
         self.selected = Some(Arc::new(record));
+        self.raw_expanded.clear();
+        self.details_scroll.set_offset(Point::default());
+        self.relation_epoch += 1;
+        self.relations = ProcessRelations::default();
+        if let Some(pid) = self.selected.as_ref().and_then(|r| {
+            ["PID", "Pid", "pid"]
+                .iter()
+                .find_map(|name| r.record.fields.get(*name).map(display_value))
+        }) && let Some(store) = self.store()
+        {
+            let mut runs = self.group_runs(ArtifactGroup::Processes);
+            runs.sort_by_key(|id| {
+                self.case
+                    .as_ref()
+                    .and_then(|c| c.document.runs.iter().find(|r| &r.id == id))
+                    .is_none_or(|r| !r.plugin.ends_with("pslist.PsList"))
+            });
+            let epoch = self.relation_epoch;
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send(Event::Relations(
+                    epoch,
+                    store.process_relations(&runs, &pid),
+                ));
+            });
+        }
         self.note.update(cx, |s, cx| s.set_value(note, window, cx));
         if self.browser_group == ArtifactGroup::Processes {
             let item = self
@@ -1174,6 +1299,14 @@ impl Workspace {
                     }
                 }
                 Event::Progress(s) => self.message = s,
+                Event::Relations(epoch, result) => {
+                    if epoch == self.relation_epoch {
+                        match result {
+                            Ok(relations) => self.relations = relations,
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
+                }
                 Event::Imported(results) => {
                     self.busy = None;
                     let mut added = Vec::new();
@@ -1191,6 +1324,7 @@ impl Workspace {
                         }
                     }
                     if !added.is_empty() {
+                        self.artifact_choices.clear();
                         self.query_epoch.fetch_add(1, Ordering::Relaxed);
                         self.selection_epoch += 1;
                         self.selected = None;
@@ -1266,6 +1400,19 @@ impl Workspace {
                         Err(e) => self.error = Some(e),
                     }
                 }
+                Event::ColumnFitted(query_epoch, fit_epoch, column, result) => {
+                    if query_epoch != self.query_epoch.load(Ordering::Relaxed)
+                        || fit_epoch != self.column_fit_epoch.load(Ordering::Relaxed)
+                    {
+                        continue;
+                    }
+                    match result {
+                        Ok(width) => {
+                            self.column_widths.insert(column, width);
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
                 Event::Rows(epoch, ids, result) => {
                     if epoch != self.query_epoch.load(Ordering::Relaxed) {
                         continue;
@@ -1291,6 +1438,20 @@ impl Workspace {
                     }
                     match result {
                         Ok(Some(r)) => {
+                            if let Some(evidence) = self
+                                .case
+                                .as_ref()
+                                .and_then(|case| {
+                                    case.document.runs.iter().find(|run| run.id == r.run_id)
+                                })
+                                .map(|run| run.evidence_id.clone())
+                                && self.selected_evidence.as_ref() != Some(&evidence)
+                            {
+                                self.selected_evidence = Some(evidence);
+                                self.artifact_choices.clear();
+                                self.sync_os();
+                                self.refresh_browser(cx);
+                            }
                             self.view = View::Workspace;
                             if !self.scope.contains(&r.run_id) {
                                 let run = r.run_id.clone();

@@ -49,6 +49,7 @@ fn main() {
             theme.colors.button_primary_active = rgb(0x90314c).into();
             theme.colors.button_primary_foreground = rgb(0xffffff).into();
             theme.colors.accent = rgb(0x30212a).into();
+            theme.colors.link = rgb(0x60a5fa).into();
             theme.list.active_highlight = false;
             theme.colors.ring = rgb(0xc86280).into();
         });

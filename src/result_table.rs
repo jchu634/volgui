@@ -1,0 +1,386 @@
+use crate::{
+    artifacts::ArtifactGroup,
+    volatility::{Record, display_value},
+};
+use chrono::{DateTime, NaiveDateTime};
+
+/// A displayed column keeps its original field key for sorting and saved widths.
+#[derive(Clone, Debug)]
+pub struct Column {
+    pub key: String,
+    pub label: String,
+    fields: Vec<String>,
+    ports: Vec<String>,
+}
+
+impl Column {
+    pub fn text(&self, record: &Record) -> String {
+        let value = field_text(record, &self.fields);
+        if self.ports.is_empty() {
+            cell_text(&value)
+        } else {
+            endpoint_text(&value, &field_text(record, &self.ports))
+        }
+    }
+
+    /// Each list is a coalesced value; an endpoint adds its port as a tie breaker.
+    pub fn sort_fields(&self) -> impl Iterator<Item = &[String]> {
+        std::iter::once(self.fields.as_slice())
+            .chain((!self.ports.is_empty()).then_some(self.ports.as_slice()))
+    }
+
+    pub fn default_width(&self) -> f32 {
+        match normalized(&self.label).as_str() {
+            "pid" | "ppid" | "tid" | "fd" | "count" | "handles" | "references" | "pointers" => 72.,
+            "sessionid" => 96.,
+            "threads" => 88.,
+            "protocol" => 96.,
+            "createtime" | "exittime" | "created" | "modified" | "accesstime" => 240.,
+            "process" | "target" | "source" => 220.,
+            "path" => 300.,
+            _ => 180.,
+        }
+    }
+}
+
+fn normalized(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn find_fields(available: &[String], aliases: &[&str]) -> Vec<String> {
+    aliases
+        .iter()
+        .flat_map(|alias| {
+            available
+                .iter()
+                .filter(move |name| normalized(name) == normalized(alias))
+                .cloned()
+        })
+        .collect()
+}
+
+fn field_text(record: &Record, fields: &[String]) -> String {
+    fields
+        .iter()
+        .filter_map(|field| record.fields.get(field))
+        .find(|value| !value.is_null() && value.as_str() != Some(""))
+        .map(display_value)
+        .unwrap_or_else(|| {
+            fields
+                .first()
+                .map(|field| record.text(field))
+                .unwrap_or_default()
+        })
+}
+
+/// Present common artifact fields in investigation order without changing stored records.
+pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column> {
+    let fields: &[(&str, &[&str])] = match group {
+        Some(ArtifactGroup::Processes) => &[
+            ("Process", &["ImageFileName", "COMM", "Process", "Name"]),
+            ("PID", &["PID"]),
+            ("PPID", &["PPID"]),
+            ("SessionID", &["SessionID"]),
+            ("Threads", &["Threads"]),
+            ("Path", &["Path", "FilePath", "ImagePath"]),
+            ("CreateTime", &["CreateTime", "Created", "StartTime"]),
+            ("ExitTime", &["ExitTime"]),
+        ],
+        Some(ArtifactGroup::Network) => &[
+            ("PID", &["PID"]),
+            (
+                "Target",
+                &["ForeignAddr", "RemoteAddr", "DstAddr", "Target"],
+            ),
+            ("Source", &["LocalAddr", "SrcAddr", "Source"]),
+            ("Protocol", &["Proto", "Protocol"]),
+            ("State", &["State"]),
+            ("Owner", &["Owner", "Process", "ProcessName"]),
+            ("Created", &["Created", "CreateTime"]),
+        ],
+        Some(ArtifactGroup::Files) => &[("Name", &["Name", "FileName", "Path", "FilePath"])],
+        _ => {
+            return available
+                .iter()
+                .filter(|name| visible_column(name))
+                .map(|name| Column {
+                    key: name.clone(),
+                    label: name.clone(),
+                    fields: vec![name.clone()],
+                    ports: vec![],
+                })
+                .collect();
+        }
+    };
+    fields
+        .iter()
+        .filter_map(|(label, aliases)| {
+            let fields = find_fields(available, aliases);
+            let key = fields.first()?.clone();
+            let ports = if group == Some(ArtifactGroup::Network) {
+                endpoint_ports(&key, available)
+            } else {
+                vec![]
+            };
+            Some(Column {
+                key,
+                label: (*label).into(),
+                fields,
+                ports,
+            })
+        })
+        .collect()
+}
+
+fn endpoint_ports(address: &str, available: &[String]) -> Vec<String> {
+    let aliases: &[&str] = match normalized(address).as_str() {
+        "foreignaddr" | "remoteaddr" | "dstaddr" | "target" => {
+            &["ForeignPort", "RemotePort", "DstPort", "TargetPort"]
+        }
+        "localaddr" | "srcaddr" | "source" => &["LocalPort", "SrcPort", "SourcePort"],
+        _ => return vec![],
+    };
+    find_fields(available, aliases)
+}
+
+fn endpoint_text(address: &str, port: &str) -> String {
+    if port.is_empty() || matches!(port, "N/A" | "null") {
+        return address.into();
+    }
+    if address.is_empty() || matches!(address, "N/A" | "null") {
+        return address.into();
+    }
+    if address.contains(':') && !address.starts_with('[') {
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
+    }
+}
+
+fn visible_column(name: &str) -> bool {
+    if name == "__source" {
+        return false;
+    }
+    let name: String = name.chars().filter(char::is_ascii_alphanumeric).collect();
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "sourcescan"
+            | "audit"
+            | "cmd"
+            | "fileoutput"
+            | "handles"
+            | "offset"
+            | "offsetv"
+            | "offsetp"
+            | "wow64"
+    )
+}
+
+/// Compact table presentation only. The stored value is kept for details and exports.
+pub fn cell_text(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return value.into();
+    }
+    let timestamp = DateTime::parse_from_rfc3339(value)
+        .or_else(|_| DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f%:z"))
+        .or_else(|_| DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f %:z"))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(
+                value.strip_suffix(" UTC").unwrap_or(value),
+                "%Y-%m-%d %H:%M:%S%.f",
+            )
+            .map(|time| time.and_utc().fixed_offset())
+        });
+    match timestamp {
+        Ok(time) => time.format("%H:%M:%S (%d-%m-%Y)(%:z)").to_string(),
+        Err(_) => value.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::volatility::Table;
+    use serde_json::json;
+
+    #[test]
+    fn process_columns_follow_investigation_order_and_keep_original_keys() {
+        let available = [
+            "Threads",
+            "ExitTime",
+            "PID",
+            "ImageFileName",
+            "SessionId",
+            "PPID",
+            "Path",
+            "CreateTime",
+            "Audit",
+        ]
+        .map(String::from);
+        let columns = columns(Some(ArtifactGroup::Processes), &available);
+        assert_eq!(
+            columns.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            [
+                "Process",
+                "PID",
+                "PPID",
+                "SessionID",
+                "Threads",
+                "Path",
+                "CreateTime",
+                "ExitTime"
+            ]
+        );
+        assert_eq!(columns[0].key, "ImageFileName");
+        assert_eq!(columns[3].key, "SessionId");
+        assert!(
+            columns[1..5]
+                .iter()
+                .all(|column| column.default_width() <= 96.)
+        );
+        let linux = columns_for_linux();
+        assert_eq!(
+            linux.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["Process", "PID", "PPID"]
+        );
+        assert_eq!(linux[0].key, "COMM");
+    }
+
+    fn columns_for_linux() -> Vec<Column> {
+        columns(
+            Some(ArtifactGroup::Processes),
+            &["COMM".into(), "PID".into(), "PPID".into()],
+        )
+    }
+
+    #[test]
+    fn network_columns_combine_endpoints_including_ipv6_and_zero_ports() {
+        let table = Table::parse(
+            &json!([{
+                "PID": 624, "ForeignAddr": "2001:db8::1", "ForeignPort": 443,
+                "LocalAddr": "0.0.0.0", "LocalPort": 0, "Proto": "TCPv6",
+                "State": "ESTABLISHED", "Owner": "test.exe", "Created": "2026-10-24T07:03:09Z",
+                "Offset": 1234,
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        let columns = columns(Some(ArtifactGroup::Network), &table.columns);
+        assert_eq!(
+            columns.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            [
+                "PID", "Target", "Source", "Protocol", "State", "Owner", "Created"
+            ]
+        );
+        assert_eq!(
+            columns
+                .iter()
+                .map(|c| c.text(&table.rows[0]))
+                .collect::<Vec<_>>(),
+            [
+                "624",
+                "[2001:db8::1]:443",
+                "0.0.0.0:0",
+                "TCPv6",
+                "ESTABLISHED",
+                "test.exe",
+                "07:03:09 (24-10-2026)(+00:00)"
+            ]
+        );
+        assert_eq!(endpoint_text("[::]", "80"), "[::]:80");
+        assert_eq!(endpoint_text("*", "*"), "*:*");
+        assert_eq!(endpoint_text("198.51.100.1", ""), "198.51.100.1");
+        assert_eq!(endpoint_text("N/A", "443"), "N/A");
+    }
+
+    #[test]
+    fn network_aliases_and_files_keep_their_raw_fields_for_details() {
+        let table = Table::parse(
+            &json!([{
+                "PID": 12, "Dst Addr": "198.51.100.1", "Dst Port": 53,
+                "Src Addr": "192.0.2.1", "Src Port": 3000, "Protocol": "UDP",
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        let network = columns(Some(ArtifactGroup::Network), &table.columns);
+        assert_eq!(network[1].text(&table.rows[0]), "198.51.100.1:53");
+        assert_eq!(network[2].text(&table.rows[0]), "192.0.2.1:3000");
+        let files = columns(
+            Some(ArtifactGroup::Files),
+            &["FileName".into(), "Offset".into()],
+        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].label, "Name");
+        assert_eq!(files[0].key, "FileName");
+        assert_eq!(table.rows[0].text("Dst Port"), "53");
+    }
+
+    #[test]
+    fn timestamps_keep_their_original_offset_and_drop_fractional_seconds() {
+        for value in [
+            "2026-10-24T18:03:09.123456+11:00",
+            "2026-10-24 18:03:09.123456+11:00",
+            "2026-10-24 18:03:09 +11:00",
+        ] {
+            assert_eq!(cell_text(value), "18:03:09 (24-10-2026)(+11:00)");
+        }
+        assert_eq!(
+            cell_text("2026-10-24T07:03:09Z"),
+            "07:03:09 (24-10-2026)(+00:00)"
+        );
+        assert_eq!(
+            cell_text("2026-10-24 07:03:09.000000 UTC"),
+            "07:03:09 (24-10-2026)(+00:00)"
+        );
+        assert_eq!(
+            cell_text("2026-10-24T07:03:09-03:30"),
+            "07:03:09 (24-10-2026)(-03:30)"
+        );
+        for value in [
+            "N/A",
+            "Disabled",
+            "624",
+            "csrss.exe",
+            "2026-10-24",
+            "invalid time",
+        ] {
+            assert_eq!(cell_text(value), value);
+        }
+    }
+
+    #[test]
+    fn noisy_columns_are_hidden_with_the_engine_spelling_variants() {
+        for column in [
+            "__source",
+            "Source scan",
+            "Audit",
+            "Cmd",
+            "File output",
+            "Handles",
+            "Offset(V)",
+            "Offset(P)",
+            "Wow64",
+        ] {
+            assert!(!visible_column(column), "{column}");
+        }
+        for column in [
+            "PID",
+            "PPID",
+            "ImageFileName",
+            "CreateTime",
+            "ExitTime",
+            "Threads",
+            "Path",
+            "LocalAddr",
+            "Source",
+            "CommandLine",
+        ] {
+            assert!(visible_column(column), "{column}");
+        }
+    }
+}
