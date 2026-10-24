@@ -1,0 +1,47 @@
+name: Nightly build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Windows x86_64
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+      - name: Build application
+        run: cargo build --locked --release --bin volgui
+      - name: Package nightly
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item target/release/volgui.exe dist/
+          Copy-Item README.md dist/
+          Copy-Item docs -Destination dist/docs -Recurse
+          @(
+            "Commit: $env:GITHUB_SHA"
+            "Ref: $env:GITHUB_REF"
+            "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            "Built: $([DateTime]::UtcNow.ToString('o'))"
+            "Rust: $(rustc --version)"
+          ) | Set-Content dist/BUILD.txt
+          $hash = (Get-FileHash dist/volgui.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  volgui.exe" | Set-Content dist/SHA256SUMS
+      - name: Upload nightly
+        uses: actions/upload-artifact@v7
+        with:
+          name: volgui-nightly-windows-x86_64-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

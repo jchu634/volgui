@@ -1,11 +1,13 @@
 # Validation
 
+The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests. Tests and the Windows accessibility regression share one Windows job to reuse compiled dependencies. Cargo commands use the committed lockfile. Run formatting, compilation checks, and Clippy locally alongside the tests:
+
 ```powershell
-cargo fmt --check
-cargo check --all-targets --features test-engine
-cargo test --features test-engine
-cargo test -p accesskit_windows --lib destroyed_window
-cargo clippy --all-targets --features test-engine -- -D warnings
+cargo fmt --all --check
+cargo check --locked --all-targets --features test-engine
+cargo test --locked --features test-engine
+cargo test --locked -p accesskit_windows --lib destroyed_window
+cargo clippy --locked --all-targets --features test-engine -- -D warnings
 ```
 
 `test-engine` builds a test-only CLI fixture for exercising process cancellation, nonzero exits, malformed output, literal arguments, large diagnostics and generated artifacts. Normal builds include only the application.
