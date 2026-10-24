@@ -443,6 +443,73 @@ impl Workspace {
             .overflow_scroll()
             .p_3()
             .size_full();
+        if matches!(self.detail, DetailTab::Overview | DetailTab::Files)
+            && let Some(target) = record.and_then(|record| {
+                let run = self
+                    .case
+                    .as_ref()?
+                    .document
+                    .runs
+                    .iter()
+                    .find(|run| run.id == record.run_id)?;
+                volgui::extracted_files::FileDumpTarget::from_record(&run.plugin, &record.record)
+            })
+        {
+            let available = self.installation.as_ref().is_some_and(|engine| {
+                engine
+                    .plugins
+                    .iter()
+                    .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
+            }) && !self.busy.as_ref().is_some_and(|busy| busy.run_id.is_none());
+            let imhex = volgui::extracted_files::imhex().is_some();
+            let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+            if target.needs_address_space() {
+                actions = actions.child(
+                    Button::new("file-offset-space")
+                        .small()
+                        .ghost()
+                        .label(if self.file_offset_physical { "Physical offset" } else { "Virtual offset" })
+                        .tooltip("Click to switch. FileScan uses virtual offsets on Windows 10 and later, physical offsets on older Windows.")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.file_offset_physical = !this.file_offset_physical;
+                            cx.notify();
+                        })),
+                );
+            }
+            content = content.child(
+                actions
+                    .child(
+                        Button::new("dump-selected-file")
+                            .small()
+                            .label("Dump file")
+                            .disabled(!available)
+                            .tooltip(if available {
+                                "Extract only this file from memory"
+                            } else {
+                                "Configure Volatility with the Windows DumpFiles plugin in Settings"
+                            })
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.dump_file(false, window, cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        Button::new("dump-selected-file-imhex")
+                            .small()
+                            .label("Dump and open in ImHex")
+                            .disabled(!available || !imhex)
+                            .tooltip(if !imhex {
+                                "Install ImHex in its default location or add it to PATH"
+                            } else {
+                                "Extract this file and open its cached contents in ImHex"
+                            })
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.dump_file(true, window, cx)),
+                            ),
+                    ),
+            );
+        }
         match self.detail {
             DetailTab::Overview => {
                 if let Some(record) = record {
@@ -682,7 +749,7 @@ impl Workspace {
                     let directory = case.run_dir(&run.id);
                     match volgui::extracted_files::list(&directory) {
                         Ok(files) if files.is_empty() => {
-                            content = content.child("No extracted files. Run a dump plugin or enable its --dump option to extract files from memory.");
+                            content = content.child("No extracted files. Select a file-scan result and choose Dump file, or run a dump plugin.");
                         }
                         Ok(files) => {
                             let imhex = volgui::extracted_files::imhex();

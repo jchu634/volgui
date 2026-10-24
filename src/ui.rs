@@ -153,6 +153,8 @@ pub struct Workspace {
     raw_expand_all: bool,
     queue_open: bool,
     popup_panels: RefCell<HashMap<popups::PanelKind, Entity<popups::PopupPanel>>>,
+    file_dumps: HashMap<String, Option<PathBuf>>,
+    file_offset_physical: bool,
     artifact_open: Option<ArtifactGroup>,
     artifact_choices: HashMap<ArtifactGroup, BTreeSet<String>>,
     analysis_group_filter: Option<ArtifactGroup>,
@@ -347,6 +349,8 @@ impl Workspace {
             raw_expand_all: false,
             queue_open: false,
             popup_panels: RefCell::new(HashMap::new()),
+            file_dumps: HashMap::new(),
+            file_offset_physical: false,
             artifact_open: None,
             artifact_choices: HashMap::new(),
             analysis_group_filter: None,
@@ -487,6 +491,7 @@ impl Workspace {
         self.selected_evidence = case.document.evidence.first().map(|e| e.id.clone());
         let path = case.directory.join(volgui::case::MANIFEST);
         self.case = Some(case);
+        self.file_dumps.clear();
         self.selected = None;
         self.selected_run = None;
         self.selected_row = None;
@@ -763,6 +768,74 @@ impl Workspace {
         }
         cx.notify();
     }
+    fn dump_file(&mut self, open_in_imhex: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) || !self.save_note(cx) {
+            return;
+        }
+        let result = (|| {
+            let executable = if open_in_imhex {
+                Some(volgui::extracted_files::imhex().ok_or(
+                    "ImHex was not found. Install it in its default location or add it to PATH.",
+                )?)
+            } else {
+                None
+            };
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure Volatility in settings")?;
+            let record = self.selected.as_ref().ok_or("Select a file first")?;
+            let case = self.case.as_mut().ok_or("Open a case first")?;
+            let id = volgui::extracted_files::queue_file_dump(
+                case,
+                engine,
+                record,
+                self.file_offset_physical,
+            )?;
+            Ok::<_, String>((id, executable))
+        })();
+        match result {
+            Ok((id, executable)) => {
+                self.file_dumps.insert(id, executable);
+                if self.batch_total == self.batch_finished {
+                    self.batch_total = 0;
+                    self.batch_finished = 0;
+                }
+                self.batch_total += 1;
+                self.message = "Queued selected file for extraction".into();
+                self.start_next(window, cx);
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+    fn finish_file_dump(&mut self, id: &str, executable: Option<PathBuf>) {
+        let Some(case) = &self.case else { return };
+        match volgui::extracted_files::list(&case.run_dir(id)) {
+            Ok(files) if files.is_empty() => {
+                self.error = Some("No cached file contents could be extracted from memory. See Run details for diagnostics.".into());
+            }
+            Ok(files) => {
+                if let Some(executable) = executable {
+                    for file in &files {
+                        if let Err(error) = volgui::extracted_files::open(&executable, file) {
+                            self.error = Some(format!(
+                                "File extracted, but ImHex could not open it: {error}"
+                            ));
+                            return;
+                        }
+                    }
+                    self.message = format!("Opened {} extracted file(s) in ImHex", files.len());
+                } else {
+                    self.message = format!(
+                        "Extracted {} file(s). Use Save as... to export them.",
+                        files.len()
+                    );
+                }
+            }
+            Err(error) => self.error = Some(format!("Could not list extracted files: {error}")),
+        }
+    }
     fn retry_run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.retry_runs(&[id.to_string()], window, cx);
     }
@@ -843,6 +916,7 @@ impl Workspace {
             .find(|e| e.id == case.document.runs[i].evidence_id)
             .unwrap();
         if let Err(e) = evidence.check_metadata() {
+            self.file_dumps.remove(&case.document.runs[i].id);
             case.document.runs[i].status = RunStatus::Failed;
             case.document.runs[i].message = e.clone();
             case.document.runs[i].finished_at = Some(now());
@@ -1108,6 +1182,7 @@ impl Workspace {
         });
     }
     fn show_record(&mut self, record: StoredRecord, window: &mut Window, cx: &mut Context<Self>) {
+        self.file_offset_physical = false;
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         let note = self
@@ -1336,6 +1411,7 @@ impl Workspace {
             {
                 r.status = RunStatus::Cancelled;
                 r.finished_at = Some(now());
+                self.file_dumps.remove(&id);
                 self.batch_finished += 1;
             }
             if let Err(e) = c.save() {
@@ -1438,18 +1514,27 @@ impl Workspace {
                 Event::Finished(id, outcome) => {
                     self.busy = None;
                     self.batch_finished += 1;
-                    if let Some(c) = &mut self.case
-                        && let Err(e) = c.finish(&id, &outcome)
-                    {
-                        self.error = Some(e);
-                        self.queue_paused = true;
-                    }
+                    let saved = match self.case.as_mut().map(|c| c.finish(&id, &outcome)) {
+                        Some(Ok(())) => true,
+                        Some(Err(error)) => {
+                            self.error = Some(error);
+                            self.queue_paused = true;
+                            false
+                        }
+                        None => false,
+                    };
                     self.message = format!("Analysis {}", outcome.status.label().to_lowercase());
                     if outcome.status == RunStatus::Failed {
                         self.error = Some(outcome.message.chars().take(1500).collect());
                     }
                     self.refresh_browser(cx);
-                    if self.scope.is_empty() || self.scope.contains(&id) {
+                    if let Some(executable) = self.file_dumps.remove(&id) {
+                        if saved && outcome.status == RunStatus::Completed {
+                            self.finish_file_dump(&id, executable);
+                        }
+                        self.select_run(id, window, cx);
+                        self.detail = DetailTab::Files;
+                    } else if self.scope.is_empty() || self.scope.contains(&id) {
                         self.select_run(id, window, cx);
                     }
                 }
