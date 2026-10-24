@@ -964,6 +964,17 @@ impl Workspace {
                         })),
                 );
             }
+            if matches!(run.status, RunStatus::Failed | RunStatus::Interrupted) {
+                let retry = run.id.clone();
+                actions = actions.child(
+                    Button::new(key("retry-analysis", &retry))
+                        .small()
+                        .label("Retry")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.retry_run(&retry, window, cx)
+                        })),
+                );
+            }
             let summary = if matches!(run.status, RunStatus::Running | RunStatus::Queued) {
                 run.status.label().to_string()
             } else {
@@ -990,6 +1001,9 @@ impl Workspace {
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .truncate()
+                                    .when(run.status == RunStatus::Cancelled, |text| {
+                                        text.text_color(cx.theme().muted_foreground)
+                                    })
                                     .child(run.plugin.clone()),
                             )
                             .child(
@@ -1282,7 +1296,9 @@ impl Render for Workspace {
         } else {
             format!(
                 "{} analyses · Ready",
-                self.case.as_ref().map_or(0, |c| c.document.runs.len())
+                self.case
+                    .as_ref()
+                    .map_or(0, |c| c.document.queue_runs().count())
             )
         };
         let progress = if self.batch_total == 0 {
