@@ -165,8 +165,8 @@ impl Render for Workspace {
                 Button::new("toggle-hex-view")
                     .xsmall()
                     .ghost()
-                    .label("Hex")
-                    .accessibility_label("Toggle hex view")
+                    .label("Contents")
+                    .accessibility_label("Toggle file contents")
                     .selected(self.hex_visible)
                     .disabled(!case_open || self.view != View::Workspace)
                     .tooltip(if self.hex_visible {

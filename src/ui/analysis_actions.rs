@@ -262,12 +262,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let result = (|| {
-            let engine = self
-                .installation
-                .as_ref()
-                .ok_or("Configure Volatility in settings")?;
             let case = self.case.as_mut().ok_or("Open a case first")?;
-            queue_retries(case, engine, ids)
+            queue_retries_with_engine(case, self.installation.as_ref(), ids)
         })();
         match result {
             Ok(count) => {
@@ -304,9 +300,7 @@ impl Workspace {
         if self.busy.is_some() || self.queue_paused {
             return;
         }
-        let Some(engine) = self.installation.clone() else {
-            return;
-        };
+        let engine = self.installation.clone();
         let Some(case) = &mut self.case else {
             return;
         };
@@ -318,6 +312,10 @@ impl Workspace {
         else {
             return;
         };
+        let native = volgui::investigation::is_native(&case.document.runs[i].plugin);
+        if !native && engine.is_none() {
+            return;
+        }
         let evidence = case
             .document
             .evidence
@@ -349,10 +347,26 @@ impl Workspace {
         let run = case.document.runs[i].clone();
         let directory = case.run_dir(&run.id);
         let store = ResultStore::at(&case.directory);
+        let case_directory = case.directory.clone();
+        let document = case.document.clone();
         let cancel = self.start(&format!("Running {}", run.plugin), Some(run.id.clone()));
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let mut outcome = engine.execute(&run, &directory, &cancel);
+            let mut outcome = if native {
+                volgui::investigation::execute(
+                    &case_directory,
+                    &document,
+                    &run,
+                    &cancel,
+                    |message| {
+                        let _ = tx.send(Event::Progress(message));
+                    },
+                )
+            } else {
+                engine
+                    .expect("engine checked before starting job")
+                    .execute(&run, &directory, &cancel)
+            };
             if let Some(table) = outcome.table.take()
                 && let Err(e) = store.insert_cancellable(&run, &table, &cancel)
             {

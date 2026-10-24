@@ -9,6 +9,7 @@ VolGUI runs a separately installed Volatility engine and stores analysis results
 - [Building and running](docs/building.md)
 - [Validation](docs/validation.md)
 - [Case storage](docs/case-storage.md)
+- [Investigation tools](docs/investigation.md)
 
 ## Source layout
 
@@ -20,10 +21,14 @@ VolGUI runs a separately installed Volatility engine and stores analysis results
 
 Views share workspace state and call its actions. They do not run SQLite queries or CLI processes while rendering. This keeps background work and navigation consistent across views without introducing a second state synchronization layer. A separate state object per view would duplicate selection and case ownership, so the split follows rendering and action responsibilities instead.
 
-With no case open, a welcome dialog requires opening or creating a case. Escape, backdrop clicks, and a close button cannot dismiss it. The sidebar keeps evidence selection and a left-aligned stack of Processes, Network, Files, and Bookmarks buttons at the top, with Investigation Artifacts aligned to the bottom. The sidebar's former artifact tree/list browser has been removed.
+With no case open, a welcome dialog requires opening or creating a case. Escape, backdrop clicks, and a close button cannot dismiss it. The sidebar offers Processes, Network, Files, Browser activity, Registry, Global string search, and Bookmarks. Raw investigation artifacts remain available at the bottom.
 
 Processes appear beneath their parents, and files are grouped by directory. Single-child folder chains share one row, stopping at branches or files. Both trees support branch expansion, collapse, search and record selection. Process searches retain ancestor branches for context. PPID and exit time remain available in record details and exports.
 
-Run the basic **Process file handles** analysis on Windows to show file handles beneath their owning processes. Linux and macOS Lsof results also supply process file children. **Show file handles** in the process tree header hides or shows these children. Selecting a file keeps the process tree open; **Show in Files** selects it in the file tree. Non-file Windows handles are excluded from the file trees. The **Hex** toggle in the bottom bar opens a separate resizable pane to the right of either tree, displaying extracted bytes, offsets and ASCII with paging and a choice of cache variants. **Extract and view hex** queues extraction if contents have not been dumped yet. Extraction completion keeps the current tree open. The details pane remains below the tree and hex pane, with its tabs available independently.
+Run the basic **Process handles** analysis on Windows to show file handles beneath their owning processes. The **Handles** details tab shows every collected handle type for the selected PID, including registry keys, events, mutexes and sections, with paging and a collection action. Linux and macOS Lsof results also supply process file children. **Show file handles** in the process tree header hides or shows file children. Selecting a file keeps the process tree open; **Show in Files** selects it in the file tree.
+
+The **Contents** toggle opens a resizable pane beside the result view. It displays recovered bytes as hex, UTF-8, UTF-16LE or UTF-16BE, or lets you inspect SQLite tables and rows. **Extract and view hex** queues extraction if contents have not been dumped yet. Extraction completion keeps the current tree open. Multiple cache variants can be inspected separately.
+
+**Browser activity** recovers cached Chromium and Firefox history databases and session files, then derives history, search terms and saved session tabs in VolGUI. **Registry** loads hive keys and typed values with targeted PrintKey jobs. **Global string search** scans the selected evidence file directly, including UTF-16 strings, and saves byte offsets and context. Browser and string findings support the existing bookmarks, CSV export, diagnostics and case history.
 
 The title bar contains Back, File and View menus, and New analysis beside the window controls. Workspace and Case info are available from View.

@@ -50,6 +50,12 @@ pub struct ProcessRelations {
     pub parent: Option<BrowserEntry>,
     pub children: Vec<BrowserEntry>,
 }
+#[derive(Clone, Debug, Default)]
+pub struct HandlePage {
+    pub total: usize,
+    pub offset: usize,
+    pub records: Vec<StoredRecord>,
+}
 
 impl ResultStore {
     pub fn open(directory: &Path) -> Result<Self> {
@@ -198,6 +204,14 @@ impl ResultStore {
         tx.commit().map_err(|e| e.to_string())
     }
     pub fn query(&self, query: &Query) -> Result<ResultIndex> {
+        self.query_filtered(query, None, false)
+    }
+    fn query_filtered(
+        &self,
+        query: &Query,
+        pid: Option<&str>,
+        all_handles: bool,
+    ) -> Result<ResultIndex> {
         if query.runs.is_empty() {
             return Ok(ResultIndex::default());
         }
@@ -240,10 +254,14 @@ impl ResultStore {
             .collect::<Vec<_>>()
             .join(",");
         let mut sql = format!("SELECT r.id FROM records r WHERE r.run_id IN ({marks})");
-        if groups.len() == 1 && groups.contains(&ArtifactGroup::Files) {
+        if !all_handles && groups.len() == 1 && groups.contains(&ArtifactGroup::Files) {
             sql.push_str(" AND (r.run_id NOT IN (SELECT run_id FROM scans WHERE plugin='windows.handles.Handles') OR json_extract(r.fields_json,'$.Type')='File')");
         }
         let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
+        if let Some(pid) = pid {
+            sql.push_str(" AND r.pid=?");
+            values.push(SqlValue::Text(pid.into()));
+        }
         let text = query.text.to_lowercase();
         if !text.is_empty() {
             if text.chars().count() >= 3 {
@@ -307,6 +325,29 @@ impl ResultStore {
             .collect::<rusqlite::Result<Vec<i64>>>()
             .map_err(|e| e.to_string())?;
         Ok(ResultIndex { columns, ids })
+    }
+    /// Handles are not restricted to the File objects used by file trees.
+    pub fn process_handles(
+        &self,
+        runs: Vec<String>,
+        pid: &str,
+        offset: usize,
+    ) -> Result<HandlePage> {
+        let index = self.query_filtered(
+            &Query {
+                runs,
+                ..Default::default()
+            },
+            Some(pid),
+            true,
+        )?;
+        let offset = offset.min(index.ids.len().saturating_sub(1)) / 100 * 100;
+        let records = self.fetch(&index.ids[offset..(offset + 100).min(index.ids.len())])?;
+        Ok(HandlePage {
+            total: index.ids.len(),
+            offset,
+            records,
+        })
     }
     pub fn fetch(&self, ids: &[i64]) -> Result<Vec<StoredRecord>> {
         if ids.is_empty() {

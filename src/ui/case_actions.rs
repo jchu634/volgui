@@ -54,6 +54,9 @@ impl Workspace {
         self.selected_evidence = case.document.evidence.first().map(|e| e.id.clone());
         let path = case.directory.join(volgui::case::MANIFEST);
         self.case = Some(case);
+        self.handles = None;
+        self.handles_loading = false;
+        self.handle_epoch += 1;
         if self.welcome_open {
             window.close_dialog(cx);
             self.welcome_open = false;

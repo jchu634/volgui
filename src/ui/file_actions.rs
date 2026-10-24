@@ -16,6 +16,44 @@ impl Workspace {
     pub(super) fn reset_hex(&mut self) {
         self.hex_epoch += 1;
         self.hex_view = HexView::Idle;
+        self.database_view = None;
+        self.database_epoch += 1;
+    }
+
+    pub(super) fn set_content_encoding(
+        &mut self,
+        encoding: volgui::extracted_files::ContentEncoding,
+        cx: &mut Context<Self>,
+    ) {
+        self.content_encoding = encoding;
+        if encoding == volgui::extracted_files::ContentEncoding::Sqlite
+            && let HexView::Ready { page, .. } = &self.hex_view
+        {
+            self.load_database(page.path.clone(), None, 0, cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn load_database(
+        &mut self,
+        path: PathBuf,
+        table: Option<String>,
+        offset: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.database_view = None;
+        self.database_epoch += 1;
+        let hex_epoch = self.hex_epoch;
+        let epoch = self.database_epoch;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Event::DatabaseLoaded(
+                hex_epoch,
+                epoch,
+                volgui::file_content::database_page(&path, table.as_deref(), offset),
+            ));
+        });
+        cx.notify();
     }
 
     pub(super) fn show_file_in_files(

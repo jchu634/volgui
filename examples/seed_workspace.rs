@@ -108,7 +108,7 @@ fn main() -> Result<(), String> {
         })
         .collect();
     save(&mut case, &evidence_id, "windows.netscan.NetScan", network)?;
-    let files = (0..50_000)
+    let mut files: Vec<_> = (0..50_000)
         .map(|i| Record {
             depth: 0,
             fields: BTreeMap::from([
@@ -120,8 +120,9 @@ fn main() -> Result<(), String> {
             ]),
         })
         .collect();
+    files.push(Table::parse(r#"[{"FileName":"C:\\Users\\Fixture\\Chrome\\User Data\\Default\\History","Offset":267309056}]"#)?.rows.remove(0));
     save(&mut case, &evidence_id, "windows.filescan.FileScan", files)?;
-    let handles = (0..500)
+    let mut handles: Vec<_> = (0..500)
         .map(|i| Record {
             depth: 0,
             fields: BTreeMap::from([
@@ -136,6 +137,12 @@ fn main() -> Result<(), String> {
             ]),
         })
         .collect();
+    handles.extend(Table::parse(r#"[
+        {"PID":1,"Type":"Key","HandleValue":84,"GrantedAccess":131097,"Name":"\\REGISTRY\\MACHINE\\SOFTWARE"},
+        {"PID":1,"Type":"Mutant","HandleValue":88,"GrantedAccess":2031617,"Name":"Fixture mutex"},
+        {"PID":1,"Type":"Event","HandleValue":92,"Name":"Fixture event"},
+        {"PID":1,"Type":"File","HandleValue":96,"Name":"C:\\Users\\Fixture\\Chrome\\User Data\\Default\\History","Offset":267309056}
+    ]"#)?.rows);
     save(&mut case, &evidence_id, "windows.handles.Handles", handles)?;
     let dump = save(
         &mut case,
@@ -159,20 +166,60 @@ fn main() -> Result<(), String> {
         b"Synthetic second cache variant.\n",
     )
     .map_err(|e| e.to_string())?;
-    for plugin in [
+    save(
+        &mut case,
+        &evidence_id,
         "windows.registry.hivelist.HiveList",
-        "windows.registry.printkey.PrintKey",
-    ] {
-        save(
-            &mut case,
-            &evidence_id,
-            plugin,
-            vec![Record {
-                depth: 0,
-                fields: BTreeMap::from([("Name".into(), json!("Fixture registry record"))]),
-            }],
-        )?;
+        Table::parse(r#"[{"Offset":12288,"FileFullPath":"\\REGISTRY\\MACHINE\\SOFTWARE"}]"#)?.rows,
+    )?;
+    save(&mut case,&evidence_id,"windows.registry.printkey.PrintKey",Table::parse(r#"[
+        {"Hive Offset":12288,"Type":"Key","Key":"\\REGISTRY\\MACHINE\\SOFTWARE","Name":"Microsoft","Data":null},
+        {"Hive Offset":12288,"Type":"REG_SZ","Key":"\\REGISTRY\\MACHINE\\SOFTWARE","Name":"Fixture value","Data":"Synthetic registry contents"}
+    ]"#)?.rows)?;
+    case.document.runs.last_mut().unwrap().arguments = vec!["--offset".into(), "0x3000".into()];
+    save(&mut case,&evidence_id,"windows.registry.printkey.PrintKey",Table::parse(r#"[{"Hive Offset":12288,"Type":"REG_SZ","Key":"\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft","Name":"Fixture child value","Data":"Subkey contents"}]"#)?.rows)?;
+    case.document.runs.last_mut().unwrap().arguments = vec![
+        "--offset".into(),
+        "0x3000".into(),
+        "--key".into(),
+        "Microsoft".into(),
+    ];
+    let browser_dump = save(
+        &mut case,
+        &evidence_id,
+        "windows.dumpfiles.DumpFiles",
+        Table::parse(r#"[{"Result":"browser-history.dat"}]"#)?.rows,
+    )?;
+    case.document.runs.last_mut().unwrap().arguments =
+        vec!["--virtaddr".into(), "0xfeed000".into()];
+    fs::create_dir_all(case.run_dir(&browser_dump)).map_err(|e| e.to_string())?;
+    {
+        let db =
+            rusqlite::Connection::open(case.run_dir(&browser_dump).join("browser-history.dat"))
+                .map_err(|e| e.to_string())?;
+        db.execute_batch("CREATE TABLE urls(id INTEGER PRIMARY KEY,url TEXT,title TEXT,last_visit_time INTEGER);
+            CREATE TABLE visits(id INTEGER PRIMARY KEY,url INTEGER,visit_time INTEGER);
+            INSERT INTO urls VALUES(1,'https://www.google.com/search?q=memory+forensics','Search',13437360000000000);
+            INSERT INTO urls VALUES(2,'https://example.test/fixture','Fixture page',13437360001000000);
+            INSERT INTO visits VALUES(1,1,13437360000000000);
+            INSERT INTO visits VALUES(2,2,13437360001000000);").map_err(|e| e.to_string())?;
     }
+    fs::write(case.run_dir(&browser_dump).join("session.json"),br#"{"windows":[{"tabs":[{"index":1,"entries":[{"url":"https://example.test/open-tab","title":"Saved session fixture"}]}]}]}"#).map_err(|e| e.to_string())?;
+    case.save()?;
+    let browser = volgui::investigation::prepare(
+        &case.document.evidence[0],
+        volgui::investigation::BROWSER,
+        vec![],
+    )?;
+    case.queue(browser.clone())?;
+    let outcome = volgui::investigation::execute(
+        &case.directory,
+        &case.document,
+        &browser,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    case.finish(&browser.id, &outcome)?;
     println!("Synthetic case: {}", case.directory.display());
     Ok(())
 }

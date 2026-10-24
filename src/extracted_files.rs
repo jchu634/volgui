@@ -16,6 +16,34 @@ pub const DUMP_FILES: &str = "windows.dumpfiles.DumpFiles";
 
 pub const HEX_PAGE_SIZE: u64 = 256;
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContentEncoding {
+    #[default]
+    Hex,
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+    Sqlite,
+}
+impl ContentEncoding {
+    pub const ALL: [Self; 5] = [
+        Self::Hex,
+        Self::Utf8,
+        Self::Utf16Le,
+        Self::Utf16Be,
+        Self::Sqlite,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hex => "Hex",
+            Self::Utf8 => "UTF-8 text",
+            Self::Utf16Le => "UTF-16LE text",
+            Self::Utf16Be => "UTF-16BE text",
+            Self::Sqlite => "SQLite tables",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct HexPage {
     pub path: PathBuf,
@@ -25,6 +53,35 @@ pub struct HexPage {
 }
 
 impl HexPage {
+    pub fn decoded(&self, encoding: ContentEncoding) -> String {
+        let text = match encoding {
+            ContentEncoding::Hex | ContentEncoding::Sqlite => return self.text(),
+            ContentEncoding::Utf8 => String::from_utf8_lossy(&self.bytes).into_owned(),
+            ContentEncoding::Utf16Le | ContentEncoding::Utf16Be => {
+                let units: Vec<_> = self
+                    .bytes
+                    .chunks_exact(2)
+                    .map(|b| {
+                        if encoding == ContentEncoding::Utf16Le {
+                            u16::from_le_bytes([b[0], b[1]])
+                        } else {
+                            u16::from_be_bytes([b[0], b[1]])
+                        }
+                    })
+                    .collect();
+                String::from_utf16_lossy(&units)
+            }
+        };
+        text.chars()
+            .map(|c| {
+                if c.is_control() && !matches!(c, '\n' | '\r' | '\t') {
+                    '\u{fffd}'
+                } else {
+                    c
+                }
+            })
+            .collect()
+    }
     pub fn read(path: &Path, offset: u64) -> Result<Self, String> {
         let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
         let total = file.metadata().map_err(|e| e.to_string())?.len();
@@ -49,7 +106,7 @@ impl HexPage {
             "Offset            Hex bytes                                         ASCII\n",
         );
         for (i, chunk) in self.bytes.chunks(16).enumerate() {
-            let _ = write!(text, "{:08X}  ", self.offset + i as u64 * 16);
+            let _ = write!(text, "{:016X}  ", self.offset + i as u64 * 16);
             for j in 0..16 {
                 if let Some(byte) = chunk.get(j) {
                     let _ = write!(text, "{byte:02X} ");

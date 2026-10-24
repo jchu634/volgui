@@ -193,17 +193,15 @@ impl Workspace {
                 .checked(self.allow_previous_plugins)
                 .on_change(cx.listener(|this, value, _, cx| {
                     this.allow_previous_plugins = *value;
-                    if !*value {
-                        if let Some(case) = &this.case {
-                            for draft in &mut this.analysis_drafts {
-                                draft.selected.retain(|id| {
-                                    !case.document.runs.iter().any(|run| {
-                                        run.status.blocks_plugin_selection()
-                                            && run.evidence_id == draft.evidence_id
-                                            && &run.plugin == id
-                                    })
-                                });
-                            }
+                    if !*value && let Some(case) = &this.case {
+                        for draft in &mut this.analysis_drafts {
+                            draft.selected.retain(|id| {
+                                !case.document.runs.iter().any(|run| {
+                                    run.status.blocks_plugin_selection()
+                                        && run.evidence_id == draft.evidence_id
+                                        && &run.plugin == id
+                                })
+                            });
                         }
                     }
                     this.analysis_error = None;

@@ -7,6 +7,8 @@ impl Workspace {
             ArtifactGroup::Processes => IconName::Cpu,
             ArtifactGroup::Network => IconName::Network,
             ArtifactGroup::Files => IconName::Folder,
+            ArtifactGroup::Web => IconName::Network,
+            ArtifactGroup::Strings => IconName::Search,
             ArtifactGroup::Registry => IconName::Database,
             ArtifactGroup::Memory => IconName::Shield,
             ArtifactGroup::System => IconName::Info,

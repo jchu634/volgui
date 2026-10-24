@@ -245,6 +245,7 @@ impl Workspace {
             .min_w_0()
             .min_h_0()
             .child(self.render_results_toolbar(cx))
+            .child(self.render_investigation_tools(cx))
             .child(
                 div()
                     .relative()

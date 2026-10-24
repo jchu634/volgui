@@ -40,6 +40,8 @@ pub enum ArtifactGroup {
     Processes,
     Network,
     Files,
+    Web,
+    Strings,
     Registry,
     Memory,
     System,
@@ -49,9 +51,15 @@ pub enum ArtifactGroup {
     Other,
 }
 impl ArtifactGroup {
-    pub const BROWSER: [Self; 3] = [Self::Processes, Self::Network, Self::Files];
-    pub const SHORTCUTS: [Self; 7] = [
+    pub const BROWSER: [Self; 6] = [
+        Self::Processes,
+        Self::Network,
+        Self::Files,
+        Self::Web,
         Self::Registry,
+        Self::Strings,
+    ];
+    pub const SHORTCUTS: [Self; 6] = [
         Self::Memory,
         Self::System,
         Self::Commands,
@@ -64,6 +72,8 @@ impl ArtifactGroup {
             Self::Processes => "Processes",
             Self::Network => "Network",
             Self::Files => "Files and documents",
+            Self::Web => "Browser activity",
+            Self::Strings => "Global string search",
             Self::Registry => "Registry",
             Self::Memory => "Memory scan results",
             Self::System => "System information",
@@ -74,6 +84,12 @@ impl ArtifactGroup {
         }
     }
     pub fn for_plugin(plugin: &str) -> Self {
+        if plugin == crate::investigation::BROWSER {
+            return Self::Web;
+        }
+        if plugin == crate::investigation::STRINGS {
+            return Self::Strings;
+        }
         let parts: Vec<_> = plugin.split('.').collect();
         let name = parts
             .get(parts.len().saturating_sub(2))

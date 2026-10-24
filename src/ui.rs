@@ -4,6 +4,7 @@ mod case_actions;
 mod chrome;
 mod exports;
 mod file_actions;
+mod investigation_actions;
 mod navigation;
 mod popups;
 mod result_actions;
@@ -45,7 +46,7 @@ use std::{
     time::{Duration, Instant},
 };
 use volgui::{
-    analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries},
+    analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries_with_engine},
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, QueueClearScope, RunStatus, now},
     result_table as table,
@@ -69,6 +70,7 @@ enum DetailTab {
     Raw,
     Diagnostics,
     Files,
+    Handles,
 }
 
 struct FileDumpRequest {
@@ -113,6 +115,16 @@ enum Event {
     HexLoaded(
         u64,
         std::result::Result<(Vec<PathBuf>, volgui::extracted_files::HexPage), String>,
+    ),
+    BrowserPrepared(std::result::Result<Vec<volgui::case::Run>, String>),
+    HandlesLoaded(
+        u64,
+        std::result::Result<volgui::results::HandlePage, String>,
+    ),
+    DatabaseLoaded(
+        u64,
+        u64,
+        std::result::Result<volgui::file_content::DatabasePage, String>,
     ),
 }
 struct Busy {
@@ -175,6 +187,15 @@ pub struct Workspace {
     hex_visible: bool,
     hex_scroll: ScrollHandle,
     hex_epoch: u64,
+    content_encoding: volgui::extracted_files::ContentEncoding,
+    database_view: Option<std::result::Result<volgui::file_content::DatabasePage, String>>,
+    database_epoch: u64,
+    handles: Option<volgui::results::HandlePage>,
+    handles_loading: bool,
+    handle_epoch: u64,
+    string_needle: Entity<InputState>,
+    string_ignore_case: bool,
+    registry_key: Entity<InputState>,
     artifact_open: Option<ArtifactGroup>,
     artifact_choices: HashMap<ArtifactGroup, BTreeSet<String>>,
     analysis_group_filter: Option<ArtifactGroup>,
@@ -352,6 +373,20 @@ impl Workspace {
             hex_visible: false,
             hex_scroll: ScrollHandle::default(),
             hex_epoch: 0,
+            content_encoding: volgui::extracted_files::ContentEncoding::Hex,
+            database_view: None,
+            database_epoch: 0,
+            handles: None,
+            handles_loading: false,
+            handle_epoch: 0,
+            string_needle: field("", "Literal string in evidence...", window, cx),
+            string_ignore_case: false,
+            registry_key: field(
+                "",
+                "Relative registry key, e.g. Software\\Microsoft",
+                window,
+                cx,
+            ),
             artifact_open: None,
             artifact_choices: HashMap::new(),
             analysis_group_filter: None,
@@ -509,6 +544,33 @@ impl Workspace {
                     }
                 }
                 Event::Progress(s) => self.message = s,
+                Event::BrowserPrepared(result) => {
+                    self.busy = None;
+                    match result {
+                        Ok(runs) => {
+                            let id = runs.last().map(|r| r.id.clone());
+                            self.queue_investigation(runs, window, cx);
+                            if let Some(id) = id {
+                                self.select_run(id, window, cx);
+                            }
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
+                Event::HandlesLoaded(epoch, result) => {
+                    if epoch == self.handle_epoch {
+                        self.handles_loading = false;
+                        match result {
+                            Ok(page) => self.handles = Some(page),
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
+                }
+                Event::DatabaseLoaded(hex_epoch, epoch, result) => {
+                    if hex_epoch == self.hex_epoch && epoch == self.database_epoch {
+                        self.database_view = Some(result);
+                    }
+                }
                 Event::Relations(epoch, result) => {
                     if epoch == self.relation_epoch {
                         match result {
@@ -578,6 +640,9 @@ impl Workspace {
                     self.message = format!("Analysis {}", outcome.status.label().to_lowercase());
                     if outcome.status == RunStatus::Failed {
                         self.error = Some(outcome.message.chars().take(1500).collect());
+                    }
+                    if self.detail == DetailTab::Handles {
+                        self.load_handles(0, cx);
                     }
                     if let Some(request) = self.file_dumps.remove(&id) {
                         if saved && outcome.status == RunStatus::Completed {
@@ -768,6 +833,9 @@ impl Workspace {
                         }
                         Err(error) => HexView::Error(error),
                     };
+                    if self.content_encoding == volgui::extracted_files::ContentEncoding::Sqlite {
+                        self.set_content_encoding(self.content_encoding, cx);
+                    }
                 }
             }
         }

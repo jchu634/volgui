@@ -101,6 +101,34 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
             ("Created", &["Created", "CreateTime"]),
         ],
         Some(ArtifactGroup::Files) => &[("Name", &["Name", "FileName", "Path", "FilePath"])],
+        Some(ArtifactGroup::Web) => &[
+            ("Kind", &["Kind"]),
+            ("Browser", &["Browser"]),
+            ("URL", &["URL"]),
+            ("Title", &["Title"]),
+            ("Search terms", &["Search terms"]),
+            ("Time (UTC)", &["Time (UTC)"]),
+            ("Original path", &["Original path"]),
+            ("Source file", &["Source file"]),
+        ],
+        Some(ArtifactGroup::Strings) => &[
+            ("Offset", &["Offset"]),
+            ("Encoding", &["Encoding"]),
+            ("Match", &["Match"]),
+            ("Context", &["Context"]),
+            ("Source file", &["Source file"]),
+        ],
+        Some(ArtifactGroup::Registry) => &[
+            ("Name", &["Name", "FileFullPath", "File output"]),
+            ("Type", &["Type"]),
+            ("Data", &["Data"]),
+            ("Key", &["Key"]),
+            ("Last write time", &["Last Write Time", "LastWriteTime"]),
+            (
+                "Hive offset",
+                &["Hive Offset", "Offset", "Offset(V)", "Offset(P)"],
+            ),
+        ],
         _ => {
             return available
                 .iter()

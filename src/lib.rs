@@ -3,6 +3,8 @@ pub mod analyses;
 pub mod artifacts;
 pub mod case;
 pub mod extracted_files;
+pub mod file_content;
+pub mod investigation;
 pub mod result_table;
 pub mod result_tree;
 #[path = "lib/results.rs"]

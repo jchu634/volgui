@@ -16,7 +16,18 @@ impl Workspace {
                     && r.status == RunStatus::Completed
                     && ArtifactGroup::for_plugin(&r.plugin) == group
             })
-            .filter(|r| seen.insert(r.plugin.clone()))
+            .filter(|r| {
+                seen.insert(
+                    if matches!(
+                        r.plugin.as_str(),
+                        "windows.handles.Handles" | "windows.registry.printkey.PrintKey"
+                    ) {
+                        format!("{}:{:?}", r.plugin, r.arguments)
+                    } else {
+                        r.plugin.clone()
+                    },
+                )
+            })
             .map(|r| r.id.clone())
             .collect()
     }
@@ -77,6 +88,16 @@ impl Workspace {
             return;
         };
         self.remember_location(cx);
+        if run.plugin == volgui::investigation::registry::PRINT_KEY {
+            let path = run
+                .arguments
+                .windows(2)
+                .find(|a| a[0] == "--key")
+                .map(|a| a[1].clone())
+                .unwrap_or_default();
+            self.registry_key
+                .update(cx, |input, cx| input.set_value(path, window, cx));
+        }
         if Some(&run.evidence_id) != self.selected_evidence.as_ref() {
             self.artifact_choices.clear();
             self.selected_evidence = Some(run.evidence_id.clone());
@@ -105,6 +126,9 @@ impl Workspace {
         self.row_cache.clear();
         self.detail = DetailTab::Overview;
         self.reset_hex();
+        self.handles = None;
+        self.handles_loading = false;
+        self.handle_epoch += 1;
         self.view = View::Workspace;
         self.query.update(cx, |s, cx| s.set_value("", window, cx));
         self.query_due = None;
@@ -292,10 +316,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.reset_hex();
+        self.handles = None;
+        self.handles_loading = false;
+        self.handle_epoch += 1;
         self.file_offset_physical = false;
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         self.selected = Some(Arc::new(record));
+        if self.detail == DetailTab::Handles {
+            self.load_handles(0, cx);
+        }
         self.hex_scroll.set_offset(Point::default());
         if self.hex_visible {
             self.load_hex(cx);

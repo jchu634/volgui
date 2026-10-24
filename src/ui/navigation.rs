@@ -95,6 +95,9 @@ impl Workspace {
         self.relation_epoch += 1;
         self.query_due = None;
         self.case = None;
+        self.handles = None;
+        self.handles_loading = false;
+        self.handle_epoch += 1;
         self.view = View::Workspace;
         self.back_stack.clear();
         self.selected_evidence = None;

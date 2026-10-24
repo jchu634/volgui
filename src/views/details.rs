@@ -95,6 +95,7 @@ impl Workspace {
             ("raw", "Raw JSON", DetailTab::Raw),
             ("diagnostics", "Run details", DetailTab::Diagnostics),
             ("files", "Extracted files", DetailTab::Files),
+            ("handles", "Handles", DetailTab::Handles),
         ] {
             tabs = tabs.child(
                 Button::new(id)
@@ -104,6 +105,9 @@ impl Workspace {
                     .selected(self.detail == tab)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.detail = tab;
+                        if tab == DetailTab::Handles {
+                            this.load_handles(0, cx);
+                        }
                         cx.notify();
                     })),
             );
@@ -118,8 +122,28 @@ impl Workspace {
             content = content.child(self.render_file_actions(false, cx));
         }
         match self.detail {
+            DetailTab::Handles => {
+                content = content.child(self.render_handles(cx));
+            }
             DetailTab::Overview => {
                 if let Some(record) = record {
+                    if let Some(source) = record
+                        .record
+                        .fields
+                        .get("Source run")
+                        .and_then(|v| v.as_str())
+                    {
+                        let source = source.to_string();
+                        content = content.child(
+                            Button::new("open-finding-source")
+                                .small()
+                                .ghost()
+                                .label("Open source extraction")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_run(source.clone(), window, cx)
+                                })),
+                        );
+                    }
                     let mut fields = div().flex().flex_wrap().gap_x_4().items_start().w_full();
                     for (i, (name, value)) in record.record.fields.iter().enumerate() {
                         let text = display_value(value);

@@ -517,6 +517,8 @@ impl Record {
             "Name",
             "FileName",
             "Variable",
+            "URL",
+            "Context",
             "Data",
             "PID",
         ] {
