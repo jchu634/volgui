@@ -341,6 +341,33 @@ impl ResultStore {
         })
         .collect()
     }
+    /// Tree construction needs only hierarchy fields, even for large file scans.
+    pub fn tree_entries(&self, runs: &[String]) -> Result<Vec<crate::result_tree::TreeEntry>> {
+        if runs.is_empty() {
+            return Ok(vec![]);
+        }
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = db.prepare(&format!(
+            "SELECT id,run_id,depth,title,pid,ppid,COALESCE(NULLIF(json_extract(fields_json,'$.Name'),''),NULLIF(json_extract(fields_json,'$.FileName'),''),NULLIF(json_extract(fields_json,'$.Path'),''),NULLIF(json_extract(fields_json,'$.FilePath'),''),NULLIF(json_extract(fields_json,'$.FullPath'),''),path) FROM records WHERE run_id IN ({marks}) ORDER BY id"
+        )).map_err(|e| e.to_string())?;
+        stmt.query_map(params_from_iter(runs), |r| {
+            Ok(crate::result_tree::TreeEntry {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                depth: r.get::<_, i64>(2)? as usize,
+                title: r.get(3)?,
+                pid: r.get(4)?,
+                ppid: r.get(5)?,
+                path: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+    }
     pub fn record(&self, run: &str, row: usize) -> Result<Option<StoredRecord>> {
         let id = self
             .connect()?

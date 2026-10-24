@@ -89,7 +89,7 @@ impl Workspace {
             evidence = evidence.child(
                 Button::new(key("analysis-evidence", &draft.evidence_id))
                     .small()
-                    .label(format!("{name}"))
+                    .label(name)
                     .selected(i == self.analysis_active)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_analysis_evidence(i, window, cx)

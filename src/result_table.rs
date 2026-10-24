@@ -83,12 +83,10 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         Some(ArtifactGroup::Processes) => &[
             ("Process", &["ImageFileName", "COMM", "Process", "Name"]),
             ("PID", &["PID"]),
-            ("PPID", &["PPID"]),
             ("SessionID", &["SessionID"]),
             ("Threads", &["Threads"]),
             ("Path", &["Path", "FilePath", "ImagePath"]),
             ("CreateTime", &["CreateTime", "Created", "StartTime"]),
-            ("ExitTime", &["ExitTime"]),
         ],
         Some(ArtifactGroup::Network) => &[
             ("PID", &["PID"]),
@@ -228,25 +226,23 @@ mod tests {
             [
                 "Process",
                 "PID",
-                "PPID",
                 "SessionID",
                 "Threads",
                 "Path",
-                "CreateTime",
-                "ExitTime"
+                "CreateTime"
             ]
         );
         assert_eq!(columns[0].key, "ImageFileName");
-        assert_eq!(columns[3].key, "SessionId");
+        assert_eq!(columns[2].key, "SessionId");
         assert!(
-            columns[1..5]
+            columns[1..4]
                 .iter()
                 .all(|column| column.default_width() <= 96.)
         );
         let linux = columns_for_linux();
         assert_eq!(
             linux.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-            ["Process", "PID", "PPID"]
+            ["Process", "PID"]
         );
         assert_eq!(linux[0].key, "COMM");
     }

@@ -4,6 +4,7 @@ pub mod artifacts;
 pub mod case;
 pub mod extracted_files;
 pub mod result_table;
+pub mod result_tree;
 #[path = "lib/results.rs"]
 pub mod results;
 pub mod settings;

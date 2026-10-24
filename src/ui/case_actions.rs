@@ -65,6 +65,7 @@ impl Workspace {
         self.scope.clear();
         self.row_cache.clear();
         self.index = ResultIndex::default();
+        self.result_tree = ResultTree::default();
         self.queue_paused = false;
         self.batch_total = 0;
         self.batch_finished = 0;

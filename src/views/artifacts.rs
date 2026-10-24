@@ -26,7 +26,10 @@ impl Workspace {
         self.column_widths.insert(drag.column.clone(), width);
         cx.notify();
     }
-    pub(in crate::ui) fn result_columns(&self) -> Vec<table::Column> {
+    pub(in crate::ui) fn result_group(&self) -> Option<ArtifactGroup> {
+        if self.scope.is_empty() && self.scope_label == self.browser_group.label() {
+            return Some(self.browser_group);
+        }
         let mut groups = self.scope.iter().filter_map(|id| {
             self.case
                 .as_ref()?
@@ -36,10 +39,12 @@ impl Workspace {
                 .find(|run| &run.id == id)
                 .map(|run| ArtifactGroup::for_plugin(&run.plugin))
         });
-        let group = groups
+        groups
             .next()
-            .filter(|first| groups.all(|group| group == *first));
-        table::columns(group, &self.index.columns)
+            .filter(|first| groups.all(|group| group == *first))
+    }
+    pub(in crate::ui) fn result_columns(&self) -> Vec<table::Column> {
+        table::columns(self.result_group(), &self.index.columns)
     }
     pub(in crate::ui) fn column_width(&self, column: &table::Column) -> Pixels {
         self.column_widths
@@ -133,6 +138,11 @@ impl Workspace {
             .into_any_element()
     }
     pub(in crate::ui) fn render_results(&self, cx: &mut Context<Self>) -> AnyElement {
+        match self.result_group() {
+            Some(ArtifactGroup::Processes) => return self.render_processes(cx),
+            Some(ArtifactGroup::Files) => return self.render_files(cx),
+            _ => {}
+        }
         let columns = self.result_columns();
         let single_column = columns.len() == 1;
         let width: Pixels = columns.iter().map(|c| self.column_width(c)).sum();
@@ -217,39 +227,7 @@ impl Workspace {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .child(div().flex_1().min_w_0().text_sm().truncate().child(format!(
-                        "{} · {} results{}",
-                        self.scope_label,
-                        self.index.ids.len(),
-                        if self.loading { " · searching" } else { "" }
-                    )))
-                    .child(
-                        div().w(px(260.)).child(
-                            Input::new(&self.query)
-                                .id("result-search")
-                                .aria_label("Search artifacts")
-                                .small()
-                                .cleanable(true),
-                        ),
-                    )
-                    .child(
-                        Button::new("export-csv")
-                            .small()
-                            .ghost()
-                            .label("Export CSV")
-                            .disabled(self.scope.is_empty())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.export(false, window, cx)),
-                            ),
-                    ),
-            )
+            .child(self.render_results_toolbar(cx))
             .child(
                 div()
                     .relative()
@@ -284,23 +262,18 @@ impl Workspace {
                             ),
                     )
                     .when(self.index.ids.is_empty(), |body| {
-                        let message = if self.loading {
-                            "Loading results...".to_string()
-                        } else if !self.query.read(cx).value().is_empty() {
-                            "No results match your search.".to_string()
-                        } else if let Some(run) = self.case.as_ref().and_then(|case| case.document.runs.iter().find(|run| self.scope.len() == 1 && self.scope.contains(&run.id))) {
-                            match run.status {
-                                RunStatus::Queued => "This analysis is queued. Results will appear after it runs.".into(),
-                                RunStatus::Running => "This analysis is running. Results will appear when it finishes.".into(),
-                                RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled => format!("This analysis {} and returned no results. See Run details for diagnostics.", run.status.label().to_lowercase()),
-                                RunStatus::Completed => "This analysis completed without returning any results.".into(),
-                            }
-                        } else if self.scope.is_empty() {
-                            "Select an analysis to view its results.".into()
-                        } else {
-                            "These analyses returned no results.".into()
-                        };
-                        body.child(div().absolute().top(px(48.)).left_0().right_0().px_4().text_sm().text_color(cx.theme().muted_foreground).child(message))
+                        let message = self.results_empty_message(cx);
+                        body.child(
+                            div()
+                                .absolute()
+                                .top(px(48.))
+                                .left_0()
+                                .right_0()
+                                .px_4()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(message),
+                        )
                     })
                     .child(Scrollbar::horizontal(&self.table_x_scroll).mode(ScrollbarMode::Always))
                     .child(
@@ -409,5 +382,68 @@ impl Workspace {
                 row.into_any_element()
             })
             .collect()
+    }
+    pub(in crate::ui) fn render_results_toolbar(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .child(div().flex_1().min_w_0().text_sm().truncate().child(format!(
+                "{} · {} results{}",
+                self.scope_label,
+                self.index.ids.len(),
+                if self.loading { " · searching" } else { "" }
+            )))
+            .child(
+                div().w(px(260.)).child(
+                    Input::new(&self.query)
+                        .id("result-search")
+                        .aria_label("Search artifacts")
+                        .small()
+                        .cleanable(true),
+                ),
+            )
+            .child(
+                Button::new("export-csv")
+                    .small()
+                    .ghost()
+                    .label("Export CSV")
+                    .disabled(self.scope.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| this.export(false, window, cx))),
+            )
+    }
+    pub(in crate::ui) fn results_empty_message(&self, cx: &App) -> String {
+        if self.loading {
+            "Loading results...".to_string()
+        } else if !self.query.read(cx).value().is_empty() {
+            "No results match your search.".to_string()
+        } else if let Some(run) = self.case.as_ref().and_then(|case| {
+            case.document
+                .runs
+                .iter()
+                .find(|run| self.scope.len() == 1 && self.scope.contains(&run.id))
+        }) {
+            match run.status {
+                RunStatus::Queued => {
+                    "This analysis is queued. Results will appear after it runs.".into()
+                }
+                RunStatus::Running => {
+                    "This analysis is running. Results will appear when it finishes.".into()
+                }
+                RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled => format!(
+                    "This analysis {} and returned no results. See Run details for diagnostics.",
+                    run.status.label().to_lowercase()
+                ),
+                RunStatus::Completed => {
+                    "This analysis completed without returning any results.".into()
+                }
+            }
+        } else if self.scope.is_empty() {
+            "Select an analysis to view its results.".into()
+        } else {
+            "These analyses returned no results.".into()
+        }
     }
 }

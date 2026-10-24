@@ -48,6 +48,7 @@ use volgui::{
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, QueueClearScope, RunStatus, now},
     result_table as table,
+    result_tree::ResultTree,
     results::{ProcessRelations, Query, ResultIndex, ResultStore, StoredRecord},
     settings::Settings,
     volatility::{Installation, Outcome, display_value, format_arguments},
@@ -77,7 +78,7 @@ enum Event {
     Finished(String, Outcome),
     Indexed(
         u64,
-        std::result::Result<(ResultIndex, Vec<StoredRecord>), String>,
+        std::result::Result<(ResultIndex, Vec<StoredRecord>, ResultTree), String>,
     ),
     Rows(
         u64,
@@ -119,6 +120,8 @@ pub struct Workspace {
     scope: Vec<String>,
     scope_label: String,
     index: ResultIndex,
+    result_tree: ResultTree,
+    tree_cursor: Option<usize>,
     row_cache: HashMap<i64, Arc<StoredRecord>>,
     inflight: HashSet<i64>,
     sort: Option<(String, bool)>,
@@ -287,6 +290,8 @@ impl Workspace {
             scope: vec![],
             scope_label: "Artifacts".into(),
             index: ResultIndex::default(),
+            result_tree: ResultTree::default(),
+            tree_cursor: None,
             row_cache: HashMap::new(),
             inflight: HashSet::new(),
             sort: None,
@@ -499,6 +504,7 @@ impl Workspace {
                         self.selected_row = None;
                         self.scope.clear();
                         self.index = ResultIndex::default();
+                        self.result_tree = ResultTree::default();
                         self.row_cache.clear();
                         self.inflight.clear();
                         self.view = View::Workspace;
@@ -550,8 +556,10 @@ impl Workspace {
                     }
                     self.loading = false;
                     match result {
-                        Ok((index, rows)) => {
+                        Ok((index, rows, tree)) => {
                             self.index = index;
+                            self.result_tree = tree;
+                            self.tree_cursor = None;
                             self.row_cache.clear();
                             for r in rows {
                                 self.row_cache.insert(r.id, Arc::new(r));

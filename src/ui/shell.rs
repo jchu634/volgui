@@ -217,6 +217,17 @@ impl Render for Workspace {
         div()
             .id("workspace-root")
             .track_focus(&self.workspace_focus)
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if this.workspace_focus.is_focused(window)
+                    && this.view == View::Workspace
+                    && matches!(
+                        this.result_group(),
+                        Some(ArtifactGroup::Processes | ArtifactGroup::Files)
+                    )
+                {
+                    this.tree_key_down(event, cx);
+                }
+            }))
             .on_action(
                 cx.listener(|_, _: &gpui_kit::base::input::Copy, window, cx| {
                     let text = gpui_kit::base::TextSelection::selected_text(window, cx);

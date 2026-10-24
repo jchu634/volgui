@@ -101,6 +101,7 @@ impl Workspace {
         self.selected_run = self.scope.first().cloned();
         self.sort = None;
         self.index = ResultIndex::default();
+        self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.detail = DetailTab::Overview;
         self.view = View::Workspace;
@@ -122,6 +123,7 @@ impl Workspace {
             return;
         };
         let query = self.active_query(cx);
+        let group = self.result_group();
         let epoch = self.query_epoch.fetch_add(1, Ordering::Relaxed) + 1;
         let token = self.query_epoch.clone();
         self.loading = true;
@@ -132,24 +134,51 @@ impl Workspace {
                 return;
             }
             let result = store.query(&query).and_then(|index| {
-                let rows = store.fetch(&index.ids[..index.ids.len().min(128)])?;
-                Ok((index, rows))
+                let tree = match group {
+                    Some(ArtifactGroup::Processes) => {
+                        ResultTree::processes(store.tree_entries(&query.runs)?, &index.ids)
+                    }
+                    Some(ArtifactGroup::Files) => {
+                        ResultTree::files(store.tree_entries(&query.runs)?, &index.ids)
+                    }
+                    _ => ResultTree::default(),
+                };
+                let mut ids: Vec<_> = if tree.nodes.is_empty() {
+                    index.ids.iter().take(128).copied().collect()
+                } else {
+                    tree.visible
+                        .iter()
+                        .filter_map(|(i, _)| tree.nodes[*i].record_id)
+                        .take(128)
+                        .collect()
+                };
+                if let Some(id) = index.ids.first()
+                    && !ids.contains(id)
+                {
+                    ids.push(*id);
+                }
+                let rows = store.fetch(&ids)?;
+                Ok((index, rows, tree))
             });
             let _ = tx.send(Event::Indexed(epoch, result));
         });
         cx.notify();
     }
     pub(super) fn request_rows(&mut self, range: Range<usize>) {
-        let Some(store) = self.store() else {
-            return;
-        };
-        let ids: Vec<_> = self
+        let ids = self
             .index
             .ids
             .get(range.start.min(self.index.ids.len())..range.end.min(self.index.ids.len()))
             .unwrap_or(&[])
-            .iter()
-            .copied()
+            .to_vec();
+        self.request_record_ids(ids);
+    }
+    pub(super) fn request_record_ids(&mut self, ids: Vec<i64>) {
+        let Some(store) = self.store() else {
+            return;
+        };
+        let ids: Vec<_> = ids
+            .into_iter()
             .filter(|id| !self.row_cache.contains_key(id) && !self.inflight.contains(id))
             .take(256)
             .collect();

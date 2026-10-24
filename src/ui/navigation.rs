@@ -71,6 +71,7 @@ impl Workspace {
         self.browser_group = location.browser;
         self.detail = location.detail;
         self.index = ResultIndex::default();
+        self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.result_scroll = UniformListScrollHandle::default();
         self.query
@@ -103,6 +104,7 @@ impl Workspace {
         self.scope.clear();
         self.scope_label.clear();
         self.index = ResultIndex::default();
+        self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.inflight.clear();
         self.relations = ProcessRelations::default();

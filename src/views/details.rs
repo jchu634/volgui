@@ -270,7 +270,7 @@ impl Workspace {
                         );
                     }
                 } else {
-                    content=content.child(div().text_sm().text_color(cx.theme().muted_foreground).child("Select a result to inspect its fields. Add evidence or choose analyses to populate the table."));
+                    content=content.child(div().text_sm().text_color(cx.theme().muted_foreground).child("Select a result to inspect its fields. Add evidence or choose analyses to load results."));
                 }
             }
             DetailTab::Raw => {
