@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -200,6 +200,23 @@ pub struct CaseDocument {
     pub evidence: Vec<Evidence>,
     pub runs: Vec<Run>,
     pub annotations: Vec<Annotation>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub cleared_queue_runs: BTreeSet<String>,
+}
+
+#[derive(Clone, Copy)]
+pub enum QueueClearScope {
+    Completed,
+    Finished,
+}
+
+impl QueueClearScope {
+    pub fn includes(self, status: RunStatus) -> bool {
+        match self {
+            Self::Completed => matches!(status, RunStatus::Completed | RunStatus::Cancelled),
+            Self::Finished => !matches!(status, RunStatus::Queued | RunStatus::Running),
+        }
+    }
 }
 
 pub struct Case {
@@ -243,6 +260,7 @@ impl Case {
                 evidence: vec![],
                 runs: vec![],
                 annotations: vec![],
+                cleared_queue_runs: BTreeSet::new(),
             },
         };
         ResultStore::open(&case.directory)?;
@@ -403,6 +421,29 @@ impl Case {
         self.directory.join("analyses").join(id)
     }
 
+    /// Dismiss finished queue entries without deleting history, results or output files.
+    pub fn clear_queue(&mut self, scope: QueueClearScope) -> Result<usize> {
+        let ids: Vec<_> = self
+            .document
+            .queue_runs()
+            .filter(|run| scope.includes(run.status))
+            .map(|run| run.id.clone())
+            .collect();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let previous_updated_at = self.document.updated_at.clone();
+        self.document.cleared_queue_runs.extend(ids.iter().cloned());
+        if let Err(error) = self.save() {
+            for id in &ids {
+                self.document.cleared_queue_runs.remove(id);
+            }
+            self.document.updated_at = previous_updated_at;
+            return Err(error);
+        }
+        Ok(ids.len())
+    }
+
     pub fn finish(&mut self, id: &str, outcome: &Outcome) -> Result<()> {
         let store = ResultStore::at(&self.directory);
         if let Some(table) = &outcome.table {
@@ -492,6 +533,13 @@ impl Case {
 }
 
 impl CaseDocument {
+    pub fn queue_runs(&self) -> impl DoubleEndedIterator<Item = &Run> {
+        self.runs.iter().filter(|run| {
+            matches!(run.status, RunStatus::Queued | RunStatus::Running)
+                || !self.cleared_queue_runs.contains(&run.id)
+        })
+    }
+
     pub fn migrate_results(&self, directory: &Path, cancel: &AtomicBool) -> Result<()> {
         let store = ResultStore::open(directory)?;
         for run in self
@@ -511,6 +559,15 @@ impl CaseDocument {
         Ok(())
     }
     pub fn export(&self, directory: &Path, path: &Path, content: &[u8]) -> Result<()> {
+        self.export_reader(directory, path, &mut &content[..])
+    }
+
+    pub fn export_reader(
+        &self,
+        directory: &Path,
+        path: &Path,
+        reader: &mut impl std::io::Read,
+    ) -> Result<()> {
         let parent = path
             .parent()
             .ok_or("Export path has no parent")?
@@ -535,7 +592,7 @@ impl CaseDocument {
             );
         }
         let mut temp = tempfile::NamedTempFile::new_in(&parent).map_err(|e| e.to_string())?;
-        temp.write_all(content).map_err(|e| e.to_string())?;
+        std::io::copy(reader, &mut temp).map_err(|e| e.to_string())?;
         temp.as_file().sync_all().map_err(|e| e.to_string())?;
         temp.persist(&target).map_err(|e| e.to_string())?;
         Ok(())

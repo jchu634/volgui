@@ -216,7 +216,13 @@ impl Workspace {
         let mut runs = self
             .case
             .as_ref()
-            .map(|case| case.document.runs.iter().rev().cloned().collect::<Vec<_>>())
+            .map(|case| {
+                case.document
+                    .queue_runs()
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         runs.sort_by_key(|run| match run.status {
             RunStatus::Running => 0,
@@ -233,26 +239,40 @@ impl Workspace {
                 + start;
             runs[start..end].reverse();
         }
-        let mut completed = 0;
-        runs.retain(|run| {
-            if matches!(run.status, RunStatus::Running | RunStatus::Queued) {
-                true
-            } else {
-                completed += 1;
-                completed <= 8
-            }
-        });
-        let mut list = div()
-            .id("queue-analyses")
-            .max_h(px(430.))
-            .flex()
-            .flex_col()
-            .overflow_y_scrollbar();
+        let content_height = px(runs.len() as f32 * 32.);
+        let list_height = content_height.clamp(px(32.), px(430.));
+        let has_failed = runs
+            .iter()
+            .any(|run| matches!(run.status, RunStatus::Failed | RunStatus::Interrupted));
+        let has_completed = runs
+            .iter()
+            .any(|run| QueueClearScope::Completed.includes(run.status));
+        let has_finished = runs
+            .iter()
+            .any(|run| QueueClearScope::Finished.includes(run.status));
+        let mut list = div().id("queue-analyses").flex().flex_col().w_full().pr_3();
+        if runs.is_empty() {
+            list = list.child(
+                div()
+                    .h(px(32.))
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No jobs in the queue"),
+            );
+        }
         for run in runs {
             let id = run.id.clone();
             let cancel = id.clone();
+            let retry = id.clone();
             let cancel_label = format!("Cancel {}", run.plugin);
             let active = matches!(run.status, RunStatus::Running | RunStatus::Queued);
+            let color = match run.status {
+                RunStatus::Running => Some(cx.theme().primary),
+                RunStatus::Queued => Some(cx.theme().warning),
+                RunStatus::Failed | RunStatus::Interrupted => Some(cx.theme().danger),
+                RunStatus::Cancelled => Some(cx.theme().muted_foreground),
+                _ => None,
+            };
             let status = if active {
                 run.status.label().into()
             } else {
@@ -263,7 +283,9 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .map(|row| if active { row.py_2() } else { row.py_1() })
+                    .h(px(32.))
+                    .flex_shrink_0()
+                    .when_some(color, |row, color| row.text_color(color))
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -274,7 +296,9 @@ impl Workspace {
                             .flex_1()
                             .min_w_0()
                             .cursor_pointer()
-                            .when(!active, |row| row.flex().items_center().gap_2())
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .child(
                                 div()
                                     .flex_1()
@@ -288,13 +312,27 @@ impl Workspace {
                                     .text_xs()
                                     .flex_shrink_0()
                                     .whitespace_nowrap()
-                                    .text_color(cx.theme().muted_foreground)
+                                    .text_color(color.unwrap_or(cx.theme().muted_foreground))
                                     .child(status),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.queue_open = false;
                                 this.select_run(id.clone(), window, cx);
                             })),
+                    )
+                    .when(
+                        matches!(run.status, RunStatus::Failed | RunStatus::Interrupted),
+                        |row| {
+                            row.child(
+                                Button::new(key("retry-queued-run", &retry))
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Retry")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.retry_run(&retry, window, cx)
+                                    })),
+                            )
+                        },
                     )
                     .when(active, |row| {
                         row.child(
@@ -318,16 +356,75 @@ impl Workspace {
             .flex_col()
             .gap_2()
             .child(heading("ANALYSIS QUEUE", cx))
-            .child(list)
             .child(
-                Button::new("queue-history")
-                    .small()
-                    .ghost()
-                    .label("Analysis history...")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.queue_open = false;
-                        this.navigate(View::Analyses, cx);
-                    })),
+                div()
+                    .relative()
+                    .h(list_height)
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .id("queue-scroll-viewport")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.queue_scroll)
+                            .child(list),
+                    )
+                    .child(Scrollbar::vertical(&self.queue_scroll).mode(ScrollbarMode::Always)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("queue-history")
+                            .small()
+                            .outline()
+                            .label("History")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.queue_open = false;
+                                this.navigate(View::Analyses, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("queue-retry-all-failed")
+                            .small()
+                            .outline()
+                            .label("Retry all failed")
+                            .tooltip("Retry all failed and interrupted analyses")
+                            .disabled(!has_failed)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.retry_all_failed(window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("queue-clear-completed")
+                            .small()
+                            .outline()
+                            .label("Clear completed")
+                            .tooltip("Clear completed and cancelled jobs from the queue. History and results are kept.")
+                            .disabled(!has_completed)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clear_queue(QueueClearScope::Completed, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("queue-clear-finished")
+                            .small()
+                            .outline()
+                            .label("Clear finished")
+                            .tooltip("Clear completed, cancelled, failed and interrupted jobs from the queue. History and results are kept.")
+                            .disabled(!has_finished)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clear_queue(QueueClearScope::Finished, cx);
+                            })),
+                    ),
             )
             .into_any_element()
     }

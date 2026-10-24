@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     artifacts::OperatingSystem,
-    case::{Evidence, Result, Run},
+    case::{Case, Evidence, Result, Run, RunStatus},
     volatility::{Installation, Plugin, parse_arguments},
 };
 
@@ -24,6 +24,7 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         | "mac.netstat.Netstat" => "Network connections",
         "windows.dlllist.DllList" => "Loaded DLLs",
         "windows.filescan.FileScan" | "linux.lsof.Lsof" | "mac.lsof.Lsof" => "File scan",
+        "windows.dumpfiles.DumpFiles" => "Dump files",
         "windows.registry.hivelist.HiveList" | "windows.registry.hivescan.HiveScan" => {
             "Registry hives"
         }
@@ -34,6 +35,39 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.sessions.Sessions" => "User sessions",
         _ => return None,
     })
+}
+
+/// Queue fresh attempts together, preserving the original runs and their options.
+pub fn queue_retries(case: &mut Case, engine: &Installation, ids: &[String]) -> Result<usize> {
+    let runs = ids
+        .iter()
+        .map(|id| {
+            let previous = case
+                .document
+                .runs
+                .iter()
+                .find(|run| run.id == *id)
+                .ok_or("Analysis is no longer available")?;
+            if !matches!(previous.status, RunStatus::Failed | RunStatus::Interrupted) {
+                return Err("Only failed or interrupted analyses can be retried".into());
+            }
+            let evidence = case
+                .document
+                .evidence
+                .iter()
+                .find(|e| e.id == previous.evidence_id)
+                .ok_or("Evidence is no longer available")?;
+            engine.prepare(
+                evidence,
+                &previous.plugin,
+                previous.arguments.clone(),
+                &case.directory.join("analyses"),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let count = runs.len();
+    case.queue_batch(runs)?;
+    Ok(count)
 }
 
 pub fn chooser_plugins(

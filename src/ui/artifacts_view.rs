@@ -277,6 +277,25 @@ impl Workspace {
                                     ),
                             ),
                     )
+                    .when(self.index.ids.is_empty(), |body| {
+                        let message = if self.loading {
+                            "Loading results...".to_string()
+                        } else if !self.query.read(cx).value().is_empty() {
+                            "No results match your search.".to_string()
+                        } else if let Some(run) = self.case.as_ref().and_then(|case| case.document.runs.iter().find(|run| self.scope.len() == 1 && self.scope.contains(&run.id))) {
+                            match run.status {
+                                RunStatus::Queued => "This analysis is queued. Results will appear after it runs.".into(),
+                                RunStatus::Running => "This analysis is running. Results will appear when it finishes.".into(),
+                                RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled => format!("This analysis {} and returned no results. See Run details for diagnostics.", run.status.label().to_lowercase()),
+                                RunStatus::Completed => "This analysis completed without returning any results.".into(),
+                            }
+                        } else if self.scope.is_empty() {
+                            "Select an analysis to view its results.".into()
+                        } else {
+                            "These analyses returned no results.".into()
+                        };
+                        body.child(div().absolute().top(px(48.)).left_0().right_0().px_4().text_sm().text_color(cx.theme().muted_foreground).child(message))
+                    })
                     .child(Scrollbar::horizontal(&self.table_x_scroll).mode(ScrollbarMode::Always))
                     .child(
                         // The list spans all columns; anchor its scrollbar to the visible body.
@@ -404,6 +423,7 @@ impl Workspace {
             ("raw", "Raw JSON", DetailTab::Raw),
             ("notes", "Notes", DetailTab::Notes),
             ("diagnostics", "Run details", DetailTab::Diagnostics),
+            ("files", "Extracted files", DetailTab::Files),
         ] {
             tabs = tabs.child(
                 Button::new(id)
@@ -650,6 +670,82 @@ impl Workspace {
                             .disabled(record.is_none())
                             .on_click(cx.listener(|this, _, _, cx| this.annotate(false, cx))),
                     );
+            }
+            DetailTab::Files => {
+                if let Some((case, run)) = self.case.as_ref().and_then(|case| {
+                    case.document
+                        .runs
+                        .iter()
+                        .find(|run| Some(&run.id) == self.selected_run.as_ref())
+                        .map(|run| (case, run))
+                }) {
+                    let directory = case.run_dir(&run.id);
+                    match volgui::extracted_files::list(&directory) {
+                        Ok(files) if files.is_empty() => {
+                            content = content.child("No extracted files. Run a dump plugin or enable its --dump option to extract files from memory.");
+                        }
+                        Ok(files) => {
+                            let imhex = volgui::extracted_files::imhex();
+                            if imhex.is_none() {
+                                content = content.child(div().text_sm().child("ImHex was not found. Install it in its default location or add it to PATH to open files here."));
+                            }
+                            for (i, file) in files.into_iter().enumerate() {
+                                let source = file.clone();
+                                let mut row = div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .py_1()
+                                    .child(
+                                        div().flex_1().text_sm().child(
+                                            file.strip_prefix(&directory)
+                                                .unwrap_or(&file)
+                                                .display()
+                                                .to_string(),
+                                        ),
+                                    )
+                                    .child(
+                                        Button::new(("save-extracted", i))
+                                            .small()
+                                            .label("Save as...")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.export_file(source.clone(), window, cx)
+                                            })),
+                                    );
+                                if let Some(executable) = imhex.clone() {
+                                    row = row.child(
+                                        Button::new(("imhex-extracted", i))
+                                            .small()
+                                            .label("Open in ImHex")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                match volgui::extracted_files::open(
+                                                    &executable,
+                                                    &file,
+                                                ) {
+                                                    Ok(()) => {
+                                                        this.message = "Opened in ImHex".into()
+                                                    }
+                                                    Err(error) => {
+                                                        this.error = Some(format!(
+                                                            "Could not open ImHex: {error}"
+                                                        ))
+                                                    }
+                                                }
+                                                cx.notify();
+                                            })),
+                                    );
+                                }
+                                content = content.child(row);
+                            }
+                        }
+                        Err(error) => {
+                            content =
+                                content.child(format!("Could not list extracted files: {error}"))
+                        }
+                    }
+                } else {
+                    content = content.child("Select an analysis to view its extracted files.");
+                }
             }
             DetailTab::Diagnostics => {
                 if let Some(run) = self.case.as_ref().and_then(|c| {

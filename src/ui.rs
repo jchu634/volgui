@@ -40,9 +40,9 @@ use std::{
     time::{Duration, Instant},
 };
 use volgui::{
-    analyses::{AnalysisDraft, basic_label, chooser_plugins},
+    analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries},
     artifacts::{ArtifactGroup, OperatingSystem},
-    case::{Case, Evidence, RunStatus, now},
+    case::{Case, Evidence, QueueClearScope, RunStatus, now},
     result_table as table,
     results::{
         BrowserEntry, ProcessNode, ProcessRelations, Query, ResultIndex, ResultStore, StoredRecord,
@@ -67,6 +67,7 @@ enum DetailTab {
     Raw,
     Notes,
     Diagnostics,
+    Files,
 }
 enum Event {
     Opened(std::result::Result<Case, String>),
@@ -141,6 +142,7 @@ pub struct Workspace {
     table_x_scroll: ScrollHandle,
     browser_scroll: VirtualListScrollHandle,
     details_scroll: ScrollHandle,
+    queue_scroll: ScrollHandle,
     relations_scroll: UniformListScrollHandle,
     column_widths: HashMap<String, Pixels>,
     column_drag_origin: Rc<Cell<Pixels>>,
@@ -334,6 +336,7 @@ impl Workspace {
             table_x_scroll: ScrollHandle::default(),
             browser_scroll: VirtualListScrollHandle::new(),
             details_scroll: ScrollHandle::default(),
+            queue_scroll: ScrollHandle::default(),
             relations_scroll: UniformListScrollHandle::default(),
             column_widths: HashMap::new(),
             column_drag_origin: Rc::new(Cell::new(px(0.))),
@@ -757,6 +760,61 @@ impl Workspace {
                 self.view = View::Workspace;
             }
             Err(error) => self.analysis_error = Some(error),
+        }
+        cx.notify();
+    }
+    fn retry_run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.retry_runs(&[id.to_string()], window, cx);
+    }
+    fn retry_all_failed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<_> = self
+            .case
+            .iter()
+            .flat_map(|case| case.document.queue_runs())
+            .filter(|run| matches!(run.status, RunStatus::Failed | RunStatus::Interrupted))
+            .map(|run| run.id.clone())
+            .collect();
+        if !ids.is_empty() {
+            self.retry_runs(&ids, window, cx);
+        }
+    }
+    fn retry_runs(&mut self, ids: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        let result = (|| {
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure Volatility in settings")?;
+            let case = self.case.as_mut().ok_or("Open a case first")?;
+            queue_retries(case, engine, ids)
+        })();
+        match result {
+            Ok(count) => {
+                if self.batch_total == self.batch_finished {
+                    self.batch_total = 0;
+                    self.batch_finished = 0;
+                }
+                self.batch_total += count;
+                self.message = if count == 1 {
+                    "Retry queued as a new analysis".into()
+                } else {
+                    format!("Queued {count} retries as new analyses")
+                };
+                self.start_next(window, cx);
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+    fn clear_queue(&mut self, scope: QueueClearScope, cx: &mut Context<Self>) {
+        let Some(case) = self.case.as_mut() else {
+            return;
+        };
+        match case.clear_queue(scope) {
+            Ok(count) => {
+                self.queue_scroll.set_offset(point(px(0.), px(0.)));
+                self.message = format!("Cleared {count} jobs from the queue");
+            }
+            Err(error) => self.error = Some(error),
         }
         cx.notify();
     }
@@ -1230,6 +1288,31 @@ impl Workspace {
             }
             Ok(Err(e)) => {
                 let _ = tx.send(Event::Exported(Err(e.to_string())));
+            }
+            _ => {}
+        })
+        .detach();
+    }
+    fn export_file(&mut self, source: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(case) = &self.case else { return };
+        let document = case.document.clone();
+        let directory = case.directory.clone();
+        let tx = self.tx.clone();
+        let receiver =
+            cx.prompt_for_new_path(&directory, source.file_name().and_then(|n| n.to_str()));
+        cx.spawn_in(window, async move |_, _| match receiver.await {
+            Ok(Ok(Some(path))) => {
+                thread::spawn(move || {
+                    let result = (|| {
+                        let mut file = std::fs::File::open(&source).map_err(|e| e.to_string())?;
+                        document.export_reader(&directory, &path, &mut file)?;
+                        Ok(path)
+                    })();
+                    let _ = tx.send(Event::Exported(result));
+                });
+            }
+            Ok(Err(error)) => {
+                let _ = tx.send(Event::Exported(Err(error.to_string())));
             }
             _ => {}
         })
