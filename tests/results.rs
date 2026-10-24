@@ -1,14 +1,10 @@
+// Checks results behavior.
 use serde_json::json;
-use std::{
-    collections::{BTreeMap, HashSet},
-    fs,
-    sync::atomic::AtomicBool,
-    time::Instant,
-};
+use std::{collections::BTreeMap, fs, sync::atomic::AtomicBool, time::Instant};
 use volgui::{
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, Run, RunStatus, now},
-    results::{BrowserEntry, DATABASE, Query, ResultStore, process_forest},
+    results::{DATABASE, Query, ResultStore},
     volatility::{Record, Table},
 };
 
@@ -102,7 +98,7 @@ fn file_name_column_reads_and_sorts_across_plugins_with_different_field_names() 
     store
         .insert(
             &handles,
-            &Table::parse(r#"[{"Name":"zulu.txt"},{"Name":null,"FileName":"middle.txt"}]"#)
+            &Table::parse(r#"[{"Type":"File","Name":"zulu.txt"},{"Type":"File","Name":null,"FileName":"middle.txt"}]"#)
                 .unwrap(),
         )
         .unwrap();
@@ -339,48 +335,6 @@ fn artifact_groups_combine_plugins_and_os_filters_allow_common_plugins() {
     assert!(OperatingSystem::Linux.accepts("banners.Banners"));
     assert!(OperatingSystem::Linux.accepts("linux.pslist.PsList"));
     assert!(!OperatingSystem::Linux.accepts("windows.pslist.PsList"));
-}
-
-#[test]
-fn process_tree_keeps_orphans_breaks_cycles_and_deduplicates_pids() {
-    let entries = vec![
-        (1, "1", "0"),
-        (2, "2", "1"),
-        (3, "3", "9"),
-        (4, "4", "5"),
-        (5, "5", "4"),
-        (6, "2", "1"),
-    ]
-    .into_iter()
-    .map(|(id, pid, ppid)| BrowserEntry {
-        id,
-        title: format!("process {pid}"),
-        pid: Some(pid.into()),
-        ppid: Some(ppid.into()),
-        path: None,
-    })
-    .collect::<Vec<_>>();
-    let forest = process_forest(&entries);
-    fn collect(nodes: &[volgui::results::ProcessNode], ids: &mut Vec<i64>) {
-        for n in nodes {
-            ids.push(n.entry.id);
-            collect(&n.children, ids);
-        }
-    }
-    let mut ids = vec![];
-    collect(&forest, &mut ids);
-    assert_eq!(ids.len(), 5);
-    assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 5);
-    assert!(forest.iter().any(|n| n.entry.pid.as_deref() == Some("3")));
-    assert!(
-        forest
-            .iter()
-            .find(|n| n.entry.pid.as_deref() == Some("1"))
-            .unwrap()
-            .children
-            .iter()
-            .any(|n| n.entry.pid.as_deref() == Some("2"))
-    );
 }
 
 #[test]

@@ -1,8 +1,251 @@
+// Finds and opens extracted analysis files.
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::Command,
 };
+
+use crate::{
+    case::Case,
+    results::StoredRecord,
+    volatility::{Installation, Record},
+};
+
+pub const DUMP_FILES: &str = "windows.dumpfiles.DumpFiles";
+
+pub const HEX_PAGE_SIZE: u64 = 256;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContentEncoding {
+    #[default]
+    Hex,
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+    Sqlite,
+}
+impl ContentEncoding {
+    pub const ALL: [Self; 5] = [
+        Self::Hex,
+        Self::Utf8,
+        Self::Utf16Le,
+        Self::Utf16Be,
+        Self::Sqlite,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hex => "Hex",
+            Self::Utf8 => "UTF-8 text",
+            Self::Utf16Le => "UTF-16LE text",
+            Self::Utf16Be => "UTF-16BE text",
+            Self::Sqlite => "SQLite tables",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct HexPage {
+    pub path: PathBuf,
+    pub offset: u64,
+    pub total: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl HexPage {
+    pub fn decoded(&self, encoding: ContentEncoding) -> String {
+        let text = match encoding {
+            ContentEncoding::Hex | ContentEncoding::Sqlite => return self.text(),
+            ContentEncoding::Utf8 => String::from_utf8_lossy(&self.bytes).into_owned(),
+            ContentEncoding::Utf16Le | ContentEncoding::Utf16Be => {
+                let units: Vec<_> = self
+                    .bytes
+                    .chunks_exact(2)
+                    .map(|b| {
+                        if encoding == ContentEncoding::Utf16Le {
+                            u16::from_le_bytes([b[0], b[1]])
+                        } else {
+                            u16::from_be_bytes([b[0], b[1]])
+                        }
+                    })
+                    .collect();
+                String::from_utf16_lossy(&units)
+            }
+        };
+        text.chars()
+            .map(|c| {
+                if c.is_control() && !matches!(c, '\n' | '\r' | '\t') {
+                    '\u{fffd}'
+                } else {
+                    c
+                }
+            })
+            .collect()
+    }
+    pub fn read(path: &Path, offset: u64) -> Result<Self, String> {
+        let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+        let total = file.metadata().map_err(|e| e.to_string())?.len();
+        let offset = offset.min(total.saturating_sub(1)) / HEX_PAGE_SIZE * HEX_PAGE_SIZE;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        file.take(HEX_PAGE_SIZE)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            path: path.into(),
+            offset,
+            total,
+            bytes,
+        })
+    }
+
+    pub fn text(&self) -> String {
+        use std::fmt::Write;
+        let mut text = String::from(
+            "Offset            Hex bytes                                         ASCII\n",
+        );
+        for (i, chunk) in self.bytes.chunks(16).enumerate() {
+            let _ = write!(text, "{:016X}  ", self.offset + i as u64 * 16);
+            for j in 0..16 {
+                if let Some(byte) = chunk.get(j) {
+                    let _ = write!(text, "{byte:02X} ");
+                } else {
+                    text.push_str("   ");
+                }
+                if j == 7 {
+                    text.push(' ');
+                }
+            }
+            text.push_str(" | ");
+            for byte in chunk {
+                text.push(if byte.is_ascii_graphic() || *byte == b' ' {
+                    char::from(*byte)
+                } else {
+                    '.'
+                });
+            }
+            text.push('\n');
+        }
+        text
+    }
+}
+
+/// Reuse only an extraction for this file object and source capture.
+pub fn completed_dump<'a>(
+    case: &'a Case,
+    record: &StoredRecord,
+    physical: bool,
+) -> Option<&'a crate::case::Run> {
+    let source = case
+        .document
+        .runs
+        .iter()
+        .find(|run| run.id == record.run_id)?;
+    if source.plugin == DUMP_FILES {
+        return Some(source);
+    }
+    let target = FileDumpTarget::from_record(&source.plugin, &record.record)?;
+    let arguments = target.arguments(physical);
+    case.document.runs.iter().rev().find(|run| {
+        run.plugin == DUMP_FILES
+            && run.evidence_id == source.evidence_id
+            && run.status == crate::case::RunStatus::Completed
+            && run.arguments == arguments
+    })
+}
+
+/// A file object, rather than a path or a process-wide extraction request.
+pub struct FileDumpTarget {
+    address: u64,
+    address_flag: Option<&'static str>,
+}
+
+impl FileDumpTarget {
+    pub fn from_record(plugin: &str, record: &Record) -> Option<Self> {
+        let fields: &[(&str, Option<&str>)] = match plugin {
+            "windows.filescan.FileScan" => &[
+                ("Offset(V)", Some("--virtaddr")),
+                ("Offset(P)", Some("--physaddr")),
+                ("Offset", None),
+            ],
+            "windows.handles.Handles" if record.text("Type") == "File" => &[
+                ("Offset(V)", Some("--virtaddr")),
+                ("Offset", Some("--virtaddr")),
+            ],
+            _ => return None,
+        };
+        for (column, flag) in fields {
+            if let Some(value) = record.fields.get(*column) {
+                let address = value.as_u64().or_else(|| {
+                    let text = value.as_str()?.trim();
+                    match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+                        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                        None => text.parse().ok(),
+                    }
+                })?;
+                if address == 0 {
+                    return None;
+                }
+                return Some(Self {
+                    address,
+                    address_flag: *flag,
+                });
+            }
+        }
+        None
+    }
+
+    /// FileScan's unlabelled Offset uses virtual memory on Windows 10+, physical on older Windows.
+    pub fn needs_address_space(&self) -> bool {
+        self.address_flag.is_none()
+    }
+
+    pub fn arguments(&self, physical_offset: bool) -> Vec<String> {
+        vec![
+            self.address_flag
+                .unwrap_or(if physical_offset {
+                    "--physaddr"
+                } else {
+                    "--virtaddr"
+                })
+                .into(),
+            format!("{:#x}", self.address),
+        ]
+    }
+}
+
+/// Resolve evidence from the source run, even when the UI is browsing another capture.
+pub fn queue_file_dump(
+    case: &mut Case,
+    engine: &Installation,
+    record: &StoredRecord,
+    physical_offset: bool,
+) -> Result<String, String> {
+    let source = case
+        .document
+        .runs
+        .iter()
+        .find(|run| run.id == record.run_id)
+        .ok_or("The source analysis is no longer available")?;
+    let target = FileDumpTarget::from_record(&source.plugin, &record.record)
+        .ok_or("This result has no supported file object offset")?;
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == source.evidence_id)
+        .ok_or("The source evidence is no longer available")?;
+    let run = engine.prepare(
+        evidence,
+        DUMP_FILES,
+        target.arguments(physical_offset),
+        &case.directory.join("analyses"),
+    )?;
+    let id = run.id.clone();
+    case.queue(run)?;
+    Ok(id)
+}
 
 /// List plugin-created files without following links outside the analysis directory.
 pub fn list(directory: &Path) -> Result<Vec<PathBuf>, String> {
@@ -56,8 +299,55 @@ pub fn imhex() -> Option<PathBuf> {
 pub fn open(executable: &Path, file: &Path) -> Result<(), String> {
     let file = file.canonicalize().map_err(|e| e.to_string())?;
     Command::new(executable)
-        .arg(file)
+        .arg(imhex_path(&file))
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn imhex_path(file: &Path) -> PathBuf {
+    // ImHex's command-line file matching ignores Windows verbatim paths.
+    #[cfg(windows)]
+    {
+        use std::{
+            ffi::OsString,
+            path::{Component, Prefix},
+        };
+        let mut components = file.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            let mut path = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut prefix = OsString::from(r"\\");
+                    prefix.push(server);
+                    prefix.push(r"\");
+                    prefix.push(share);
+                    PathBuf::from(prefix)
+                }
+                _ => return file.to_path_buf(),
+            };
+            path.push(components.as_path());
+            return path;
+        }
+    }
+    file.to_path_buf()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imhex_receives_standard_absolute_paths_including_network_shares() {
+        for (source, expected) in [
+            (r"\\?\C:\Case files\résult.dat", r"C:\Case files\résult.dat"),
+            (
+                r"\\?\UNC\server\share\case\file.dat",
+                r"\\server\share\case\file.dat",
+            ),
+            (r"C:\case\file.dat", r"C:\case\file.dat"),
+        ] {
+            assert_eq!(imhex_path(Path::new(source)), PathBuf::from(expected));
+        }
+    }
 }

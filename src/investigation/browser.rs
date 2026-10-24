@@ -1,0 +1,608 @@
+use super::{record, table};
+use crate::{
+    case::{CaseDocument, Run, RunStatus},
+    extracted_files,
+    volatility::{Record, Table},
+};
+use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs::File,
+    io::Read,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+const MAX_ROWS: usize = 100_000;
+const SESSION_LIMIT: u64 = 32 * 1024 * 1024;
+
+pub(super) fn analyze(
+    directory: &Path,
+    document: &CaseDocument,
+    run: &Run,
+    cancel: &AtomicBool,
+    progress: &impl Fn(String),
+) -> Result<(Table, String), String> {
+    let candidates = super::browser_candidates(directory, document, &run.evidence_id, cancel)?;
+    let mut rows = Vec::new();
+    let mut warnings = Vec::new();
+    let mut parsed = 0;
+    for source in document.runs.iter().filter(|r| {
+        r.evidence_id == run.evidence_id
+            && r.status == RunStatus::Completed
+            && !super::is_native(&r.plugin)
+    }) {
+        let output = directory.join("analyses").join(&source.id);
+        if !output.is_dir() {
+            continue;
+        }
+        let original = candidates.iter().find(|candidate| {
+            let Some(owner) = document.runs.iter().find(|r| r.id == candidate.run_id) else {
+                return false;
+            };
+            extracted_files::FileDumpTarget::from_record(&owner.plugin, &candidate.record)
+                .is_some_and(|t| {
+                    t.arguments(false) == source.arguments || t.arguments(true) == source.arguments
+                })
+        });
+        for path in extracted_files::list(&output)? {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Browser analysis cancelled".into());
+            }
+            progress(format!(
+                "Analyzing browser data: {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            let mut head = [0; 16];
+            let size = File::open(&path)
+                .and_then(|mut f| f.read(&mut head))
+                .map_err(|e| e.to_string())?;
+            let first = rows.len();
+            let result = if head[..size].starts_with(b"SQLite format 3\0") {
+                history(&path, &mut rows, cancel)
+            } else if head[..size].starts_with(b"SNSS") {
+                read_session(&path).and_then(|data| chromium_session(&data, &mut rows))
+            } else if head[..size].starts_with(b"mozLz40\0") {
+                read_session(&path).and_then(|data| {
+                    let length = data
+                        .get(8..12)
+                        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                        .map(u32::from_le_bytes)
+                        .ok_or("Truncated Mozilla LZ4 header")?;
+                    if u64::from(length) > SESSION_LIMIT {
+                        return Err("Mozilla session exceeds 32 MiB decompression limit".into());
+                    }
+                    let json = lz4_flex::block::decompress_size_prepended(&data[8..])
+                        .map_err(|e| e.to_string())?;
+                    firefox_session(&json, &mut rows)
+                })
+            } else if original.is_some()
+                || path.extension().is_some_and(|s| s == "json" || s == "js")
+            {
+                read_session(&path).and_then(|data| firefox_session(&data, &mut rows))
+            } else {
+                continue;
+            };
+            if let Err(error) = result {
+                warnings.push(format!("{}: {error}", path.display()));
+            }
+            if rows.len() > first {
+                parsed += 1;
+            }
+            let original_path = original
+                .map(|r| {
+                    ["Name", "FileName", "Path"]
+                        .iter()
+                        .map(|key| r.record.text(key))
+                        .find(|v| !v.is_empty())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            let browser = browser_name(&original_path);
+            for row in &mut rows[first..] {
+                row.fields.insert("Source run".into(), json!(source.id));
+                row.fields.insert(
+                    "Source file".into(),
+                    json!(
+                        path.strip_prefix(directory)
+                            .unwrap_or(&path)
+                            .display()
+                            .to_string()
+                    ),
+                );
+                row.fields
+                    .insert("Original path".into(), json!(original_path));
+                if browser != "Unknown" {
+                    row.fields.insert("Browser".into(), json!(browser));
+                }
+                if let Some(pid) = original.and_then(|r| r.record.fields.get("PID")) {
+                    row.fields.insert("PID".into(), pid.clone());
+                }
+            }
+            if rows.len() >= MAX_ROWS {
+                warnings.push(format!("Stopped at the {MAX_ROWS} row limit. Analyze fewer recovered files to narrow results."));
+                break;
+            }
+        }
+        if rows.len() >= MAX_ROWS {
+            break;
+        }
+    }
+    rows.truncate(MAX_ROWS);
+    let message = format!(
+        "Recovered {} findings from {parsed} files. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
+        rows.len(),
+        warnings.join("\n")
+    );
+    Ok((table(rows), message))
+}
+
+fn browser_name(path: &str) -> &'static str {
+    let path = path.to_lowercase();
+    if path.contains("firefox") {
+        "Firefox"
+    } else if path.contains("edge") {
+        "Edge"
+    } else if path.contains("brave") {
+        "Brave"
+    } else if path.contains("chrome") {
+        "Chrome"
+    } else if path.contains("opera") {
+        "Opera"
+    } else {
+        "Unknown"
+    }
+}
+
+fn timestamp(microseconds: i64, chrome: bool) -> String {
+    let unix = if chrome {
+        microseconds.checked_sub(11_644_473_600_000_000)
+    } else {
+        Some(microseconds)
+    };
+    unix.and_then(DateTime::<Utc>::from_timestamp_micros)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+/// A parsed search URL is a search observation, not evidence of who typed it.
+fn search_terms(address: &str) -> Option<(String, String)> {
+    let url = url::Url::parse(address).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let provider = if matches!(
+        host.as_str(),
+        "google.com"
+            | "www.google.com"
+            | "www.google.com.au"
+            | "google.com.au"
+            | "www.google.co.uk"
+            | "google.co.uk"
+    ) && url.path() == "/search"
+    {
+        ("Google", "q")
+    } else if (host == "bing.com" || host.ends_with(".bing.com")) && url.path() == "/search" {
+        ("Bing", "q")
+    } else if host == "duckduckgo.com" || host.ends_with(".duckduckgo.com") {
+        ("DuckDuckGo", "q")
+    } else if host == "search.yahoo.com" || host.ends_with(".search.yahoo.com") {
+        ("Yahoo", "p")
+    } else if host == "search.brave.com" && url.path() == "/search" {
+        ("Brave", "q")
+    } else {
+        return None;
+    };
+    let term = url
+        .query_pairs()
+        .find(|(key, _)| key == provider.1)?
+        .1
+        .into_owned();
+    (!term.trim().is_empty()).then(|| (provider.0.into(), term))
+}
+
+fn push(
+    rows: &mut Vec<Record>,
+    kind: &str,
+    browser: &str,
+    url: String,
+    title: String,
+    time: Option<(i64, bool)>,
+    observation: Value,
+) {
+    if rows.len() >= MAX_ROWS {
+        return;
+    }
+    let raw_time = time.map(|t| t.0);
+    let time = time
+        .map(|(value, chrome)| timestamp(value, chrome))
+        .unwrap_or_default();
+    let mut row = record(
+        json!({"Kind": kind, "Browser": browser, "URL": url, "Title": title, "Time (UTC)": time, "Raw timestamp": raw_time, "Observation": observation}),
+    );
+    if let Some((engine, terms)) = search_terms(&url) {
+        row.fields.insert("Search engine".into(), json!(engine));
+        row.fields.insert("Search terms".into(), json!(terms));
+    }
+    let search = row.fields.contains_key("Search terms");
+    rows.push(row.clone());
+    if search && rows.len() < MAX_ROWS {
+        row.fields.insert("Kind".into(), json!("Web search"));
+        rows.push(row);
+    }
+}
+
+fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(), String> {
+    let db = crate::file_content::open_database(path)?;
+    let mut budget = 0usize;
+    db.progress_handler(
+        1000,
+        Some(move || {
+            budget += 1000;
+            budget > 20_000_000
+        }),
+    )
+    .map_err(|e| e.to_string())?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Browser analysis cancelled".into());
+    }
+    let has = |name: &str| {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [name],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    };
+    let (sql, browser, chrome) = if has("urls") && has("visits") {
+        (
+            "SELECT u.url, COALESCE(u.title,''), v.visit_time, v.id FROM visits v JOIN urls u ON u.id=v.url LIMIT 100000",
+            "Chromium",
+            true,
+        )
+    } else if has("moz_places") && has("moz_historyvisits") {
+        (
+            "SELECT p.url, COALESCE(p.title,''), v.visit_date, v.id FROM moz_historyvisits v JOIN moz_places p ON p.id=v.place_id LIMIT 100000",
+            "Firefox",
+            false,
+        )
+    } else {
+        return Err("SQLite file has no supported Chromium or Firefox history tables".into());
+    };
+    let mut statement = db.prepare(sql).map_err(|e| e.to_string())?;
+    let mut result = statement.query([]).map_err(|e| e.to_string())?;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Browser analysis cancelled".into());
+        }
+        let Some(row) = result
+            .next()
+            .map_err(|e| format!("Partial history recovery: {e}"))?
+        else {
+            break;
+        };
+        let address: String = row.get(0).map_err(|e| e.to_string())?;
+        let title: String = row.get(1).map_err(|e| e.to_string())?;
+        let time: i64 = row.get(2).map_err(|e| e.to_string())?;
+        let id: i64 = row.get(3).map_err(|e| e.to_string())?;
+        push(
+            rows,
+            "Web history",
+            browser,
+            address,
+            title,
+            Some((time, chrome)),
+            json!({"Visit ID": id}),
+        );
+        if rows.len() >= MAX_ROWS {
+            break;
+        }
+    }
+    if chrome && has("keyword_search_terms") {
+        let mut statement = db.prepare("SELECT k.term, u.url, u.last_visit_time, k.keyword_id FROM keyword_search_terms k JOIN urls u ON u.id=k.url_id LIMIT 100000").map_err(|e| e.to_string())?;
+        let mut result = statement.query([]).map_err(|e| e.to_string())?;
+        while rows.len() < MAX_ROWS {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Browser analysis cancelled".into());
+            }
+            let Some(row) = result.next().map_err(|e| e.to_string())? else {
+                break;
+            };
+            let terms: String = row.get(0).map_err(|e| e.to_string())?;
+            let address: String = row.get(1).map_err(|e| e.to_string())?;
+            let time: i64 = row.get(2).map_err(|e| e.to_string())?;
+            let keyword: i64 = row.get(3).map_err(|e| e.to_string())?;
+            rows.push(record(json!({"Kind":"Web search", "Browser":"Chromium", "URL":address, "Search terms":terms, "Time (UTC)":timestamp(time,true), "Raw timestamp":time, "Observation":{"Table":"keyword_search_terms", "Keyword ID":keyword, "Timestamp meaning":"URL last visit, not necessarily the search time"}})));
+        }
+    }
+    Ok(())
+}
+
+fn read_session(path: &Path) -> Result<Vec<u8>, String> {
+    let mut data = Vec::new();
+    File::open(path)
+        .map_err(|e| e.to_string())?
+        .take(SESSION_LIMIT + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| e.to_string())?;
+    if data.len() as u64 > SESSION_LIMIT {
+        return Err("Session file exceeds 32 MiB parser limit".into());
+    }
+    Ok(data)
+}
+
+fn firefox_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
+    let value: Value =
+        serde_json::from_slice(data).map_err(|e| format!("No readable session JSON: {e}"))?;
+    let windows = value["windows"]
+        .as_array()
+        .ok_or("Session JSON has no windows")?;
+    for (w, window) in windows.iter().enumerate() {
+        let Some(tabs) = window["tabs"].as_array() else {
+            continue;
+        };
+        for (t, tab) in tabs.iter().enumerate() {
+            let Some(index) = tab["index"].as_u64().and_then(|v| v.checked_sub(1)) else {
+                continue;
+            };
+            let Some(entry) = tab["entries"]
+                .as_array()
+                .and_then(|entries| entries.get(index as usize))
+            else {
+                continue;
+            };
+            let Some(address) = entry["url"].as_str() else {
+                continue;
+            };
+            push(
+                rows,
+                "Session tab",
+                "Firefox",
+                address.into(),
+                entry["title"].as_str().unwrap_or("").into(),
+                None,
+                json!({"Window":w + 1,"Tab":t + 1,"Navigation index":index + 1,"State":"Saved session"}),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct Tab {
+    window: Option<i32>,
+    selected: i32,
+    navigation: BTreeMap<i32, (String, String)>,
+}
+
+fn int(data: &[u8], at: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
+}
+fn pickle_string(data: &[u8], at: &mut usize, wide: bool) -> Option<String> {
+    let units = usize::try_from(int(data, *at)?).ok()?;
+    *at += 4;
+    let length = units.checked_mul(if wide { 2 } else { 1 })?;
+    let bytes = data.get(*at..at.checked_add(length)?)?;
+    *at = at.checked_add(length.checked_add(3)? & !3)?;
+    if wide {
+        Some(String::from_utf16_lossy(
+            &bytes
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>(),
+        ))
+    } else {
+        String::from_utf8(bytes.to_vec()).ok()
+    }
+}
+
+fn chromium_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
+    let version = int(data, 4).ok_or("Truncated Chromium session header")?;
+    if !matches!(version, 1 | 3) {
+        return Err(format!(
+            "Chromium session version {version} is encrypted or unsupported"
+        ));
+    }
+    let mut tabs: BTreeMap<i32, Tab> = BTreeMap::new();
+    let mut closed_windows = HashSet::new();
+    let mut offset = 8;
+    let mut truncated = false;
+    while offset < data.len() {
+        let Some(size) = data
+            .get(offset..offset + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
+        else {
+            truncated = true;
+            break;
+        };
+        offset += 2;
+        let Some(command) = data.get(offset..offset + size).filter(|c| !c.is_empty()) else {
+            truncated = true;
+            break;
+        };
+        offset += size;
+        let payload = &command[1..];
+        match command[0] {
+            0 => {
+                if let (Some(window), Some(tab)) = (int(payload, 0), int(payload, 4)) {
+                    tabs.entry(tab).or_default().window = Some(window);
+                }
+            }
+            6 => {
+                // SessionCommand's variable payload is a Pickle: size header, tab id, navigation index.
+                if let (Some(tab), Some(index)) = (int(payload, 4), int(payload, 8)) {
+                    let mut at = 12;
+                    if let (Some(url), Some(title)) = (
+                        pickle_string(payload, &mut at, false),
+                        pickle_string(payload, &mut at, true),
+                    ) {
+                        tabs.entry(tab)
+                            .or_default()
+                            .navigation
+                            .insert(index, (url, title));
+                    }
+                }
+            }
+            7 => {
+                if let (Some(tab), Some(index)) = (int(payload, 0), int(payload, 4)) {
+                    tabs.entry(tab).or_default().selected = index;
+                }
+            }
+            16 => {
+                if let Some(tab) = int(payload, 0) {
+                    tabs.remove(&tab);
+                }
+            }
+            17 => {
+                if let Some(window) = int(payload, 0) {
+                    closed_windows.insert(window);
+                }
+            }
+            5 => {
+                if let (Some(tab), Some(index)) = (int(payload, 0), int(payload, 4)) {
+                    tabs.entry(tab)
+                        .or_default()
+                        .navigation
+                        .retain(|i, _| *i < index);
+                }
+            }
+            11 | 24 => {
+                if let Some(tab) = int(payload, 0) {
+                    let range = if command[0] == 11 {
+                        int(payload, 4).map(|count| (0, count))
+                    } else {
+                        int(payload, 4).zip(int(payload, 8))
+                    };
+                    if let Some((start, count)) = range.filter(|(s, c)| *s >= 0 && *c > 0) {
+                        let state = tabs.entry(tab).or_default();
+                        state.navigation = std::mem::take(&mut state.navigation)
+                            .into_iter()
+                            .filter_map(|(i, v)| {
+                                if i < start {
+                                    Some((i, v))
+                                } else if i >= start.saturating_add(count) {
+                                    Some((i - count, v))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (id, tab) in tabs {
+        if tab.window.is_none() || tab.window.is_some_and(|w| closed_windows.contains(&w)) {
+            continue;
+        }
+        if let Some((url, title)) = tab.navigation.get(&tab.selected) {
+            push(
+                rows,
+                "Session tab",
+                "Chromium",
+                url.clone(),
+                title.clone(),
+                None,
+                json!({"Window":tab.window,"Tab":id,"Navigation index":tab.selected,"State":"Saved session"}),
+            );
+        }
+    }
+    if truncated {
+        Err("Session log is truncated; tabs reflect the readable prefix only".into())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn search_urls_require_real_provider_hosts_and_decode_terms() {
+        assert_eq!(
+            search_terms("https://www.google.com/search?q=memory%20forensics%2Btools"),
+            Some(("Google".into(), "memory forensics+tools".into()))
+        );
+        assert!(search_terms("https://www.google.com.evil.test/search?q=bad").is_none());
+        assert!(search_terms("https://example.org/?q=not+a+search").is_none());
+    }
+    #[test]
+    fn firefox_uses_selected_entry_and_excludes_closed_tabs() {
+        let mut rows = vec![];
+        firefox_session(br#"{"windows":[{"tabs":[{"index":1,"entries":[{"url":"https://current.test"},{"url":"https://forward.test"}]}],"_closedTabs":[{"url":"https://closed.test"}]}]}"#,&mut rows).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text("URL"), "https://current.test");
+    }
+    #[test]
+    fn epochs_are_converted_without_local_timezone() {
+        assert_eq!(
+            timestamp(11_644_473_600_000_000, true),
+            "1970-01-01T00:00:00+00:00"
+        );
+        assert_eq!(timestamp(1_000_000, false), "1970-01-01T00:00:01+00:00");
+    }
+
+    fn command(data: &mut Vec<u8>, id: u8, payload: &[u8]) {
+        data.extend_from_slice(&((payload.len() + 1) as u16).to_le_bytes());
+        data.push(id);
+        data.extend_from_slice(payload);
+    }
+
+    fn navigation(data: &mut Vec<u8>, tab: i32, index: i32, address: &str) {
+        let mut payload = vec![0; 4];
+        payload.extend_from_slice(&tab.to_le_bytes());
+        payload.extend_from_slice(&index.to_le_bytes());
+        payload.extend_from_slice(&(address.len() as i32).to_le_bytes());
+        payload.extend_from_slice(address.as_bytes());
+        while !payload.len().is_multiple_of(4) {
+            payload.push(0);
+        }
+        let title: Vec<_> = "A title".encode_utf16().collect();
+        payload.extend_from_slice(&(title.len() as i32).to_le_bytes());
+        payload.extend(title.into_iter().flat_map(u16::to_le_bytes));
+        while !payload.len().is_multiple_of(4) {
+            payload.push(0);
+        }
+        let size = payload.len() as u32 - 4;
+        payload[..4].copy_from_slice(&size.to_le_bytes());
+        command(data, 6, &payload);
+    }
+
+    #[test]
+    fn chromium_replays_selected_navigation_and_removes_closed_tabs_and_windows() {
+        let mut data = b"SNSS".to_vec();
+        data.extend_from_slice(&1i32.to_le_bytes());
+        for (window, tab) in [(1i32, 10i32), (1, 11), (2, 12)] {
+            let mut payload = window.to_le_bytes().to_vec();
+            payload.extend_from_slice(&tab.to_le_bytes());
+            command(&mut data, 0, &payload);
+            navigation(&mut data, tab, 0, "https://current.test");
+            navigation(&mut data, tab, 1, "https://forward.test");
+            let mut payload = tab.to_le_bytes().to_vec();
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            command(&mut data, 7, &payload);
+        }
+        command(&mut data, 16, &11i32.to_le_bytes());
+        command(&mut data, 17, &2i32.to_le_bytes());
+        let mut rows = vec![];
+        chromium_session(&data, &mut rows).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text("URL"), "https://current.test");
+        assert_eq!(rows[0].fields["Observation"]["Tab"], 10);
+        data.push(1);
+        let mut partial = vec![];
+        assert!(
+            chromium_session(&data, &mut partial)
+                .unwrap_err()
+                .contains("truncated")
+        );
+        assert_eq!(partial.len(), 1);
+        data[4..8].copy_from_slice(&5i32.to_le_bytes());
+        assert!(
+            chromium_session(&data, &mut vec![])
+                .unwrap_err()
+                .contains("encrypted")
+        );
+    }
+}

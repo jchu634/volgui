@@ -1,3 +1,4 @@
+// Demonstrates validate engine.
 //! Produce a reviewable engine smoke case, optionally using one plugin on a real acquisition.
 use std::{path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{

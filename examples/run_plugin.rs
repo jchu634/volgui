@@ -1,3 +1,4 @@
+// Demonstrates run plugin.
 //! Run one plugin on the first evidence in an existing case, without rehashing its acquisition.
 use std::{path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{

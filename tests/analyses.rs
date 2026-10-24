@@ -1,3 +1,4 @@
+// Checks analyses behavior.
 use std::{fs, sync::atomic::AtomicBool};
 use volgui::{
     analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries},
@@ -65,7 +66,7 @@ fn shift_selection_respects_filters_and_separate_evidence_drafts() {
 }
 
 #[test]
-fn basic_catalog_includes_the_requested_tasks_and_sorts_before_advanced() {
+fn basic_catalog_includes_the_requested_tasks_and_sorts_before_extended() {
     let requested = [
         "windows.info.Info",
         "windows.pslist.PsList",
@@ -76,7 +77,9 @@ fn basic_catalog_includes_the_requested_tasks_and_sorts_before_advanced() {
         "windows.dlllist.DllList",
         "windows.filescan.FileScan",
         "windows.dumpfiles.DumpFiles",
+        "windows.handles.Handles",
         "windows.registry.hivelist.HiveList",
+        "windows.registry.printkey.PrintKey",
         "linux.pslist.PsList",
         "linux.pstree.PsTree",
         "linux.bash.Bash",
@@ -86,14 +89,14 @@ fn basic_catalog_includes_the_requested_tasks_and_sorts_before_advanced() {
     assert!(requested.iter().all(|id| basic_label(id).is_some()));
     let mut plugins: Vec<_> = requested.iter().map(|id| plugin(id)).collect();
     plugins.push(plugin("frameworkinfo.FrameworkInfo"));
-    plugins.push(plugin("windows.registry.printkey.PrintKey"));
+    plugins.push(plugin("windows.malware.psxview.PsXView"));
     let basic = chooser_plugins(&plugins, OperatingSystem::Windows, false, "");
-    assert_eq!(basic.len(), 10);
+    assert_eq!(basic.len(), 12);
     assert!(basic.iter().all(|p| p.id.starts_with("windows.")));
     let full = chooser_plugins(&plugins, OperatingSystem::Windows, true, "");
-    assert_eq!(full.len(), 12);
-    assert!(full[..10].iter().all(|p| basic_label(&p.id).is_some()));
-    assert!(full[10..].iter().all(|p| basic_label(&p.id).is_none()));
+    assert_eq!(full.len(), 14);
+    assert!(full[..12].iter().all(|p| basic_label(&p.id).is_some()));
+    assert!(full[12..].iter().all(|p| basic_label(&p.id).is_none()));
     assert_eq!(
         chooser_plugins(&plugins, OperatingSystem::Windows, false, "dump files")[0].id,
         "windows.dumpfiles.DumpFiles"
@@ -362,4 +365,18 @@ fn batch_selection_preserves_individual_options_and_is_saved_atomically() {
             .prepare(&engine, &evidence, &directory.join("analyses"))
             .is_err()
     );
+}
+
+#[test]
+fn only_completed_or_active_runs_block_plugin_selection() {
+    for status in [RunStatus::Queued, RunStatus::Running, RunStatus::Completed] {
+        assert!(status.blocks_plugin_selection(), "{status:?}");
+    }
+    for status in [
+        RunStatus::Failed,
+        RunStatus::Cancelled,
+        RunStatus::Interrupted,
+    ] {
+        assert!(!status.blocks_plugin_selection(), "{status:?}");
+    }
 }

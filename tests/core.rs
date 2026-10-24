@@ -1,3 +1,4 @@
+// Checks core behavior.
 use serde_json::json;
 use std::{fs, path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{

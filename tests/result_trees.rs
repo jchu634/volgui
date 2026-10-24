@@ -1,0 +1,448 @@
+// Exercises tree construction against the same saved results used by the UI.
+use volgui::{
+    case::{Run, RunStatus, now},
+    result_tree::ResultTree,
+    results::{Query, ResultStore},
+    volatility::Table,
+};
+
+fn insert(store: &ResultStore, id: &str, plugin: &str, json: &str) {
+    let run = Run {
+        id: id.into(),
+        evidence_id: String::new(),
+        plugin: plugin.into(),
+        arguments: vec![],
+        command: vec![],
+        engine_version: "fixture".into(),
+        created_at: now(),
+        started_at: None,
+        finished_at: None,
+        status: RunStatus::Completed,
+        exit_code: Some(0),
+        row_count: 0,
+        message: String::new(),
+    };
+    store.insert(&run, &Table::parse(json).unwrap()).unwrap();
+}
+
+fn labels(tree: &ResultTree) -> Vec<(&str, usize)> {
+    tree.visible
+        .iter()
+        .map(|(i, depth)| (tree.nodes[*i].label.as_str(), *depth))
+        .collect()
+}
+
+#[test]
+fn process_search_keeps_ancestors_and_branches_expand_independently() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "list",
+        "windows.pslist.PsList",
+        r#"[
+        {"PID":3,"PPID":2,"ImageFileName":"child"},
+        {"PID":2,"PPID":1,"ImageFileName":"parent"},
+        {"PID":1,"PPID":0,"ImageFileName":"root"},
+        {"PID":4,"PPID":999,"ImageFileName":"orphan"}
+    ]"#,
+    );
+    let mut query = Query {
+        runs: vec!["list".into()],
+        ..Default::default()
+    };
+    let entries = store.tree_entries(&query.runs).unwrap();
+    let index = store.query(&query).unwrap();
+    let mut tree = ResultTree::processes(entries.clone(), &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [("root", 0), ("parent", 1), ("child", 2), ("orphan", 0)]
+    );
+    let parent = tree.visible[1].0;
+    tree.toggle(parent);
+    assert_eq!(labels(&tree), [("root", 0), ("parent", 1), ("orphan", 0)]);
+    tree.toggle(parent);
+    assert_eq!(tree.visible.len(), 4);
+    tree.expand_all(false);
+    assert_eq!(labels(&tree), [("root", 0), ("orphan", 0)]);
+    tree.expand_all(true);
+    assert_eq!(tree.visible.len(), 4);
+    query.text = "child".into();
+    let index = store.query(&query).unwrap();
+    let tree = ResultTree::processes(entries, &index.ids);
+    assert_eq!(index.ids.len(), 1);
+    assert_eq!(labels(&tree), [("root", 0), ("parent", 1), ("child", 2)]);
+    let child = tree.nodes[tree.visible[2].0].record_id.unwrap();
+    assert_eq!(store.fetch(&[child]).unwrap()[0].record.text("PID"), "3");
+}
+
+#[test]
+fn process_cycles_self_parents_and_duplicate_pids_do_not_drop_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "list",
+        "windows.pslist.PsList",
+        r#"[
+        {"PID":1,"PPID":2},{"PID":2,"PPID":1},{"PID":3,"PPID":3},{"PID":3,"PPID":0}
+    ]"#,
+    );
+    insert(
+        &store,
+        "scan",
+        "windows.psscan.PsScan",
+        r#"[
+        {"PID":1,"PPID":0},{"PID":2,"PPID":1}
+    ]"#,
+    );
+    let runs = vec!["list".into(), "scan".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let tree = ResultTree::processes(store.tree_entries(&runs).unwrap(), &index.ids);
+    let mut visible: Vec<_> = tree
+        .visible
+        .iter()
+        .filter_map(|(i, _)| tree.nodes[*i].record_id)
+        .collect();
+    visible.sort();
+    assert_eq!(visible, index.ids);
+    assert_eq!(
+        tree.visible.iter().filter(|(_, depth)| *depth == 0).count(),
+        4
+    );
+    // The second scan's child belongs to its own parent, rather than PID 1 in the first scan.
+    assert_eq!(tree.visible.last().unwrap().1, 1);
+}
+
+#[test]
+fn process_tree_uses_engine_nesting_when_ppid_is_absent() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "tree",
+        "linux.pstree.PsTree",
+        r#"[
+        {"PID":1,"COMM":"init","__children":[{"PID":2,"COMM":"shell"}]},
+        {"PID":3,"COMM":"other"}
+    ]"#,
+    );
+    let runs = vec!["tree".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let tree = ResultTree::processes(store.tree_entries(&runs).unwrap(), &index.ids);
+    assert_eq!(labels(&tree), [("init", 0), ("shell", 1), ("other", 0)]);
+}
+
+#[test]
+fn files_group_paths_keep_duplicate_records_and_search_with_directory_context() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "files",
+        "windows.filescan.FileScan",
+        r#"[
+        {"FileName":"C:\\Users\\zulu.txt"},
+        {"FileName":"C:\\Users\\Docs\\report.txt"},
+        {"FileName":"C:\\Users\\Docs\\report.txt"},
+        {"FileName":"loose.txt"},
+        {"Name":null,"FileName":"","FilePath":"/var/log/syslog"}
+    ]"#,
+    );
+    let runs = vec!["files".into()];
+    let entries = store.tree_entries(&runs).unwrap();
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let tree = ResultTree::files(entries.clone(), &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("/var/log/", 0),
+            ("syslog", 1),
+            ("C:\\Users\\", 0),
+            ("Docs\\", 1),
+            ("report.txt", 2),
+            ("report.txt", 2),
+            ("zulu.txt", 1),
+            ("loose.txt", 0),
+        ]
+    );
+    assert_eq!(
+        tree.visible
+            .iter()
+            .filter(|(i, _)| tree.nodes[*i].record_id.is_some())
+            .count(),
+        index.ids.len()
+    );
+    let index = store
+        .query(&Query {
+            runs,
+            text: "report.txt".into(),
+            sort: None,
+        })
+        .unwrap();
+    let tree = ResultTree::files(entries, &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("C:\\Users\\", 0),
+            ("Docs\\", 1),
+            ("report.txt", 2),
+            ("report.txt", 2)
+        ]
+    );
+    let ids: Vec<_> = tree
+        .visible
+        .iter()
+        .filter_map(|(i, _)| tree.nodes[*i].record_id)
+        .collect();
+    assert_eq!(store.fetch(&ids).unwrap().len(), 2);
+}
+
+#[test]
+fn file_roots_distinguish_unc_device_absolute_and_relative_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "files",
+        "windows.filescan.FileScan",
+        r#"[
+        {"Name":"\\\\server\\share\\one.txt"},
+        {"Name":"\\Device\\HarddiskVolume1\\two.txt"},
+        {"Name":"/etc/three.txt"},
+        {"Name":"etc/four.txt"}
+    ]"#,
+    );
+    let runs = vec!["files".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut tree = ResultTree::files(store.tree_entries(&runs).unwrap(), &index.ids);
+    tree.expand_all(false);
+    let roots: Vec<_> = labels(&tree).into_iter().map(|(label, _)| label).collect();
+    assert_eq!(
+        roots,
+        [
+            "/etc/",
+            "\\\\server\\share\\",
+            "\\Device\\HarddiskVolume1\\",
+            "etc/"
+        ]
+    );
+}
+
+#[test]
+fn single_child_folders_compact_until_a_branch_or_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "files",
+        "windows.filescan.FileScan",
+        r#"[
+        {"FileName":"single\\test1\\test2\\test3\\File1.txt"},
+        {"FileName":"branch\\test1\\test2\\test3\\File1.txt"},
+        {"FileName":"branch\\test1\\test2\\test4\\File2.txt"},
+        {"FileName":"mixed\\test1\\File1.txt"},
+        {"FileName":"mixed\\test1\\test2\\test3\\File2.txt"}
+    ]"#,
+    );
+    let runs = vec!["files".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let entries = store.tree_entries(&runs).unwrap();
+    let mut tree = ResultTree::files(entries.clone(), &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("branch\\test1\\test2\\", 0),
+            ("test3\\", 1),
+            ("File1.txt", 2),
+            ("test4\\", 1),
+            ("File2.txt", 2),
+            ("mixed\\test1\\", 0),
+            ("test2\\test3\\", 1),
+            ("File2.txt", 2),
+            ("File1.txt", 1),
+            ("single\\test1\\test2\\test3\\", 0),
+            ("File1.txt", 1),
+        ]
+    );
+    let single = tree.visible[9].0;
+    tree.toggle(single);
+    assert_eq!(tree.visible.len(), 10);
+    tree.toggle(single);
+    assert_eq!(tree.visible.len(), 11);
+    tree.expand_all(false);
+    assert_eq!(tree.visible.len(), 3);
+    tree.expand_all(true);
+    let mut ids: Vec<_> = tree
+        .visible
+        .iter()
+        .filter_map(|(i, _)| tree.nodes[*i].record_id)
+        .collect();
+    ids.sort();
+    assert_eq!(ids, index.ids);
+    assert_eq!(store.fetch(&ids).unwrap().len(), 5);
+
+    // Filtering keeps the original branch boundary even when only one child matches.
+    let index = store
+        .query(&Query {
+            runs,
+            text: "branch\\test1\\test2\\test3".into(),
+            sort: None,
+        })
+        .unwrap();
+    let tree = ResultTree::files(entries, &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("branch\\test1\\test2\\", 0),
+            ("test3\\", 1),
+            ("File1.txt", 2)
+        ]
+    );
+}
+
+#[test]
+fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "processes",
+        "windows.pslist.PsList",
+        r#"[
+        {"PID":4,"PPID":0,"ImageFileName":"System"},
+        {"PID":100,"PPID":4,"ImageFileName":"editor.exe"},
+        {"PID":200,"PPID":4,"ImageFileName":"other.exe"}
+    ]"#,
+    );
+    insert(
+        &store,
+        "handles",
+        "windows.handles.Handles",
+        r#"[
+        {"PID":100,"Type":"File","Name":"C:\\notes.txt","HandleValue":80,"Offset":4096},
+        {"PID":100,"Type":"File","Name":"C:\\notes.txt","HandleValue":84,"Offset":4096},
+        {"PID":200,"Type":"File","Name":"C:\\other.txt","Offset":8192},
+        {"PID":100,"Type":"Event","Name":"Not a file"},
+        {"PID":100,"Type":null,"Name":"Unknown type"},
+        {"PID":999,"Type":"File","Name":"Orphan handle"}
+    ]"#,
+    );
+    // Another capture's handle run must never enter the caller's selected runs.
+    insert(
+        &store,
+        "other-capture",
+        "windows.handles.Handles",
+        r#"[
+        {"PID":100,"Type":"File","Name":"Wrong capture"}
+    ]"#,
+    );
+    let processes = store.tree_entries(&["processes".into()]).unwrap();
+    let files = store.tree_entries(&["handles".into()]).unwrap();
+    assert_eq!(files.len(), 4);
+    let mut matches = store
+        .query(&Query {
+            runs: vec!["processes".into()],
+            ..Default::default()
+        })
+        .unwrap()
+        .ids;
+    let file_matches = store
+        .query(&Query {
+            runs: vec!["handles".into()],
+            ..Default::default()
+        })
+        .unwrap()
+        .ids;
+    assert_eq!(file_matches.len(), 4);
+    matches.extend(file_matches);
+    let mut tree = ResultTree::processes_with_files(processes.clone(), files.clone(), &matches);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("System", 0),
+            ("editor.exe", 1),
+            ("C:\\notes.txt", 2),
+            ("C:\\notes.txt", 2),
+            ("other.exe", 1),
+            ("C:\\other.txt", 2)
+        ]
+    );
+    let editor = tree.visible[1].0;
+    assert!(matches!(
+        tree.nodes[tree.visible[2].0].kind,
+        volgui::result_tree::TreeNodeKind::File
+    ));
+    tree.toggle(editor);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("System", 0),
+            ("editor.exe", 1),
+            ("other.exe", 1),
+            ("C:\\other.txt", 2)
+        ]
+    );
+    let matches = store
+        .query(&Query {
+            runs: vec!["handles".into()],
+            text: "notes.txt".into(),
+            sort: None,
+        })
+        .unwrap()
+        .ids;
+    let tree = ResultTree::processes_with_files(processes.clone(), files.clone(), &matches);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("System", 0),
+            ("editor.exe", 1),
+            ("C:\\notes.txt", 2),
+            ("C:\\notes.txt", 2)
+        ]
+    );
+    let selected_id = tree.nodes[tree.visible[2].0].record_id.unwrap();
+    let record = store.fetch(&[selected_id]).unwrap().remove(0);
+    assert_eq!(record.run_id, "handles");
+    assert_eq!(record.record.text("Offset"), "4096");
+    // Searching by process name also retains its files.
+    let matches = store
+        .query(&Query {
+            runs: vec!["processes".into()],
+            text: "editor.exe".into(),
+            sort: None,
+        })
+        .unwrap()
+        .ids;
+    assert_eq!(
+        labels(&ResultTree::processes_with_files(
+            processes, files, &matches
+        )),
+        labels(&tree)
+    );
+}

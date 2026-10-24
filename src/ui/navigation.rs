@@ -1,3 +1,4 @@
+// Tracks workspace navigation and closes cases.
 use super::*;
 
 pub(super) struct Location {
@@ -43,7 +44,7 @@ impl Workspace {
         self.back_stack.push(location);
     }
     pub(super) fn navigate(&mut self, view: View, cx: &mut Context<Self>) {
-        if self.view == view || !self.save_note(cx) {
+        if self.view == view {
             return;
         }
         self.remember_location(cx);
@@ -51,9 +52,6 @@ impl Workspace {
         cx.notify();
     }
     pub(super) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.save_note(cx) {
-            return;
-        }
         let Some(location) = self.back_stack.pop() else {
             return;
         };
@@ -73,6 +71,7 @@ impl Workspace {
         self.browser_group = location.browser;
         self.detail = location.detail;
         self.index = ResultIndex::default();
+        self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.result_scroll = UniformListScrollHandle::default();
         self.query
@@ -83,37 +82,36 @@ impl Workspace {
         }
         if self.case.is_some() {
             self.sync_os();
-            self.refresh_browser(cx);
             self.start_query(cx);
         }
         cx.notify();
     }
-    pub(super) fn close_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_switch() || !self.save_note(cx) {
+    pub(super) fn close_case(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_switch() {
             return;
         }
         self.query_epoch.fetch_add(1, Ordering::Relaxed);
         self.selection_epoch += 1;
-        self.browser_epoch += 1;
         self.relation_epoch += 1;
         self.query_due = None;
-        self.browser_due = None;
         self.case = None;
-        self.view = View::Welcome;
+        self.handles = None;
+        self.handles_loading = false;
+        self.handle_epoch += 1;
+        self.view = View::Workspace;
         self.back_stack.clear();
         self.selected_evidence = None;
         self.selected_run = None;
         self.selected_row = None;
         self.selected = None;
+        self.hex_visible = false;
+        self.reset_hex();
         self.scope.clear();
         self.scope_label.clear();
         self.index = ResultIndex::default();
+        self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.inflight.clear();
-        self.browser_entries = Rc::new(Vec::new());
-        self.browser_sizes = Rc::new(Vec::new());
-        self.browser_tree
-            .update(cx, |tree, cx| tree.set_items(Vec::<TreeItem>::new(), cx));
         self.relations = ProcessRelations::default();
         self.analysis_drafts.clear();
         self.artifact_choices.clear();
@@ -122,8 +120,6 @@ impl Workspace {
         self.batch_total = 0;
         self.batch_finished = 0;
         self.loading = false;
-        self.browser_loading = false;
-        self.note.update(cx, |s, cx| s.set_value("", window, cx));
         self.message = "Case closed".into();
         self.error = None;
         cx.notify();

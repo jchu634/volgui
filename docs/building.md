@@ -29,3 +29,13 @@ Open directly into a case:
 ```powershell
 cargo run --bin volgui -- --case "D:\Cases\Investigation 42"
 ```
+
+## Extracting individual files
+
+Select a Windows File scan result, or a File entry from Windows Handles. In **Overview** or **Extracted files**, choose **Dump file** to extract that file, or **Dump and open in ImHex** to extract it and open the output. A previous Dump files job is not required. ImHex must be installed in its default location or available on `PATH`.
+
+The extraction runs as a normal cancellable job against the result's source evidence. When it finishes, **Extracted files** lists the output with **Save as...** and **Open in ImHex** actions. Volatility can produce several cache files for one file object, or none if its contents are no longer cached in memory.
+
+**Hex content** displays those bytes inside VolGUI in both the process and file views. Use **Extract and view hex** to extract the selected file without changing views, or **View hex** beside an existing extracted file. The viewer reads 256 bytes per page and shows offsets, hex bytes and ASCII. Multiple cache outputs have separate selection buttons. Completed per-file dumps are reused only for the same source evidence, object address and address space.
+
+For an unlabelled FileScan **Offset**, the address-space button defaults to **Virtual offset**, as used on Windows 10 and later. Click it to select **Physical offset** for older Windows captures. Explicit **Offset(V)** and **Offset(P)** columns select the address space automatically. This follows Volatility's [pool scanner](https://volatility3.readthedocs.io/en/stable/_modules/volatility3/plugins/windows/poolscanner.html) and [DumpFiles address options](https://volatility3.readthedocs.io/en/stable/_modules/volatility3/plugins/windows/dumpfiles.html).

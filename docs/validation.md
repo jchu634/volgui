@@ -39,4 +39,10 @@ For native layout and scrolling checks without a capture:
 cargo run --example seed_workspace -- <new-case-directory>
 ```
 
-This generates a clearly labelled synthetic case with 5,000 processes, 10,000 network records, 50,000 files and two registry scans.
+This generates a labelled synthetic case with 5,000 processes, 10,000 network records, 50,001 files, file and non-file handles, recovered browser data, registry keys and values, and multiple cache variants. Select PID 1 and open Handles to inspect File, Key, Mutant and Event objects. Select its History file child, enable Contents, choose SQLite tables, and inspect the visits table. Browser activity shows parsed history, a search and a saved session tab. Registry can reuse saved root and Microsoft subkey reads without an engine. Global string search for `Synthetic` should return a UTF-8 match in fixture.raw. Text/hex paging and Show in Files remain available.
+
+`tests/investigation.rs` exercises native job persistence/export, evidence separation,
+browser recovery queues, history/search parsing, offsets across string scan chunks,
+unaligned UTF-16, cancellation and result limits, all handle types, registry query
+arguments, and read-only SQLite paging. Browser parser unit tests cover timestamps,
+provider host validation, selected session navigation and tab/window closure.

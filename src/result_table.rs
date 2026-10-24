@@ -1,3 +1,4 @@
+// Defines result table columns and cell formatting.
 use crate::{
     artifacts::ArtifactGroup,
     volatility::{Record, display_value},
@@ -82,12 +83,10 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         Some(ArtifactGroup::Processes) => &[
             ("Process", &["ImageFileName", "COMM", "Process", "Name"]),
             ("PID", &["PID"]),
-            ("PPID", &["PPID"]),
             ("SessionID", &["SessionID"]),
             ("Threads", &["Threads"]),
             ("Path", &["Path", "FilePath", "ImagePath"]),
             ("CreateTime", &["CreateTime", "Created", "StartTime"]),
-            ("ExitTime", &["ExitTime"]),
         ],
         Some(ArtifactGroup::Network) => &[
             ("PID", &["PID"]),
@@ -102,6 +101,34 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
             ("Created", &["Created", "CreateTime"]),
         ],
         Some(ArtifactGroup::Files) => &[("Name", &["Name", "FileName", "Path", "FilePath"])],
+        Some(ArtifactGroup::Web) => &[
+            ("Kind", &["Kind"]),
+            ("Browser", &["Browser"]),
+            ("URL", &["URL"]),
+            ("Title", &["Title"]),
+            ("Search terms", &["Search terms"]),
+            ("Time (UTC)", &["Time (UTC)"]),
+            ("Original path", &["Original path"]),
+            ("Source file", &["Source file"]),
+        ],
+        Some(ArtifactGroup::Strings) => &[
+            ("Offset", &["Offset"]),
+            ("Encoding", &["Encoding"]),
+            ("Match", &["Match"]),
+            ("Context", &["Context"]),
+            ("Source file", &["Source file"]),
+        ],
+        Some(ArtifactGroup::Registry) => &[
+            ("Name", &["Name", "FileFullPath", "File output"]),
+            ("Type", &["Type"]),
+            ("Data", &["Data"]),
+            ("Key", &["Key"]),
+            ("Last write time", &["Last Write Time", "LastWriteTime"]),
+            (
+                "Hive offset",
+                &["Hive Offset", "Offset", "Offset(V)", "Offset(P)"],
+            ),
+        ],
         _ => {
             return available
                 .iter()
@@ -227,25 +254,23 @@ mod tests {
             [
                 "Process",
                 "PID",
-                "PPID",
                 "SessionID",
                 "Threads",
                 "Path",
-                "CreateTime",
-                "ExitTime"
+                "CreateTime"
             ]
         );
         assert_eq!(columns[0].key, "ImageFileName");
-        assert_eq!(columns[3].key, "SessionId");
+        assert_eq!(columns[2].key, "SessionId");
         assert!(
-            columns[1..5]
+            columns[1..4]
                 .iter()
                 .all(|column| column.default_width() <= 96.)
         );
         let linux = columns_for_linux();
         assert_eq!(
             linux.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-            ["Process", "PID", "PPID"]
+            ["Process", "PID"]
         );
         assert_eq!(linux[0].key, "COMM");
     }

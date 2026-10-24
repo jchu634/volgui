@@ -1,3 +1,4 @@
+// Builds analysis drafts and retry queues.
 //! Analysis chooser policy and per-evidence selections.
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -25,6 +26,10 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.dlllist.DllList" => "Loaded DLLs",
         "windows.filescan.FileScan" | "linux.lsof.Lsof" | "mac.lsof.Lsof" => "File scan",
         "windows.dumpfiles.DumpFiles" => "Dump files",
+        "windows.handles.Handles" => "Process handles",
+        "windows.registry.printkey.PrintKey" => "Registry key contents",
+        "windows.vadinfo.VadInfo" => "Process memory regions and dumps",
+        "windows.memmap.Memmap" => "Process memory map and dump",
         "windows.registry.hivelist.HiveList" | "windows.registry.hivescan.HiveScan" => {
             "Registry hives"
         }
@@ -39,6 +44,14 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
 
 /// Queue fresh attempts together, preserving the original runs and their options.
 pub fn queue_retries(case: &mut Case, engine: &Installation, ids: &[String]) -> Result<usize> {
+    queue_retries_with_engine(case, Some(engine), ids)
+}
+
+pub fn queue_retries_with_engine(
+    case: &mut Case,
+    engine: Option<&Installation>,
+    ids: &[String],
+) -> Result<usize> {
     let runs = ids
         .iter()
         .map(|id| {
@@ -57,7 +70,14 @@ pub fn queue_retries(case: &mut Case, engine: &Installation, ids: &[String]) -> 
                 .iter()
                 .find(|e| e.id == previous.evidence_id)
                 .ok_or("Evidence is no longer available")?;
-            engine.prepare(
+            if crate::investigation::is_native(&previous.plugin) {
+                return crate::investigation::prepare(
+                    evidence,
+                    &previous.plugin,
+                    previous.arguments.clone(),
+                );
+            }
+            engine.ok_or("Configure Volatility in settings")?.prepare(
                 evidence,
                 &previous.plugin,
                 previous.arguments.clone(),
@@ -73,7 +93,7 @@ pub fn queue_retries(case: &mut Case, engine: &Installation, ids: &[String]) -> 
 pub fn chooser_plugins(
     plugins: &[Plugin],
     os: OperatingSystem,
-    advanced: bool,
+    extended: bool,
     query: &str,
 ) -> Vec<Plugin> {
     let query = query.to_lowercase();
@@ -81,7 +101,7 @@ pub fn chooser_plugins(
         .iter()
         .filter(|plugin| {
             os.accepts(&plugin.id)
-                && (advanced || basic_label(&plugin.id).is_some())
+                && (extended || basic_label(&plugin.id).is_some())
                 && format!(
                     "{} {} {}",
                     plugin.id,

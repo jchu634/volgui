@@ -1,3 +1,4 @@
+// Persists case metadata, evidence, runs, and bookmarks.
 use std::{
     collections::{BTreeSet, HashSet},
     fs::{self, File, OpenOptions},
@@ -154,6 +155,11 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
+    /// Completed and active runs require an override in the analysis chooser.
+    pub fn blocks_plugin_selection(self) -> bool {
+        matches!(self, Self::Queued | Self::Running | Self::Completed)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Queued => "Queued",

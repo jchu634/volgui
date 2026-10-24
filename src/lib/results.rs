@@ -1,7 +1,8 @@
+// Stores and queries analysis results in SQLite.
 //! SQLite owns completed records. UI queries return IDs and fetch only visible fields.
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value as SqlValue};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -44,15 +45,16 @@ pub struct BrowserEntry {
     pub ppid: Option<String>,
     pub path: Option<String>,
 }
-#[derive(Clone, Debug)]
-pub struct ProcessNode {
-    pub entry: BrowserEntry,
-    pub children: Vec<ProcessNode>,
-}
 #[derive(Clone, Debug, Default)]
 pub struct ProcessRelations {
     pub parent: Option<BrowserEntry>,
     pub children: Vec<BrowserEntry>,
+}
+#[derive(Clone, Debug, Default)]
+pub struct HandlePage {
+    pub total: usize,
+    pub offset: usize,
+    pub records: Vec<StoredRecord>,
 }
 
 impl ResultStore {
@@ -202,6 +204,14 @@ impl ResultStore {
         tx.commit().map_err(|e| e.to_string())
     }
     pub fn query(&self, query: &Query) -> Result<ResultIndex> {
+        self.query_filtered(query, None, false)
+    }
+    fn query_filtered(
+        &self,
+        query: &Query,
+        pid: Option<&str>,
+        all_handles: bool,
+    ) -> Result<ResultIndex> {
         if query.runs.is_empty() {
             return Ok(ResultIndex::default());
         }
@@ -244,7 +254,14 @@ impl ResultStore {
             .collect::<Vec<_>>()
             .join(",");
         let mut sql = format!("SELECT r.id FROM records r WHERE r.run_id IN ({marks})");
+        if !all_handles && groups.len() == 1 && groups.contains(&ArtifactGroup::Files) {
+            sql.push_str(" AND (r.run_id NOT IN (SELECT run_id FROM scans WHERE plugin='windows.handles.Handles') OR json_extract(r.fields_json,'$.Type')='File')");
+        }
         let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
+        if let Some(pid) = pid {
+            sql.push_str(" AND r.pid=?");
+            values.push(SqlValue::Text(pid.into()));
+        }
         let text = query.text.to_lowercase();
         if !text.is_empty() {
             if text.chars().count() >= 3 {
@@ -309,6 +326,29 @@ impl ResultStore {
             .map_err(|e| e.to_string())?;
         Ok(ResultIndex { columns, ids })
     }
+    /// Handles are not restricted to the File objects used by file trees.
+    pub fn process_handles(
+        &self,
+        runs: Vec<String>,
+        pid: &str,
+        offset: usize,
+    ) -> Result<HandlePage> {
+        let index = self.query_filtered(
+            &Query {
+                runs,
+                ..Default::default()
+            },
+            Some(pid),
+            true,
+        )?;
+        let offset = offset.min(index.ids.len().saturating_sub(1)) / 100 * 100;
+        let records = self.fetch(&index.ids[offset..(offset + 100).min(index.ids.len())])?;
+        Ok(HandlePage {
+            total: index.ids.len(),
+            offset,
+            records,
+        })
+    }
     pub fn fetch(&self, ids: &[i64]) -> Result<Vec<StoredRecord>> {
         if ids.is_empty() {
             return Ok(vec![]);
@@ -345,6 +385,33 @@ impl ResultStore {
         })
         .collect()
     }
+    /// Tree construction needs only hierarchy fields, even for large file scans.
+    pub fn tree_entries(&self, runs: &[String]) -> Result<Vec<crate::result_tree::TreeEntry>> {
+        if runs.is_empty() {
+            return Ok(vec![]);
+        }
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = db.prepare(&format!(
+            "SELECT id,run_id,depth,title,pid,ppid,COALESCE(NULLIF(json_extract(fields_json,'$.Name'),''),NULLIF(json_extract(fields_json,'$.FileName'),''),NULLIF(json_extract(fields_json,'$.Path'),''),NULLIF(json_extract(fields_json,'$.FilePath'),''),NULLIF(json_extract(fields_json,'$.FullPath'),''),path) FROM records WHERE run_id IN ({marks}) AND (run_id NOT IN (SELECT run_id FROM scans WHERE plugin='windows.handles.Handles') OR json_extract(fields_json,'$.Type')='File') ORDER BY id"
+        )).map_err(|e| e.to_string())?;
+        stmt.query_map(params_from_iter(runs), |r| {
+            Ok(crate::result_tree::TreeEntry {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                depth: r.get::<_, i64>(2)? as usize,
+                title: r.get(3)?,
+                pid: r.get(4)?,
+                ppid: r.get(5)?,
+                path: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+    }
     pub fn record(&self, run: &str, row: usize) -> Result<Option<StoredRecord>> {
         let id = self
             .connect()?
@@ -358,41 +425,6 @@ impl ResultStore {
         id.map(|id| self.fetch(&[id]).map(|mut rows| rows.pop()))
             .transpose()
             .map(Option::flatten)
-    }
-    pub fn navigation(&self, query: &Query) -> Result<Vec<BrowserEntry>> {
-        if query.runs.is_empty() {
-            return Ok(vec![]);
-        }
-        let db = self.connect()?;
-        let marks = std::iter::repeat_n("?", query.runs.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
-        let mut sql =
-            format!("SELECT id,title,pid,ppid,path FROM records WHERE run_id IN ({marks})");
-        if !query.text.is_empty() {
-            sql.push_str(" AND instr(search_text,?)>0");
-            values.push(SqlValue::Text(query.text.to_lowercase()));
-        }
-        sql.push_str(" ORDER BY CASE run_id ");
-        for (i, run) in query.runs.iter().enumerate() {
-            sql.push_str(&format!("WHEN ? THEN {i} "));
-            values.push(SqlValue::Text(run.clone()));
-        }
-        sql.push_str("END,row_index");
-        let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
-        stmt.query_map(params_from_iter(values), |r| {
-            Ok(BrowserEntry {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                pid: r.get(2)?,
-                ppid: r.get(3)?,
-                path: r.get(4)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())
     }
     pub fn process_record(&self, runs: &[String], pid: &str) -> Result<Option<StoredRecord>> {
         let db = self.connect()?;
@@ -499,77 +531,4 @@ impl ResultStore {
         }
         Ok(output)
     }
-}
-
-/// Each process appears once. Cycles and missing parents become roots instead of disappearing.
-pub fn process_forest(entries: &[BrowserEntry]) -> Vec<ProcessNode> {
-    let mut chosen = BTreeMap::new();
-    let mut loose = vec![];
-    for e in entries {
-        if let Some(pid) = &e.pid {
-            chosen.entry(pid.clone()).or_insert_with(|| e.clone());
-        } else {
-            loose.push(e.clone());
-        }
-    }
-    let mut parents: HashMap<String, String> = chosen
-        .iter()
-        .filter_map(|(pid, e)| {
-            e.ppid
-                .as_ref()
-                .filter(|ppid| *ppid != pid && chosen.contains_key(*ppid))
-                .map(|p| (pid.clone(), p.clone()))
-        })
-        .collect();
-    for pid in chosen.keys() {
-        let mut seen = HashSet::new();
-        let mut cursor = pid.clone();
-        while let Some(p) = parents.get(&cursor) {
-            if !seen.insert(cursor.clone()) || seen.len() >= 100 {
-                parents.remove(&cursor);
-                break;
-            }
-            cursor = p.clone();
-        }
-    }
-    let mut children: HashMap<String, Vec<String>> = HashMap::new();
-    for (pid, parent) in &parents {
-        children
-            .entry(parent.clone())
-            .or_default()
-            .push(pid.clone());
-    }
-    fn build(
-        pid: &str,
-        chosen: &BTreeMap<String, BrowserEntry>,
-        children: &HashMap<String, Vec<String>>,
-        depth: usize,
-    ) -> ProcessNode {
-        let mut nested = if depth < 100 {
-            children
-                .get(pid)
-                .into_iter()
-                .flatten()
-                .map(|id| build(id, chosen, children, depth + 1))
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-        nested.sort_by(|a, b| a.entry.title.cmp(&b.entry.title));
-        ProcessNode {
-            entry: chosen[pid].clone(),
-            children: nested,
-        }
-    }
-    let mut roots = chosen
-        .keys()
-        .filter(|id| !parents.contains_key(*id))
-        .map(|id| build(id, &chosen, &children, 0))
-        .collect::<Vec<_>>();
-    roots.extend(loose.into_iter().map(|entry| ProcessNode {
-        entry,
-        children: vec![],
-    }));
-    roots.sort_by(|a, b| a.entry.title.cmp(&b.entry.title));
-    roots
 }

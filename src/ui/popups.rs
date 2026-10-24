@@ -1,3 +1,4 @@
+// Renders artifact pickers and the analysis queue.
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -208,7 +209,7 @@ impl Workspace {
                 this.artifact_open=None;
                 this.open_analysis_dialog(this.selected_evidence.iter().cloned().collect(),window,cx);
                 if let Some(draft)=this.analysis_drafts.first_mut(){draft.selected=selected;}
-                this.analysis_group_filter=Some(group);this.show_advanced=true;cx.notify();
+                this.analysis_group_filter=Some(group);this.show_extended=true;cx.notify();
             })))
             .into_any_element()
     }

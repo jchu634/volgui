@@ -1,3 +1,4 @@
+// Loads and saves application settings.
 use crate::case::{Result, atomic_json};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
