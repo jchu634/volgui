@@ -104,6 +104,7 @@ impl Workspace {
         self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.detail = DetailTab::Overview;
+        self.reset_hex();
         self.view = View::Workspace;
         self.query.update(cx, |s, cx| s.set_value("", window, cx));
         self.query_due = None;
@@ -124,6 +125,25 @@ impl Workspace {
         };
         let query = self.active_query(cx);
         let group = self.result_group();
+        let file_runs: Vec<_> = if group == Some(ArtifactGroup::Processes) && self.show_file_handles
+        {
+            self.group_runs(ArtifactGroup::Files)
+                .into_iter()
+                .filter(|id| {
+                    self.case.as_ref().is_some_and(|case| {
+                        case.document.runs.iter().any(|run| {
+                            &run.id == id
+                                && matches!(
+                                    run.plugin.as_str(),
+                                    "windows.handles.Handles" | "linux.lsof.Lsof" | "mac.lsof.Lsof"
+                                )
+                        })
+                    })
+                })
+                .collect()
+        } else {
+            vec![]
+        };
         let epoch = self.query_epoch.fetch_add(1, Ordering::Relaxed) + 1;
         let token = self.query_epoch.clone();
         self.loading = true;
@@ -133,10 +153,34 @@ impl Workspace {
             if token.load(Ordering::Relaxed) != epoch {
                 return;
             }
-            let result = store.query(&query).and_then(|index| {
+            let result = store.query(&query).and_then(|mut index| {
                 let tree = match group {
                     Some(ArtifactGroup::Processes) => {
-                        ResultTree::processes(store.tree_entries(&query.runs)?, &index.ids)
+                        let files = store.tree_entries(&file_runs)?;
+                        let file_matches = store.query(&Query {
+                            runs: file_runs,
+                            text: query.text.clone(),
+                            sort: None,
+                        })?;
+                        let mut matches = index.ids.clone();
+                        matches.extend(file_matches.ids);
+                        let tree = ResultTree::processes_with_files(
+                            store.tree_entries(&query.runs)?,
+                            files,
+                            &matches,
+                        );
+                        let mut seen: HashSet<_> = index.ids.iter().copied().collect();
+                        for (i, _) in &tree.visible {
+                            if matches!(
+                                tree.nodes[*i].kind,
+                                volgui::result_tree::TreeNodeKind::File
+                            ) && let Some(id) = tree.nodes[*i].record_id
+                                && seen.insert(id)
+                            {
+                                index.ids.push(id);
+                            }
+                        }
+                        tree
                     }
                     Some(ArtifactGroup::Files) => {
                         ResultTree::files(store.tree_entries(&query.runs)?, &index.ids)
@@ -247,10 +291,15 @@ impl Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.reset_hex();
         self.file_offset_physical = false;
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         self.selected = Some(Arc::new(record));
+        self.hex_scroll.set_offset(Point::default());
+        if self.hex_visible {
+            self.load_hex(cx);
+        }
         self.raw_expanded.clear();
         self.details_scroll.set_offset(Point::default());
         self.relation_epoch += 1;

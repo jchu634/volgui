@@ -2,6 +2,79 @@
 use super::*;
 
 impl Workspace {
+    pub(in crate::ui) fn render_file_actions(&self, for_hex: bool, cx: &mut Context<Self>) -> Div {
+        let prefix = if for_hex { "hex" } else { "details" };
+        let target = self.selected.as_ref().and_then(|record| {
+            let run = self
+                .case
+                .as_ref()?
+                .document
+                .runs
+                .iter()
+                .find(|run| run.id == record.run_id)?;
+            volgui::extracted_files::FileDumpTarget::from_record(&run.plugin, &record.record)
+        });
+        let Some(target) = target else {
+            return div();
+        };
+        let available = self.installation.as_ref().is_some_and(|engine| {
+            engine
+                .plugins
+                .iter()
+                .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
+        }) && !self.busy.as_ref().is_some_and(|busy| busy.run_id.is_none());
+        let imhex = volgui::extracted_files::imhex().is_some();
+        let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+        if target.needs_address_space() {
+            actions = actions.child(
+                    Button::new(key("file-offset-space", prefix))
+                        .small()
+                        .ghost()
+                        .label(if self.file_offset_physical { "Physical offset" } else { "Virtual offset" })
+                        .tooltip("Click to switch. FileScan uses virtual offsets on Windows 10 and later, physical offsets on older Windows.")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.file_offset_physical = !this.file_offset_physical;
+                            this.reset_hex();
+                            if this.hex_visible { this.load_hex(cx); }
+                            cx.notify();
+                        })),
+                );
+        }
+        actions
+            .child(
+                Button::new(key("dump-selected-file", prefix))
+                    .small()
+                    .label(if for_hex {
+                        "Extract and view hex"
+                    } else {
+                        "Dump file"
+                    })
+                    .disabled(!available)
+                    .tooltip(if available {
+                        "Extract only this file from memory"
+                    } else {
+                        "Configure Volatility with the Windows DumpFiles plugin in Settings"
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.dump_file(false, for_hex, window, cx)
+                    })),
+            )
+            .child(
+                Button::new(key("dump-selected-file-imhex", prefix))
+                    .small()
+                    .label("Dump and open in ImHex")
+                    .disabled(!available || !imhex)
+                    .tooltip(if !imhex {
+                        "Install ImHex in its default location or add it to PATH"
+                    } else {
+                        "Extract this file and open its cached contents in ImHex"
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.dump_file(true, for_hex, window, cx)
+                    })),
+            )
+    }
+
     pub(in crate::ui) fn render_details(&self, cx: &mut Context<Self>) -> AnyElement {
         let record = self.selected.as_ref();
         let marked = self
@@ -11,6 +84,7 @@ impl Workspace {
             .is_some_and(|a| a.bookmarked);
         let mut tabs = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .px_3()
@@ -40,72 +114,8 @@ impl Workspace {
             .overflow_scroll()
             .p_3()
             .size_full();
-        if matches!(self.detail, DetailTab::Overview | DetailTab::Files)
-            && let Some(target) = record.and_then(|record| {
-                let run = self
-                    .case
-                    .as_ref()?
-                    .document
-                    .runs
-                    .iter()
-                    .find(|run| run.id == record.run_id)?;
-                volgui::extracted_files::FileDumpTarget::from_record(&run.plugin, &record.record)
-            })
-        {
-            let available = self.installation.as_ref().is_some_and(|engine| {
-                engine
-                    .plugins
-                    .iter()
-                    .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
-            }) && !self.busy.as_ref().is_some_and(|busy| busy.run_id.is_none());
-            let imhex = volgui::extracted_files::imhex().is_some();
-            let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
-            if target.needs_address_space() {
-                actions = actions.child(
-                    Button::new("file-offset-space")
-                        .small()
-                        .ghost()
-                        .label(if self.file_offset_physical { "Physical offset" } else { "Virtual offset" })
-                        .tooltip("Click to switch. FileScan uses virtual offsets on Windows 10 and later, physical offsets on older Windows.")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.file_offset_physical = !this.file_offset_physical;
-                            cx.notify();
-                        })),
-                );
-            }
-            content = content.child(
-                actions
-                    .child(
-                        Button::new("dump-selected-file")
-                            .small()
-                            .label("Dump file")
-                            .disabled(!available)
-                            .tooltip(if available {
-                                "Extract only this file from memory"
-                            } else {
-                                "Configure Volatility with the Windows DumpFiles plugin in Settings"
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.dump_file(false, window, cx)
-                                }),
-                            ),
-                    )
-                    .child(
-                        Button::new("dump-selected-file-imhex")
-                            .small()
-                            .label("Dump and open in ImHex")
-                            .disabled(!available || !imhex)
-                            .tooltip(if !imhex {
-                                "Install ImHex in its default location or add it to PATH"
-                            } else {
-                                "Extract this file and open its cached contents in ImHex"
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.dump_file(true, window, cx)),
-                            ),
-                    ),
-            );
+        if matches!(self.detail, DetailTab::Overview | DetailTab::Files) {
+            content = content.child(self.render_file_actions(false, cx));
         }
         match self.detail {
             DetailTab::Overview => {
@@ -327,6 +337,15 @@ impl Workspace {
                         .find(|run| Some(&run.id) == self.selected_run.as_ref())
                         .map(|run| (case, run))
                 }) {
+                    let run = record
+                        .and_then(|record| {
+                            volgui::extracted_files::completed_dump(
+                                case,
+                                record,
+                                self.file_offset_physical,
+                            )
+                        })
+                        .unwrap_or(run);
                     let directory = case.run_dir(&run.id);
                     match volgui::extracted_files::list(&directory) {
                         Ok(files) if files.is_empty() => {
@@ -337,8 +356,10 @@ impl Workspace {
                             if imhex.is_none() {
                                 content = content.child(div().text_sm().child("ImHex was not found. Install it in its default location or add it to PATH to open files here."));
                             }
-                            for (i, file) in files.into_iter().enumerate() {
+                            for (i, file) in files.iter().cloned().enumerate() {
                                 let source = file.clone();
+                                let hex_file = file.clone();
+                                let hex_files = files.clone();
                                 let mut row = div()
                                     .flex()
                                     .items_center()
@@ -351,6 +372,19 @@ impl Workspace {
                                                 .display()
                                                 .to_string(),
                                         ),
+                                    )
+                                    .child(
+                                        Button::new(("hex-extracted", i))
+                                            .small()
+                                            .label("View hex")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.open_hex_file(
+                                                    hex_files.clone(),
+                                                    hex_file.clone(),
+                                                    0,
+                                                    cx,
+                                                );
+                                            })),
                                     )
                                     .child(
                                         Button::new(("save-extracted", i))

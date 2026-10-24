@@ -39,4 +39,4 @@ For native layout and scrolling checks without a capture:
 cargo run --example seed_workspace -- <new-case-directory>
 ```
 
-This generates a clearly labelled synthetic case with 5,000 processes, 10,000 network records, 50,000 files and two registry scans.
+This generates a clearly labelled synthetic case with 5,000 processes, 10,000 network records, 50,000 files, 500 process file handles, a per-file extraction with two cache variants, and two registry scans. Select the file child of PID 1, enable Hex in the bottom bar, page forward, switch cache variants, and use Show in Files to check both views against the same saved handle. Switch the bottom details tabs while hex stays open, then toggle hex off and check that details remain below the tree.

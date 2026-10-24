@@ -27,7 +27,7 @@ fn main() -> Result<(), String> {
         evidence: &str,
         plugin: &str,
         rows: Vec<Record>,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let columns = rows
             .first()
             .map(|r| r.fields.keys().cloned().collect())
@@ -57,7 +57,7 @@ fn main() -> Result<(), String> {
                 table: Some(Table { columns, rows }),
             },
         )?;
-        Ok(())
+        Ok(run.id)
     }
     let processes = (0..5000)
         .map(|i| Record {
@@ -121,6 +121,44 @@ fn main() -> Result<(), String> {
         })
         .collect();
     save(&mut case, &evidence_id, "windows.filescan.FileScan", files)?;
+    let handles = (0..500)
+        .map(|i| Record {
+            depth: 0,
+            fields: BTreeMap::from([
+                ("PID".into(), json!(i + 1)),
+                ("Type".into(), json!("File")),
+                (
+                    "Name".into(),
+                    json!(format!("C:\\Fixture\\folder-0\\document-{}.txt", i + 1)),
+                ),
+                ("Offset".into(), json!((i + 1) * 4096)),
+                ("HandleValue".into(), json!(80)),
+            ]),
+        })
+        .collect();
+    save(&mut case, &evidence_id, "windows.handles.Handles", handles)?;
+    let dump = save(
+        &mut case,
+        &evidence_id,
+        "windows.dumpfiles.DumpFiles",
+        vec![Record {
+            depth: 0,
+            fields: BTreeMap::from([("Result".into(), json!("file.0x1000.dat"))]),
+        }],
+    )?;
+    case.document.runs.last_mut().unwrap().arguments = vec!["--virtaddr".into(), "0x1000".into()];
+    case.save()?;
+    fs::create_dir_all(case.run_dir(&dump)).map_err(|e| e.to_string())?;
+    fs::write(
+        case.run_dir(&dump).join("file.0x1000.dat"),
+        (0..1024).map(|i| i as u8).collect::<Vec<_>>(),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        case.run_dir(&dump).join("file.0x1000.img"),
+        b"Synthetic second cache variant.\n",
+    )
+    .map_err(|e| e.to_string())?;
     for plugin in [
         "windows.registry.hivelist.HiveList",
         "windows.registry.printkey.PrintKey",

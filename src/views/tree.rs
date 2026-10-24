@@ -54,6 +54,20 @@ impl Workspace {
                         cx,
                     ))
                     .child(div().flex_1())
+                    .when(group == ArtifactGroup::Processes, |header| {
+                        header.child(
+                            Checkbox::new("show-process-file-handles")
+                                .label("Show file handles")
+                                .checked(self.show_file_handles)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    this.show_file_handles = *checked;
+                                    this.selection_epoch += 1;
+                                    this.tree_cursor = None;
+                                    this.result_tree = ResultTree::default();
+                                    this.start_query(cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("tree-expand-all")
                             .xsmall()

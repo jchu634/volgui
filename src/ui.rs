@@ -3,6 +3,7 @@ mod analysis_actions;
 mod case_actions;
 mod chrome;
 mod exports;
+mod file_actions;
 mod navigation;
 mod popups;
 mod result_actions;
@@ -22,7 +23,7 @@ use gpui_kit::{
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
         popover::Popover,
         progress::ProgressCircle,
-        resizable::{HandleEdge, resizable_panel, resize_handle, v_resizable},
+        resizable::{HandleEdge, h_resizable, resizable_panel, resize_handle, v_resizable},
         scroll::{ScrollableElement, Scrollbar, ScrollbarMode},
         tooltip::Tooltip,
     },
@@ -69,6 +70,25 @@ enum DetailTab {
     Diagnostics,
     Files,
 }
+
+struct FileDumpRequest {
+    record_id: i64,
+    selection_epoch: u64,
+    executable: Option<PathBuf>,
+    show_hex: bool,
+}
+
+#[derive(Default)]
+enum HexView {
+    #[default]
+    Idle,
+    Loading,
+    Ready {
+        files: Vec<PathBuf>,
+        page: volgui::extracted_files::HexPage,
+    },
+    Error(String),
+}
 enum Event {
     Opened(std::result::Result<Case, String>),
     Validated(std::result::Result<Installation, String>),
@@ -90,6 +110,10 @@ enum Event {
     Relations(u64, std::result::Result<ProcessRelations, String>),
     Help(String, std::result::Result<String, String>),
     Exported(std::result::Result<PathBuf, String>),
+    HexLoaded(
+        u64,
+        std::result::Result<(Vec<PathBuf>, volgui::extracted_files::HexPage), String>,
+    ),
 }
 struct Busy {
     label: String,
@@ -130,6 +154,7 @@ pub struct Workspace {
     loading: bool,
     selection_epoch: u64,
     browser_group: ArtifactGroup,
+    show_file_handles: bool,
     result_scroll: UniformListScrollHandle,
     table_x_scroll: ScrollHandle,
     details_scroll: ScrollHandle,
@@ -144,8 +169,12 @@ pub struct Workspace {
     raw_expand_all: bool,
     queue_open: bool,
     popup_panels: RefCell<HashMap<popups::PanelKind, Entity<popups::PopupPanel>>>,
-    file_dumps: HashMap<String, Option<PathBuf>>,
+    file_dumps: HashMap<String, FileDumpRequest>,
     file_offset_physical: bool,
+    hex_view: HexView,
+    hex_visible: bool,
+    hex_scroll: ScrollHandle,
+    hex_epoch: u64,
     artifact_open: Option<ArtifactGroup>,
     artifact_choices: HashMap<ArtifactGroup, BTreeSet<String>>,
     analysis_group_filter: Option<ArtifactGroup>,
@@ -167,6 +196,7 @@ pub struct Workspace {
     show_extended: bool,
     analysis_error: Option<String>,
     query: Entity<InputState>,
+    hex_offset: Entity<InputState>,
     plugin_query: Entity<InputState>,
     arguments: Entity<InputState>,
     case_name: Entity<InputState>,
@@ -300,6 +330,7 @@ impl Workspace {
             loading: false,
             selection_epoch: 0,
             browser_group: ArtifactGroup::Processes,
+            show_file_handles: true,
             result_scroll: UniformListScrollHandle::default(),
             table_x_scroll: ScrollHandle::default(),
             details_scroll: ScrollHandle::default(),
@@ -316,6 +347,10 @@ impl Workspace {
             popup_panels: RefCell::new(HashMap::new()),
             file_dumps: HashMap::new(),
             file_offset_physical: false,
+            hex_view: HexView::Idle,
+            hex_visible: false,
+            hex_scroll: ScrollHandle::default(),
+            hex_epoch: 0,
             artifact_open: None,
             artifact_choices: HashMap::new(),
             analysis_group_filter: None,
@@ -337,6 +372,7 @@ impl Workspace {
             show_extended: false,
             analysis_error: None,
             query,
+            hex_offset: field("0x0", "Offset", window, cx),
             plugin_query,
             arguments,
             case_name: field("", "Case name", window, cx),
@@ -500,6 +536,7 @@ impl Workspace {
                         self.query_epoch.fetch_add(1, Ordering::Relaxed);
                         self.selection_epoch += 1;
                         self.selected = None;
+                        self.reset_hex();
                         self.selected_run = None;
                         self.selected_row = None;
                         self.scope.clear();
@@ -540,14 +577,40 @@ impl Workspace {
                     if outcome.status == RunStatus::Failed {
                         self.error = Some(outcome.message.chars().take(1500).collect());
                     }
-                    if let Some(executable) = self.file_dumps.remove(&id) {
+                    if let Some(request) = self.file_dumps.remove(&id) {
                         if saved && outcome.status == RunStatus::Completed {
-                            self.finish_file_dump(&id, executable);
+                            self.finish_file_dump(&id, request.executable);
+                            if self.selection_epoch == request.selection_epoch
+                                && self
+                                    .selected
+                                    .as_ref()
+                                    .is_some_and(|r| r.id == request.record_id)
+                            {
+                                if !request.show_hex {
+                                    self.detail = DetailTab::Files;
+                                }
+                                if self.hex_visible {
+                                    self.load_hex(cx);
+                                }
+                            }
                         }
-                        self.select_run(id, window, cx);
-                        self.detail = DetailTab::Files;
                     } else if self.scope.is_empty() || self.scope.contains(&id) {
                         self.select_run(id, window, cx);
+                    } else if self.result_group() == Some(ArtifactGroup::Processes)
+                        && self.case.as_ref().is_some_and(|case| {
+                            case.document.runs.iter().any(|run| {
+                                run.id == id
+                                    && Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                                    && matches!(
+                                        run.plugin.as_str(),
+                                        "windows.handles.Handles"
+                                            | "linux.lsof.Lsof"
+                                            | "mac.lsof.Lsof"
+                                    )
+                            })
+                        })
+                    {
+                        self.start_query(cx);
                     }
                 }
                 Event::Indexed(epoch, result) => {
@@ -570,13 +633,29 @@ impl Workspace {
                                 {
                                     self.show_record((**r).clone(), window, cx);
                                 }
-                            } else if self
-                                .selected
-                                .as_ref()
-                                .is_some_and(|r| !self.index.ids.contains(&r.id))
-                            {
+                            } else if self.selected.as_ref().is_some_and(|r| {
+                                !self.result_tree.visible.iter().any(|(i, _)| {
+                                    self.result_tree.nodes[*i].record_id == Some(r.id)
+                                }) && !self.index.ids.contains(&r.id)
+                            }) {
                                 self.selected = None;
                                 self.selected_row = None;
+                                self.reset_hex();
+                            }
+                            if let Some((position, (node, _))) = self
+                                .result_tree
+                                .visible
+                                .iter()
+                                .enumerate()
+                                .find(|(_, (i, _))| {
+                                    self.selected.as_ref().is_some_and(|record| {
+                                        self.result_tree.nodes[*i].record_id == Some(record.id)
+                                    })
+                                })
+                            {
+                                self.tree_cursor = Some(*node);
+                                self.result_scroll
+                                    .scroll_to_item(position, ScrollStrategy::Nearest);
                             }
                         }
                         Err(e) => self.error = Some(e),
@@ -634,7 +713,13 @@ impl Workspace {
                                 self.sync_os();
                             }
                             self.view = View::Workspace;
-                            if !self.scope.contains(&r.run_id) {
+                            if !self.scope.contains(&r.run_id)
+                                && !self
+                                    .result_tree
+                                    .nodes
+                                    .iter()
+                                    .any(|node| node.record_id == Some(r.id))
+                            {
                                 let run = r.run_id.clone();
                                 self.set_scope(
                                     vec![run.clone()],
@@ -668,6 +753,20 @@ impl Workspace {
                     Ok(p) => self.message = format!("Exported {}", p.display()),
                     Err(e) => self.error = Some(format!("Export failed: {e}")),
                 },
+                Event::HexLoaded(epoch, result) => {
+                    if epoch != self.hex_epoch {
+                        continue;
+                    }
+                    self.hex_view = match result {
+                        Ok((files, page)) => {
+                            self.hex_offset.update(cx, |input, cx| {
+                                input.set_value(format!("{:#x}", page.offset), window, cx)
+                            });
+                            HexView::Ready { files, page }
+                        }
+                        Err(error) => HexView::Error(error),
+                    };
+                }
             }
         }
         if self.query_due.is_some_and(|t| Instant::now() >= t) {

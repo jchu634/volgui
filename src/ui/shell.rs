@@ -161,6 +161,21 @@ impl Render for Workspace {
                     .text_color(cx.theme().muted_foreground)
                     .child(self.message.clone()),
             )
+            .child(
+                Button::new("toggle-hex-view")
+                    .xsmall()
+                    .ghost()
+                    .label("Hex")
+                    .accessibility_label("Toggle hex view")
+                    .selected(self.hex_visible)
+                    .disabled(!case_open || self.view != View::Workspace)
+                    .tooltip(if self.hex_visible {
+                        "Hide hex view"
+                    } else {
+                        "Show hex view"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_hex(cx))),
+            )
             .when(
                 self.busy.as_ref().is_some_and(|b| b.run_id.is_none()),
                 |s| {

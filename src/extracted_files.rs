@@ -1,6 +1,7 @@
 // Finds and opens extracted analysis files.
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -12,6 +13,90 @@ use crate::{
 };
 
 pub const DUMP_FILES: &str = "windows.dumpfiles.DumpFiles";
+
+pub const HEX_PAGE_SIZE: u64 = 256;
+
+#[derive(Debug)]
+pub struct HexPage {
+    pub path: PathBuf,
+    pub offset: u64,
+    pub total: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl HexPage {
+    pub fn read(path: &Path, offset: u64) -> Result<Self, String> {
+        let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+        let total = file.metadata().map_err(|e| e.to_string())?.len();
+        let offset = offset.min(total.saturating_sub(1)) / HEX_PAGE_SIZE * HEX_PAGE_SIZE;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        file.take(HEX_PAGE_SIZE)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            path: path.into(),
+            offset,
+            total,
+            bytes,
+        })
+    }
+
+    pub fn text(&self) -> String {
+        use std::fmt::Write;
+        let mut text = String::from(
+            "Offset            Hex bytes                                         ASCII\n",
+        );
+        for (i, chunk) in self.bytes.chunks(16).enumerate() {
+            let _ = write!(text, "{:08X}  ", self.offset + i as u64 * 16);
+            for j in 0..16 {
+                if let Some(byte) = chunk.get(j) {
+                    let _ = write!(text, "{byte:02X} ");
+                } else {
+                    text.push_str("   ");
+                }
+                if j == 7 {
+                    text.push(' ');
+                }
+            }
+            text.push_str(" | ");
+            for byte in chunk {
+                text.push(if byte.is_ascii_graphic() || *byte == b' ' {
+                    char::from(*byte)
+                } else {
+                    '.'
+                });
+            }
+            text.push('\n');
+        }
+        text
+    }
+}
+
+/// Reuse only an extraction for this file object and source capture.
+pub fn completed_dump<'a>(
+    case: &'a Case,
+    record: &StoredRecord,
+    physical: bool,
+) -> Option<&'a crate::case::Run> {
+    let source = case
+        .document
+        .runs
+        .iter()
+        .find(|run| run.id == record.run_id)?;
+    if source.plugin == DUMP_FILES {
+        return Some(source);
+    }
+    let target = FileDumpTarget::from_record(&source.plugin, &record.record)?;
+    let arguments = target.arguments(physical);
+    case.document.runs.iter().rev().find(|run| {
+        run.plugin == DUMP_FILES
+            && run.evidence_id == source.evidence_id
+            && run.status == crate::case::RunStatus::Completed
+            && run.arguments == arguments
+    })
+}
 
 /// A file object, rather than a path or a process-wide extraction request.
 pub struct FileDumpTarget {

@@ -26,6 +26,7 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.dlllist.DllList" => "Loaded DLLs",
         "windows.filescan.FileScan" | "linux.lsof.Lsof" | "mac.lsof.Lsof" => "File scan",
         "windows.dumpfiles.DumpFiles" => "Dump files",
+        "windows.handles.Handles" => "Process file handles",
         "windows.registry.hivelist.HiveList" | "windows.registry.hivescan.HiveScan" => {
             "Registry hives"
         }

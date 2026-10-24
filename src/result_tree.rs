@@ -13,7 +13,15 @@ pub struct TreeEntry {
 }
 
 #[derive(Clone, Debug)]
+pub enum TreeNodeKind {
+    Process,
+    File,
+    Directory,
+}
+
+#[derive(Clone, Debug)]
 pub struct TreeNode {
+    pub kind: TreeNodeKind,
     pub record_id: Option<i64>,
     pub label: String,
     pub pid: Option<String>,
@@ -50,6 +58,7 @@ impl ResultTree {
             }
             .filter(|parent| *parent != i);
             tree.nodes.push(TreeNode {
+                kind: TreeNodeKind::Process,
                 record_id: Some(entry.id),
                 label: entry.title.clone(),
                 pid: entry.pid.clone(),
@@ -90,6 +99,61 @@ impl ResultTree {
         tree
     }
 
+    /// Handle runs must belong to the same evidence as the process entries.
+    pub fn processes_with_files(
+        entries: Vec<TreeEntry>,
+        files: Vec<TreeEntry>,
+        matches: &[i64],
+    ) -> Self {
+        let mut tree = Self::processes(entries, &[]);
+        let mut processes: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, node) in tree.nodes.iter().enumerate() {
+            if let Some(pid) = &node.pid {
+                processes.entry(pid.clone()).or_default().push(i);
+            }
+        }
+        let mut included = matches.to_vec();
+        let matched: HashSet<_> = matches.iter().copied().collect();
+        for file in files {
+            let Some(parents) = file.pid.as_ref().and_then(|pid| processes.get(pid)) else {
+                continue;
+            };
+            for parent in parents {
+                if tree.nodes[*parent]
+                    .record_id
+                    .is_some_and(|id| matched.contains(&id))
+                {
+                    included.push(file.id);
+                }
+                tree.push_node(TreeNode {
+                    kind: TreeNodeKind::File,
+                    record_id: Some(file.id),
+                    label: file
+                        .path
+                        .clone()
+                        .filter(|p| !p.is_empty())
+                        .unwrap_or_else(|| file.title.clone()),
+                    pid: None,
+                    children: vec![],
+                    parent: Some(*parent),
+                });
+            }
+        }
+        // Keep a process's files visible before descending through its child processes.
+        let file_nodes: HashSet<_> = tree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, node)| matches!(node.kind, TreeNodeKind::File).then_some(i))
+            .collect();
+        for node in &mut tree.nodes {
+            node.children
+                .sort_by_key(|child| !file_nodes.contains(child));
+        }
+        tree.filter(&included);
+        tree
+    }
+
     pub fn files(entries: Vec<TreeEntry>, matches: &[i64]) -> Self {
         let mut tree = Self::default();
         let mut folders = HashMap::new();
@@ -125,6 +189,7 @@ impl ResultTree {
                 let key = (parent, label.clone());
                 let i = *folders.entry(key).or_insert_with(|| {
                     tree.push_node(TreeNode {
+                        kind: TreeNodeKind::Directory,
                         record_id: None,
                         label: format!("{label}{separator}"),
                         pid: None,
@@ -135,6 +200,7 @@ impl ResultTree {
                 parent = Some(i);
             }
             tree.push_node(TreeNode {
+                kind: TreeNodeKind::File,
                 record_id: Some(entry.id),
                 label: parts.pop().unwrap(),
                 pid: None,

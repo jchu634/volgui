@@ -7,6 +7,7 @@ mod bookmarks;
 mod case_info;
 mod details;
 mod files;
+mod hex;
 mod new_case;
 mod plugins;
 mod processes;

@@ -13,6 +13,33 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let node = &self.result_tree.nodes[i];
+        if matches!(node.kind, volgui::result_tree::TreeNodeKind::File) {
+            let id = node.record_id;
+            return self
+                .artifact_tree_row(i, depth, cx)
+                .child(Icon::new(IconName::File).size_4().flex_shrink_0())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(node.label.clone()),
+                )
+                .when_some(id, |row, id| {
+                    row.child(
+                        Button::new(("show-handle-in-files", i))
+                            .xsmall()
+                            .ghost()
+                            .label("Show in Files")
+                            .disabled(!self.row_cache.contains_key(&id))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.show_file_in_files(id, window, cx);
+                            })),
+                    )
+                })
+                .into_any_element();
+        }
         let record = node.record_id.and_then(|id| self.row_cache.get(&id));
         let summary = record
             .map(|record| {

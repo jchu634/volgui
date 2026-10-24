@@ -325,3 +325,124 @@ fn single_child_folders_compact_until_a_branch_or_file() {
         ]
     );
 }
+
+#[test]
+fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "processes",
+        "windows.pslist.PsList",
+        r#"[
+        {"PID":4,"PPID":0,"ImageFileName":"System"},
+        {"PID":100,"PPID":4,"ImageFileName":"editor.exe"},
+        {"PID":200,"PPID":4,"ImageFileName":"other.exe"}
+    ]"#,
+    );
+    insert(
+        &store,
+        "handles",
+        "windows.handles.Handles",
+        r#"[
+        {"PID":100,"Type":"File","Name":"C:\\notes.txt","HandleValue":80,"Offset":4096},
+        {"PID":100,"Type":"File","Name":"C:\\notes.txt","HandleValue":84,"Offset":4096},
+        {"PID":200,"Type":"File","Name":"C:\\other.txt","Offset":8192},
+        {"PID":100,"Type":"Event","Name":"Not a file"},
+        {"PID":100,"Type":null,"Name":"Unknown type"},
+        {"PID":999,"Type":"File","Name":"Orphan handle"}
+    ]"#,
+    );
+    // Another capture's handle run must never enter the caller's selected runs.
+    insert(
+        &store,
+        "other-capture",
+        "windows.handles.Handles",
+        r#"[
+        {"PID":100,"Type":"File","Name":"Wrong capture"}
+    ]"#,
+    );
+    let processes = store.tree_entries(&["processes".into()]).unwrap();
+    let files = store.tree_entries(&["handles".into()]).unwrap();
+    assert_eq!(files.len(), 4);
+    let mut matches = store
+        .query(&Query {
+            runs: vec!["processes".into()],
+            ..Default::default()
+        })
+        .unwrap()
+        .ids;
+    let file_matches = store
+        .query(&Query {
+            runs: vec!["handles".into()],
+            ..Default::default()
+        })
+        .unwrap()
+        .ids;
+    assert_eq!(file_matches.len(), 4);
+    matches.extend(file_matches);
+    let mut tree = ResultTree::processes_with_files(processes.clone(), files.clone(), &matches);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("System", 0),
+            ("editor.exe", 1),
+            ("C:\\notes.txt", 2),
+            ("C:\\notes.txt", 2),
+            ("other.exe", 1),
+            ("C:\\other.txt", 2)
+        ]
+    );
+    let editor = tree.visible[1].0;
+    assert!(matches!(
+        tree.nodes[tree.visible[2].0].kind,
+        volgui::result_tree::TreeNodeKind::File
+    ));
+    tree.toggle(editor);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("System", 0),
+            ("editor.exe", 1),
+            ("other.exe", 1),
+            ("C:\\other.txt", 2)
+        ]
+    );
+    let matches = store
+        .query(&Query {
+            runs: vec!["handles".into()],
+            text: "notes.txt".into(),
+            sort: None,
+        })
+        .unwrap()
+        .ids;
+    let tree = ResultTree::processes_with_files(processes.clone(), files.clone(), &matches);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("System", 0),
+            ("editor.exe", 1),
+            ("C:\\notes.txt", 2),
+            ("C:\\notes.txt", 2)
+        ]
+    );
+    let selected_id = tree.nodes[tree.visible[2].0].record_id.unwrap();
+    let record = store.fetch(&[selected_id]).unwrap().remove(0);
+    assert_eq!(record.run_id, "handles");
+    assert_eq!(record.record.text("Offset"), "4096");
+    // Searching by process name also retains its files.
+    let matches = store
+        .query(&Query {
+            runs: vec!["processes".into()],
+            text: "editor.exe".into(),
+            sort: None,
+        })
+        .unwrap()
+        .ids;
+    assert_eq!(
+        labels(&ResultTree::processes_with_files(
+            processes, files, &matches
+        )),
+        labels(&tree)
+    );
+}

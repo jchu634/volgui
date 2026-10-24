@@ -98,7 +98,7 @@ fn file_name_column_reads_and_sorts_across_plugins_with_different_field_names() 
     store
         .insert(
             &handles,
-            &Table::parse(r#"[{"Name":"zulu.txt"},{"Name":null,"FileName":"middle.txt"}]"#)
+            &Table::parse(r#"[{"Type":"File","Name":"zulu.txt"},{"Type":"File","Name":null,"FileName":"middle.txt"}]"#)
                 .unwrap(),
         )
         .unwrap();

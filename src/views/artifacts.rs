@@ -116,6 +116,23 @@ impl Workspace {
         });
     }
     pub(in crate::ui) fn render_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
+        let results = if self.hex_visible {
+            h_resizable("artifact-hex-split")
+                .child(
+                    resizable_panel()
+                        .size_range(px(260.)..Pixels::MAX)
+                        .child(self.render_results(cx)),
+                )
+                .child(
+                    resizable_panel()
+                        .size(px(660.))
+                        .size_range(px(300.)..Pixels::MAX)
+                        .child(self.render_hex_panel(cx)),
+                )
+                .into_any_element()
+        } else {
+            self.render_results(cx)
+        };
         div()
             .size_full()
             .min_w_0()
@@ -125,7 +142,7 @@ impl Workspace {
                     .child(
                         resizable_panel()
                             .size_range(px(150.)..Pixels::MAX)
-                            .child(self.render_results(cx)),
+                            .child(results),
                     )
                     .child(
                         resizable_panel()

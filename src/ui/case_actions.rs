@@ -59,6 +59,8 @@ impl Workspace {
             self.welcome_open = false;
         }
         self.file_dumps.clear();
+        self.hex_visible = false;
+        self.reset_hex();
         self.selected = None;
         self.selected_run = None;
         self.selected_row = None;

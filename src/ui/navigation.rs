@@ -101,6 +101,8 @@ impl Workspace {
         self.selected_run = None;
         self.selected_row = None;
         self.selected = None;
+        self.hex_visible = false;
+        self.reset_hex();
         self.scope.clear();
         self.scope_label.clear();
         self.index = ResultIndex::default();

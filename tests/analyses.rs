@@ -77,6 +77,7 @@ fn basic_catalog_includes_the_requested_tasks_and_sorts_before_extended() {
         "windows.dlllist.DllList",
         "windows.filescan.FileScan",
         "windows.dumpfiles.DumpFiles",
+        "windows.handles.Handles",
         "windows.registry.hivelist.HiveList",
         "linux.pslist.PsList",
         "linux.pstree.PsTree",
@@ -89,12 +90,12 @@ fn basic_catalog_includes_the_requested_tasks_and_sorts_before_extended() {
     plugins.push(plugin("frameworkinfo.FrameworkInfo"));
     plugins.push(plugin("windows.registry.printkey.PrintKey"));
     let basic = chooser_plugins(&plugins, OperatingSystem::Windows, false, "");
-    assert_eq!(basic.len(), 10);
+    assert_eq!(basic.len(), 11);
     assert!(basic.iter().all(|p| p.id.starts_with("windows.")));
     let full = chooser_plugins(&plugins, OperatingSystem::Windows, true, "");
-    assert_eq!(full.len(), 12);
-    assert!(full[..10].iter().all(|p| basic_label(&p.id).is_some()));
-    assert!(full[10..].iter().all(|p| basic_label(&p.id).is_none()));
+    assert_eq!(full.len(), 13);
+    assert!(full[..11].iter().all(|p| basic_label(&p.id).is_some()));
+    assert!(full[11..].iter().all(|p| basic_label(&p.id).is_none()));
     assert_eq!(
         chooser_plugins(&plugins, OperatingSystem::Windows, false, "dump files")[0].id,
         "windows.dumpfiles.DumpFiles"

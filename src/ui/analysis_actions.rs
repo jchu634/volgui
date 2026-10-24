@@ -148,6 +148,7 @@ impl Workspace {
     pub(super) fn dump_file(
         &mut self,
         open_in_imhex: bool,
+        show_hex: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -174,11 +175,19 @@ impl Workspace {
                 record,
                 self.file_offset_physical,
             )?;
-            Ok::<_, String>((id, executable))
+            Ok::<_, String>((
+                id,
+                FileDumpRequest {
+                    record_id: record.id,
+                    selection_epoch: self.selection_epoch,
+                    executable,
+                    show_hex,
+                },
+            ))
         })();
         match result {
-            Ok((id, executable)) => {
-                self.file_dumps.insert(id, executable);
+            Ok((id, request)) => {
+                self.file_dumps.insert(id, request);
                 if self.batch_total == self.batch_finished {
                     self.batch_total = 0;
                     self.batch_finished = 0;

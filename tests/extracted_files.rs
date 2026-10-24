@@ -242,3 +242,78 @@ fn missing_output_directory_reports_an_error() {
     let directory = tempfile::tempdir().unwrap();
     assert!(volgui::extracted_files::list(&directory.path().join("missing")).is_err());
 }
+
+#[test]
+fn hex_pages_bound_reads_preserve_offsets_and_format_binary_and_partial_rows() {
+    use volgui::extracted_files::{HEX_PAGE_SIZE, HexPage};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("bytes.dat");
+    let mut bytes = vec![0; 259];
+    bytes[..5].copy_from_slice(&[0, 0x41, 0x20, 0x7f, 0xff]);
+    bytes[256..].copy_from_slice(b"end");
+    fs::write(&path, &bytes).unwrap();
+    let first = HexPage::read(&path, 0).unwrap();
+    assert_eq!(first.total, 259);
+    assert_eq!(first.bytes.len() as u64, HEX_PAGE_SIZE);
+    assert!(first.text().contains("00 41 20 7F FF"));
+    assert!(first.text().contains("| .A .."));
+    let last = HexPage::read(&path, 256).unwrap();
+    assert_eq!(last.offset, 256);
+    assert_eq!(last.bytes, b"end");
+    assert!(last.text().contains("0000000000000100  65 6E 64"));
+    assert!(last.text().ends_with("| end\n"));
+    assert_eq!(HexPage::read(&path, u64::MAX).unwrap().offset, 256);
+    fs::write(&path, []).unwrap();
+    let empty = HexPage::read(&path, 256).unwrap();
+    assert_eq!(empty.total, 0);
+    assert_eq!(empty.offset, 0);
+    assert!(empty.bytes.is_empty());
+    assert!(HexPage::read(&temp.path().join("missing"), 0).is_err());
+    // A multi-gigabyte sparse output still costs one page to inspect.
+    fs::File::create(&path)
+        .unwrap()
+        .set_len(5 * 1024 * 1024 * 1024)
+        .unwrap();
+    assert_eq!(
+        HexPage::read(&path, 4 * 1024 * 1024 * 1024)
+            .unwrap()
+            .bytes
+            .len(),
+        256
+    );
+}
+
+#[test]
+fn content_reuse_matches_file_object_address_space_evidence_and_completion() {
+    use volgui::extracted_files::completed_dump;
+    let (_temp, mut case, engine, stored) = dump_case();
+    assert!(completed_dump(&case, &stored, false).is_none());
+    let id = queue_file_dump(&mut case, &engine, &stored, false).unwrap();
+    assert!(completed_dump(&case, &stored, false).is_none());
+    let outcome = volgui::volatility::Outcome {
+        status: RunStatus::Completed,
+        exit_code: Some(0),
+        message: String::new(),
+        table: None,
+    };
+    case.finish(&id, &outcome).unwrap();
+    assert_eq!(completed_dump(&case, &stored, false).unwrap().id, id);
+    let mut different = stored.clone();
+    different.record = record(json!({"Offset(V)":8192}));
+    assert!(completed_dump(&case, &different, false).is_none());
+    different.record = record(json!({"Offset":4096}));
+    assert!(completed_dump(&case, &different, true).is_none());
+    assert_eq!(completed_dump(&case, &different, false).unwrap().id, id);
+    // A newer matching address from another capture cannot replace this result.
+    let wrong = engine
+        .prepare(
+            &case.document.evidence[1],
+            DUMP_FILES,
+            vec!["--virtaddr".into(), "0x1000".into()],
+            &case.directory.join("analyses"),
+        )
+        .unwrap();
+    case.queue(wrong.clone()).unwrap();
+    case.finish(&wrong.id, &outcome).unwrap();
+    assert_eq!(completed_dump(&case, &stored, false).unwrap().id, id);
+}

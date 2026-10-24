@@ -240,6 +240,9 @@ impl ResultStore {
             .collect::<Vec<_>>()
             .join(",");
         let mut sql = format!("SELECT r.id FROM records r WHERE r.run_id IN ({marks})");
+        if groups.len() == 1 && groups.contains(&ArtifactGroup::Files) {
+            sql.push_str(" AND (r.run_id NOT IN (SELECT run_id FROM scans WHERE plugin='windows.handles.Handles') OR json_extract(r.fields_json,'$.Type')='File')");
+        }
         let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
         let text = query.text.to_lowercase();
         if !text.is_empty() {
@@ -351,7 +354,7 @@ impl ResultStore {
             .collect::<Vec<_>>()
             .join(",");
         let mut stmt = db.prepare(&format!(
-            "SELECT id,run_id,depth,title,pid,ppid,COALESCE(NULLIF(json_extract(fields_json,'$.Name'),''),NULLIF(json_extract(fields_json,'$.FileName'),''),NULLIF(json_extract(fields_json,'$.Path'),''),NULLIF(json_extract(fields_json,'$.FilePath'),''),NULLIF(json_extract(fields_json,'$.FullPath'),''),path) FROM records WHERE run_id IN ({marks}) ORDER BY id"
+            "SELECT id,run_id,depth,title,pid,ppid,COALESCE(NULLIF(json_extract(fields_json,'$.Name'),''),NULLIF(json_extract(fields_json,'$.FileName'),''),NULLIF(json_extract(fields_json,'$.Path'),''),NULLIF(json_extract(fields_json,'$.FilePath'),''),NULLIF(json_extract(fields_json,'$.FullPath'),''),path) FROM records WHERE run_id IN ({marks}) AND (run_id NOT IN (SELECT run_id FROM scans WHERE plugin='windows.handles.Handles') OR json_extract(fields_json,'$.Type')='File') ORDER BY id"
         )).map_err(|e| e.to_string())?;
         stmt.query_map(params_from_iter(runs), |r| {
             Ok(crate::result_tree::TreeEntry {
