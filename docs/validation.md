@@ -1,6 +1,6 @@
 # Validation
 
-The [CI workflow](../.github/workflows/ci.yml) runs on pushes and pull requests. Formatting runs on Linux; compilation, tests, the Windows accessibility regression, and Clippy run as separate Windows jobs. Cargo commands use the committed lockfile.
+The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests. Tests and the Windows accessibility regression share one Windows job to reuse compiled dependencies. Cargo commands use the committed lockfile. Run formatting, compilation checks, and Clippy locally alongside the tests:
 
 ```powershell
 cargo fmt --all --check

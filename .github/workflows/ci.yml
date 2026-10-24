@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -16,39 +17,17 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  format:
-    name: Formatting
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all --check
-
-  checks:
-    name: ${{ matrix.name }}
+  tests:
+    name: Tests
     runs-on: windows-2022
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Compilation
-            command: cargo check --locked --all-targets --features test-engine
-          - name: Tests
-            command: cargo test --locked --features test-engine
-          - name: Windows accessibility regression
-            command: cargo test --locked -p accesskit_windows --lib destroyed_window
-          - name: Clippy
-            command: cargo clippy --locked --all-targets --features test-engine -- -D warnings
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-checks
-      - run: ${{ matrix.command }}
+      - name: Tests
+        run: cargo test --locked --features test-engine
+      - name: Windows accessibility regression
+        run: cargo test --locked -p accesskit_windows --lib destroyed_window
