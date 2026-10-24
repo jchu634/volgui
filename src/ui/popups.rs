@@ -45,10 +45,7 @@ impl Workspace {
             .or_insert_with(|| PopupPanel::new(cx.entity().downgrade(), kind, cx))
             .clone()
     }
-    pub(super) fn artifact_plugins(
-        &self,
-        group: ArtifactGroup,
-    ) -> Vec<volgui_again::volatility::Plugin> {
+    pub(super) fn artifact_plugins(&self, group: ArtifactGroup) -> Vec<volgui::volatility::Plugin> {
         let os = self
             .evidence()
             .map(|e| e.operating_system)

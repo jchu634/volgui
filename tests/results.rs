@@ -5,7 +5,7 @@ use std::{
     sync::atomic::AtomicBool,
     time::Instant,
 };
-use volgui_again::{
+use volgui::{
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, Run, RunStatus, now},
     results::{BrowserEntry, DATABASE, Query, ResultStore, process_forest},
@@ -46,7 +46,7 @@ fn combined_network_endpoint_sort_uses_address_then_numeric_port() {
     )
     .unwrap();
     store.insert(&scan, &table).unwrap();
-    let column = volgui_again::result_table::columns(Some(ArtifactGroup::Network), &table.columns)
+    let column = volgui::result_table::columns(Some(ArtifactGroup::Network), &table.columns)
         .into_iter()
         .find(|c| c.label == "Target")
         .unwrap();
@@ -112,7 +112,7 @@ fn file_name_column_reads_and_sorts_across_plugins_with_different_field_names() 
         sort: Some(("Name".into(), false)),
     };
     let index = store.query(&query).unwrap();
-    let columns = volgui_again::result_table::columns(Some(ArtifactGroup::Files), &index.columns);
+    let columns = volgui::result_table::columns(Some(ArtifactGroup::Files), &index.columns);
     assert_eq!(columns.len(), 1);
     let rows = store.fetch(&index.ids).unwrap();
     let names = index
@@ -361,7 +361,7 @@ fn process_tree_keeps_orphans_breaks_cycles_and_deduplicates_pids() {
     })
     .collect::<Vec<_>>();
     let forest = process_forest(&entries);
-    fn collect(nodes: &[volgui_again::results::ProcessNode], ids: &mut Vec<i64>) {
+    fn collect(nodes: &[volgui::results::ProcessNode], ids: &mut Vec<i64>) {
         for n in nodes {
             ids.push(n.entry.id);
             collect(&n.children, ids);

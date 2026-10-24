@@ -1,6 +1,6 @@
 //! Run one plugin on the first evidence in an existing case, without rehashing its acquisition.
 use std::{path::PathBuf, sync::atomic::AtomicBool};
-use volgui_again::{
+use volgui::{
     case::{Case, RunStatus, now},
     settings::Settings,
     volatility::Installation,

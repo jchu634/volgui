@@ -1,7 +1,7 @@
 //! Generate synthetic scan data for UI/performance checks. No acquisition or CLI is used.
 use serde_json::json;
 use std::{collections::BTreeMap, fs, path::PathBuf, sync::atomic::AtomicBool};
-use volgui_again::{
+use volgui::{
     artifacts::OperatingSystem,
     case::{Case, Evidence, Run, RunStatus, now},
     volatility::{Outcome, Record, Table},

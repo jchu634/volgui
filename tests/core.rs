@@ -1,6 +1,6 @@
 use serde_json::json;
 use std::{fs, path::PathBuf, sync::atomic::AtomicBool};
-use volgui_again::{
+use volgui::{
     case::{Case, Evidence, RunStatus},
     settings::Settings,
     volatility::{Installation, Table, format_arguments, parse_arguments, parse_plugins},

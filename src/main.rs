@@ -30,7 +30,7 @@ fn main() {
             Some("--help" | "-h") => usage(0),
             _ => {
                 eprintln!(
-                    "Usage: volgui-again [--volatility <executable-or-directory>] [--case <case-directory>]"
+                    "Usage: volgui [--volatility <executable-or-directory>] [--case <case-directory>]"
                 );
                 std::process::exit(2);
             }
@@ -68,8 +68,6 @@ fn main() {
 }
 
 fn usage(code: i32) -> ! {
-    eprintln!(
-        "Usage: volgui-again [--volatility <executable-or-directory>] [--case <case-directory>]"
-    );
+    eprintln!("Usage: volgui [--volatility <executable-or-directory>] [--case <case-directory>]");
     std::process::exit(code)
 }

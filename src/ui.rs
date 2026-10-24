@@ -39,7 +39,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use volgui_again::{
+use volgui::{
     analyses::{AnalysisDraft, basic_label, chooser_plugins},
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, RunStatus, now},
@@ -458,9 +458,9 @@ impl Workspace {
             return;
         }
         if self.case.as_ref().is_some_and(|c| {
-            path.canonicalize().ok().is_some_and(|p| {
-                p == c.directory || p == c.directory.join(volgui_again::case::MANIFEST)
-            })
+            path.canonicalize()
+                .ok()
+                .is_some_and(|p| p == c.directory || p == c.directory.join(volgui::case::MANIFEST))
         }) {
             self.view = View::Workspace;
             cx.notify();
@@ -482,7 +482,7 @@ impl Workspace {
         self.browser_epoch += 1;
         self.selection_epoch += 1;
         self.selected_evidence = case.document.evidence.first().map(|e| e.id.clone());
-        let path = case.directory.join(volgui_again::case::MANIFEST);
+        let path = case.directory.join(volgui::case::MANIFEST);
         self.case = Some(case);
         self.selected = None;
         self.selected_run = None;

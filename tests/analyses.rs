@@ -1,5 +1,5 @@
 use std::{fs, sync::atomic::AtomicBool};
-use volgui_again::{
+use volgui::{
     analyses::{AnalysisDraft, basic_label, chooser_plugins},
     artifacts::OperatingSystem,
     case::{Case, Evidence, MANIFEST},

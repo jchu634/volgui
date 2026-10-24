@@ -7,7 +7,7 @@ A native Rust/GPUI investigation workspace for the external Volatility 3 CLI. Ev
 Build with a current Rust toolchain and the Windows C++ build tools required by GPUI.
 
 ```powershell
-cargo run --bin volgui-again -- --volatility D:\Repos\vol-windows-x64\vol.exe
+cargo run --bin volgui -- --volatility D:\Repos\vol-windows-x64\vol.exe
 ```
 
 The executable path can also be supplied by an installer using the `VOLGUI_VOLATILITY` environment variable, or selected in **Settings**. Validated settings persist in `%APPDATA%\VolGUI\settings.json`. `VOLGUI_CONFIG_DIR` overrides that directory for portable installations or testing. No development-specific engine path is compiled into the application.
@@ -51,7 +51,7 @@ Notes save when you select another artifact or close the application, and can al
 Open directly into a case:
 
 ```powershell
-cargo run --bin volgui-again -- --case "D:\Cases\Investigation 42"
+cargo run --bin volgui -- --case "D:\Cases\Investigation 42"
 ```
 
 ## Validation

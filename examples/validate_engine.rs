@@ -1,6 +1,6 @@
 //! Produce a reviewable engine smoke case, optionally using one plugin on a real acquisition.
 use std::{path::PathBuf, sync::atomic::AtomicBool};
-use volgui_again::{
+use volgui::{
     case::{Case, Evidence, RunStatus, now},
     settings::Settings,
     volatility::Installation,
