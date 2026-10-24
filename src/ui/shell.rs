@@ -237,7 +237,11 @@ impl Render for Workspace {
                     && this.view == View::Workspace
                     && matches!(
                         this.result_group(),
-                        Some(ArtifactGroup::Processes | ArtifactGroup::Files)
+                        Some(
+                            ArtifactGroup::Processes
+                                | ArtifactGroup::Files
+                                | ArtifactGroup::Registry
+                        )
                     )
                 {
                     this.tree_key_down(event, cx);
@@ -252,9 +256,6 @@ impl Render for Workspace {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
                 }),
-            )
-            .on_drag_move::<views::artifacts::ColumnResize>(
-                cx.listener(|this, event, _, cx| this.resize_column(event, cx)),
             )
             .flex()
             .flex_col()

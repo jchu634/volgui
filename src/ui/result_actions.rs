@@ -133,6 +133,7 @@ impl Workspace {
         self.query.update(cx, |s, cx| s.set_value("", window, cx));
         self.query_due = None;
         self.result_scroll = UniformListScrollHandle::default();
+        self.reset_result_table(cx);
         self.start_query(cx);
         cx.notify();
     }
@@ -208,6 +209,9 @@ impl Workspace {
                     }
                     Some(ArtifactGroup::Files) => {
                         ResultTree::files(store.tree_entries(&query.runs)?, &index.ids)
+                    }
+                    Some(ArtifactGroup::Registry) => {
+                        ResultTree::registry(store.registry_entries(&query.runs)?, &index.ids)
                     }
                     _ => ResultTree::default(),
                 };

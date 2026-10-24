@@ -20,9 +20,6 @@ impl Workspace {
                         .child(Button::new("run-global-search").small().label("Search evidence").disabled(self.evidence().is_none() || self.busy.as_ref().is_some_and(|b| b.run_id.is_none())).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
             }
             Some(ArtifactGroup::Registry) => {
-                let readable = self.selected.as_ref().is_some_and(|r| {
-                    volgui::investigation::registry::hive_offset(&r.record).is_some()
-                });
                 let child = self
                     .selected
                     .as_ref()
@@ -37,14 +34,11 @@ impl Workspace {
                         volgui::investigation::registry::child_key(run, &r.record)
                     })
                     .is_some();
-                tools = tools.child(div().text_xs().child("Select a hive, then read its keys and values. Select a Key record and choose Open subkey to descend. Key paths are relative to the hive root."))
+                tools = tools.child(div().text_xs().child("Expand branches to inspect collected registry keys and values. Select a key and choose Open subkey to collect its contents."))
                     .child(div().flex().flex_wrap().items_center().gap_2()
                         .child(Button::new("find-registry-hives").small().ghost().label("Find hives").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_source("windows.registry.hivelist.HiveList",window,cx))))
                         .child(Input::new(&self.registry_key).id("registry-key-path").aria_label("Registry key relative to hive root").small().w(px(350.)))
-                        .child(Button::new("browse-hive").small().label("Read key").disabled(!readable).on_click(cx.listener(|this,_,window,cx| this.browse_registry(false,false,window,cx))))
-                        .child(Button::new("registry-parent").small().ghost().label("Up").disabled(!readable).on_click(cx.listener(|this,_,window,cx| this.registry_parent(window,cx))))
-                        .child(Button::new("read-registry-subtree").small().ghost().label("Read subtree").disabled(!readable).on_click(cx.listener(|this,_,window,cx| this.browse_registry(false,true,window,cx))))
-                        .child(Button::new("registry-open-subkey").small().ghost().label("Open subkey").tooltip("Open an immediate child from Read key results. For recursive results, enter a relative path and choose Read key.").disabled(!child).on_click(cx.listener(|this,_,window,cx| this.browse_registry(true,false,window,cx)))));
+                        .child(Button::new("registry-open-subkey").small().ghost().label("Open subkey").tooltip("Collect the contents of the selected immediate subkey.").disabled(!child).on_click(cx.listener(|this,_,window,cx| this.browse_registry(true,false,window,cx)))));
             }
             _ => return div(),
         }

@@ -30,17 +30,6 @@ impl Workspace {
         }
     }
 
-    pub(super) fn registry_parent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let path = self.registry_key.read(cx).value();
-        let parent = path
-            .trim_matches('\\')
-            .rsplit_once('\\')
-            .map(|(p, _)| p.to_string())
-            .unwrap_or_default();
-        self.registry_key
-            .update(cx, |input, cx| input.set_value(parent, window, cx));
-        self.browse_registry(false, false, window, cx);
-    }
     pub(super) fn queue_investigation(
         &mut self,
         runs: Vec<Run>,

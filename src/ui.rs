@@ -14,7 +14,7 @@ mod views;
 
 use gpui_kit::{
     assets::IconName,
-    base::{Button as ActionButton, InteractiveElementExt, Link as TextLink, SelectableText},
+    base::{Button as ActionButton, Link as TextLink, SelectableText},
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt,
         button::{Button, ButtonVariants},
@@ -24,19 +24,21 @@ use gpui_kit::{
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
         popover::Popover,
         progress::ProgressCircle,
-        resizable::{HandleEdge, h_resizable, resizable_panel, resize_handle, v_resizable},
+        resizable::{h_resizable, resizable_panel, v_resizable},
         scroll::{ScrollableElement, Scrollbar, ScrollbarMode},
+        table::{
+            Column as DataColumn, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
+        },
         tooltip::Tooltip,
     },
     prelude::FluentBuilder,
     *,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
     ops::Range,
     path::PathBuf,
-    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -168,12 +170,13 @@ pub struct Workspace {
     browser_group: ArtifactGroup,
     show_file_handles: bool,
     result_scroll: UniformListScrollHandle,
-    table_x_scroll: ScrollHandle,
+    result_table: Entity<TableState<views::result_data_table::ResultTable>>,
+    analysis_table: Entity<TableState<views::analysis_data_table::AnalysisTable>>,
+    database_table: Entity<TableState<views::database_data_table::DatabaseTable>>,
     details_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
     relations_scroll: UniformListScrollHandle,
     column_widths: HashMap<String, Pixels>,
-    column_drag_origin: Rc<Cell<Pixels>>,
     column_fit_epoch: Arc<AtomicU64>,
     relations: ProcessRelations,
     relation_epoch: u64,
@@ -294,7 +297,62 @@ impl Workspace {
         let query = field("", "Search artifact fields...", window, cx);
         let plugin_query = field("", "Find a plugin...", window, cx);
         let arguments = field("", "e.g. --pid 3488", window, cx);
+        let workspace = cx.entity().downgrade();
+        let result_table = cx.new(|cx| {
+            TableState::new(
+                views::result_data_table::ResultTable::new(workspace.clone()),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_header(false)
+            .loop_selection(false)
+            .select_on_modifier_click(false)
+        });
+        let analysis_table = cx.new(|cx| {
+            TableState::new(
+                views::analysis_data_table::AnalysisTable::new(workspace.clone()),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_selectable(false)
+            .row_header(false)
+        });
+        let database_table = cx.new(|cx| {
+            TableState::new(
+                views::database_data_table::DatabaseTable::new(workspace),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_selectable(false)
+            .row_header(false)
+        });
         let subscriptions = vec![
+            cx.subscribe(
+                &result_table,
+                |this, _, event: &TableEvent, cx| match event {
+                    TableEvent::SelectRow(row) => {
+                        if let Some(id) = this.index.ids.get(*row).copied()
+                            && this.selected.as_ref().is_none_or(|record| record.id != id)
+                        {
+                            this.load_record(id, cx);
+                        }
+                    }
+                    TableEvent::ColumnWidthsChanged(widths) => {
+                        this.column_fit_epoch.fetch_add(1, Ordering::Relaxed);
+                        for (column, width) in this.result_columns().iter().zip(widths) {
+                            this.column_widths.insert(column.key.clone(), *width);
+                        }
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
             cx.subscribe(&query, |this, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
                     this.query_due = Some(Instant::now() + Duration::from_millis(180));
@@ -354,12 +412,13 @@ impl Workspace {
             browser_group: ArtifactGroup::Processes,
             show_file_handles: true,
             result_scroll: UniformListScrollHandle::default(),
-            table_x_scroll: ScrollHandle::default(),
+            result_table,
+            analysis_table,
+            database_table,
             details_scroll: ScrollHandle::default(),
             queue_scroll: ScrollHandle::default(),
             relations_scroll: UniformListScrollHandle::default(),
             column_widths: HashMap::new(),
-            column_drag_origin: Rc::new(Cell::new(px(0.))),
             column_fit_epoch: Arc::new(AtomicU64::new(0)),
             relations: ProcessRelations::default(),
             relation_epoch: 0,

@@ -158,8 +158,6 @@ impl Workspace {
             .filter(&selectable)
             .collect();
 
-        let all_visible_selected =
-            !visible_ids.is_empty() && visible_ids.iter().all(|id| draft.selected.contains(id));
         let basic_count = plugins
             .iter()
             .filter(|p| basic_label(&p.id).is_some())
@@ -209,69 +207,6 @@ impl Workspace {
                 })),
         );
         let selected = draft.selected.clone();
-        let focused = self.plugin.clone();
-        let header = div()
-            .id("analysis-table-header")
-            .flex()
-            .items_center()
-            .h(px(34.))
-            .gap_2()
-            .px_2()
-            .bg(cx.theme().muted)
-            .role(Role::Row)
-            .child(
-                div().w(px(24.)).child(
-                    Checkbox::new("select-visible-analyses")
-                        .accessibility_label("Select all visible analyses")
-                        .checked(all_visible_selected)
-                        .disabled(visible_ids.is_empty())
-                        .on_change(cx.listener(move |this, value, _, cx| {
-                            if let Some(draft) = this.analysis_drafts.get_mut(this.analysis_active)
-                            {
-                                for id in &visible_ids {
-                                    if *value {
-                                        draft.selected.insert(id.clone());
-                                    } else {
-                                        draft.selected.remove(id);
-                                    }
-                                }
-                            }
-                            cx.notify();
-                        })),
-                ),
-            )
-            .child(
-                div()
-                    .id("analysis-name-header")
-                    .flex_1()
-                    .role(Role::ColumnHeader)
-                    .text_xs()
-                    .child("Analysis"),
-            )
-            .child(
-                div()
-                    .id("analysis-plugin-header")
-                    .flex_1()
-                    .role(Role::ColumnHeader)
-                    .text_xs()
-                    .child("Plugin"),
-            )
-            .child(
-                div()
-                    .id("analysis-level-header")
-                    .w(px(70.))
-                    .role(Role::ColumnHeader)
-                    .text_xs()
-                    .child("Level"),
-            )
-            .child(
-                div()
-                    .id("analysis-options-header")
-                    .w(px(150.))
-                    .role(Role::ColumnHeader)
-                    .text_xs()
-                    .child("Options"),
-            );
         let plugin_count = plugins.len();
         // Keep group headers and children in one virtualized list.
         let mut rows = Vec::new();
@@ -336,204 +271,60 @@ impl Workspace {
                 )));
             }
         }
-        let range_ids = Rc::new(displayed_ids);
-        let len = rows.len();
-        let list = uniform_list(
-            "analysis-table-rows",
-            len,
-            cx.processor(move |_, range: Range<usize>, _, cx| {
-                range
-                    .map(|i| {
-                        let Some((group, index, expanded, count, selected_count)) = rows[i] else {
-                            return div().id("extended-analyses-header").h(px(38.)).w_full()
-                                .flex().items_center().px_2().bg(cx.theme().muted)
-                                .text_sm().font_weight(FontWeight::SEMIBOLD).child("Extended");
-                        };
-                        let Some(index) = index else {
-                            let group_ids: Vec<_> = plugins
-                                .iter()
-                                .filter(|plugin| basic_label(&plugin.id).is_some() && ArtifactGroup::for_plugin(&plugin.id) == group)
-                                .map(|plugin| plugin.id.clone())
-                                .collect();
-                            let blocked = !allow_previous && group_ids.iter().all(|id| previous.contains(id));
-                            let basic_count = group_ids.iter().filter(|id| basic_label(id).is_some()).count();
-                            let level = if basic_count == count { "Basic" }
-                                else if basic_count == 0 { "Extended" } else { "Mixed" };
-                            let group_ids: Vec<_> = group_ids.into_iter()
-                                .filter(|id| allow_previous || !previous.contains(id))
-                                .collect();
-                            return div()
-                                .id(key("analysis-group-row", group.label()))
-                                .when(blocked, |row| row.opacity(0.45))
-                                .h(px(38.))
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .px_2()
-                                .gap_2()
-                                .role(Role::Row)
-                                .border_b_1()
-                                .border_color(cx.theme().border)
-                                .child(
-                                    div().w(px(24.)).child(
-                                        Checkbox::new(key("select-analysis-group", group.label()))
-                                            .accessibility_label(format!(
-                                                "Select {} analyses",
-                                                group.label()
-                                            ))
-                                            .checked(selected_count > 0)
-                                            .disabled(group_ids.is_empty())
-                                            .on_change(cx.listener(move |this, checked, _, cx| {
-                                                if let Some(draft) = this
-                                                    .analysis_drafts
-                                                    .get_mut(this.analysis_active)
-                                                {
-                                                    for id in &group_ids {
-                                                        if *checked {
-                                                            draft.selected.insert(id.clone());
-                                                        } else {
-                                                            draft.selected.remove(id);
-                                                        }
-                                                    }
-                                                }
-                                                this.analysis_error = None;
-                                                cx.notify();
-                                            })),
-                                    ),
-                                )
-                                .child(div().flex_1().min_w_0().text_sm().truncate().child(group.label()))
-                                .child(div().flex_1().min_w_0().text_xs()
-                                    .text_color(cx.theme().muted_foreground).child("Multiple"))
-                                .child(div().w(px(70.)).text_xs()
-                                    .text_color(cx.theme().muted_foreground).child(level))
-                                .child(div().w(px(150.)).flex().items_center().justify_end().gap_1()
-                                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                                        .child(format!("{selected_count}/{count} selected")))
-                                    .child(Button::new(key("analysis-group", group.label()))
-                                            .xsmall().ghost()
-                                            .icon(if expanded { IconName::ChevronDown } else { IconName::ChevronRight })
-                                            .tooltip(format!("Show individual {} analyses ({selected_count}/{count} selected)", group.label()))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if !this.analysis_collapsed_groups.remove(&group) {
-                                                    this.analysis_collapsed_groups.insert(group);
-                                                }
-                                                cx.notify();
-                                            }))));
-                        };
-                        let plugin = &plugins[index];
-                        let id = plugin.id.clone();
-                        let check_id = id.clone();
-                        let range_ids = range_ids.clone();
-                        let options_id = id.clone();
-                        let label = basic_label(&id)
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| id.rsplit('.').next().unwrap_or(&id).to_string());
-                        let blocked = !allow_previous && previous.contains(&id);
-                        let basic = basic_label(&id).is_some();
-                        let description = if previous.contains(&id) {
-                            format!("{} Completed, queued, or running for this evidence. Enable Allow previously run plugins to select it again.", plugin.description)
-                        } else { plugin.description.clone() };
-                        div()
-                            .id(key("analysis-row", &id))
-                            .role(Role::Row)
-                            .w_full()
-                            .h(px(38.))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .when(blocked, |row| row.opacity(0.45))
-                            .when(focused.as_ref() == Some(&id), |row| {
-                                row.bg(cx.theme().accent)
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                use super::analysis_data_table::AnalysisRow;
+                match row {
+                    None => AnalysisRow::Extended,
+                    Some((group, None, expanded, count, selected_count)) => {
+                        let ids = plugins
+                            .iter()
+                            .filter(|plugin| {
+                                basic_label(&plugin.id).is_some()
+                                    && ArtifactGroup::for_plugin(&plugin.id) == group
                             })
-                            .child(
-                                div().w(px(24.)).child(
-                                    Checkbox::new(key("select-analysis", &id))
-                                        .accessibility_label(format!("Select {id}"))
-                                        .checked(selected.contains(&id))
-                                        .disabled(blocked)
-                                        .on_change(cx.listener(move |this, value, window, cx| {
-                                            if let Some(draft) =
-                                                this.analysis_drafts.get_mut(this.analysis_active)
-                                            {
-                                                draft.select(
-                                                    &check_id,
-                                                    *value,
-                                                    window.modifiers().shift,
-                                                    &range_ids,
-                                                );
-                                            }
-                                            this.analysis_error = None;
-                                            cx.notify();
-                                        })),
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .id(key("analysis-label", &id))
-                                    .when(count == 0, |cell| cell.pl_4())
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_sm()
-                                    .truncate()
-                                    .child(label)
-                                    .tooltip(move |window, cx| {
-                                        Tooltip::new(description.clone()).build(window, cx)
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .truncate()
-                                    .child(id.clone()),
-                            )
-                            .child(
-                                div()
-                                    .w(px(70.))
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if basic { "Basic" } else { "Extended" }),
-                            )
-                            .child(
-                                Button::new(key("analysis-options", &id))
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Options")
-                                    .w(px(150.))
-                                    .tooltip(format!("Options for {id}"))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.focus_plugin(options_id.clone(), window, cx)
-                                    })),
-                            )
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        )
-        .flex_1()
-        .w_full()
-        .min_h_0();
+                            .map(|plugin| plugin.id.clone())
+                            .filter(&selectable)
+                            .collect();
+                        AnalysisRow::Group {
+                            group,
+                            expanded,
+                            count,
+                            selected_count,
+                            ids,
+                        }
+                    }
+                    Some((_, Some(index), _, count, _)) => {
+                        let plugin = &plugins[index];
+                        AnalysisRow::Plugin {
+                            id: plugin.id.clone(),
+                            description: plugin.description.clone(),
+                            blocked: !selectable(&plugin.id),
+                            previous: previous.contains(&plugin.id),
+                            indented: count == 0,
+                        }
+                    }
+                }
+            })
+            .collect();
+        self.analysis_table.update(cx, |state, cx| {
+            let delegate = state.delegate_mut();
+            delegate.rows = rows;
+            delegate.visible_ids = visible_ids;
+            delegate.range_ids = std::rc::Rc::new(displayed_ids);
+            cx.notify();
+        });
         let table = div()
             .id("analysis-table")
-            .role(Role::Table)
-            .flex()
-            .flex_col()
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .border_1()
-            .border_color(cx.theme().border)
-            .child(header)
-            .when(len == 0, |s| {
-                s.child(div().p_4().text_sm().child(
-                    "No matching analyses. Try showing extended analyses or changing the search.",
-                ))
-            })
-            .child(list);
+            .child(
+                DataTable::new(&self.analysis_table)
+                    .small()
+                    .header_row_height(px(34.)),
+            );
         let mut body = div().flex().flex_1().min_h_0().gap_3().child(table);
         if let Some(id) = &self.plugin {
             body=body.child(div().flex().flex_col().gap_3().w(px(255.)).flex_shrink_0()

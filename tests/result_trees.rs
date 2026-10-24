@@ -446,3 +446,63 @@ fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
         labels(&tree)
     );
 }
+
+#[test]
+fn registry_keys_values_hives_and_search_share_branches() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "hives",
+        "windows.registry.hivelist.HiveList",
+        r#"[
+        {"Offset":4096,"Name":"SYSTEM"},
+        {"Offset":8192,"Name":"SOFTWARE"}
+    ]"#,
+    );
+    insert(
+        &store,
+        "keys",
+        "windows.registry.printkey.PrintKey",
+        r#"[
+        {"Hive Offset":4096,"Key":"SYSTEM","Name":"ControlSet001","Type":"Key"},
+        {"Hive Offset":4096,"Key":"SYSTEM\\ControlSet001","Name":"Services","Type":"Key"},
+        {"Hive Offset":4096,"Key":"SYSTEM\\ControlSet001\\Services","Name":"Start","Type":"REG_DWORD","Data":2},
+        {"Hive Offset":8192,"Key":"SOFTWARE","Name":"Vendor","Type":"Key"}
+    ]"#,
+    );
+    let mut query = Query {
+        runs: vec!["hives".into(), "keys".into()],
+        ..Default::default()
+    };
+    let entries = store.registry_entries(&query.runs).unwrap();
+    let index = store.query(&query).unwrap();
+    let mut tree = ResultTree::registry(entries.clone(), &index.ids);
+    assert_eq!(tree.visible.len(), 8);
+    let services = tree
+        .visible
+        .iter()
+        .find(|(i, _)| tree.nodes[*i].label == "Services")
+        .unwrap()
+        .0;
+    assert!(tree.nodes[services].record_id.is_some());
+    tree.toggle(services);
+    assert_eq!(tree.visible.len(), 7);
+    tree.expand_all(false);
+    assert_eq!(tree.visible.len(), 2);
+    query.text = "Start".into();
+    let index = store.query(&query).unwrap();
+    let tree = ResultTree::registry(entries, &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("Hive 0x1000 - SYSTEM", 0),
+            ("SYSTEM", 1),
+            ("ControlSet001", 2),
+            ("Services", 3),
+            ("Start - REG_DWORD", 4)
+        ]
+    );
+    let id = tree.nodes[tree.visible[4].0].record_id.unwrap();
+    assert_eq!(store.fetch(&[id]).unwrap()[0].record.text("Data"), "2");
+}

@@ -212,12 +212,25 @@ impl Workspace {
         let next_path = page.path.clone();
         let previous_table = page.table.clone();
         let next_table = page.table.clone();
+        self.database_table.update(cx, |state, cx| {
+            if state.delegate().columns != page.columns {
+                state.delegate_mut().columns = page.columns.clone();
+                state.refresh(cx);
+            }
+            let location = (page.path.clone(), page.table.clone(), page.offset);
+            if state.delegate().location.as_ref() != Some(&location) {
+                state.delegate_mut().location = Some(location);
+                state.scroll_to_row(0, cx);
+            }
+            cx.notify();
+        });
         content = content.child(choices).child(div().text_xs().child("Read-only snapshot. 100 rows per page, cells limited to 1024 characters. Detached WAL data is not included."))
             .child(div().flex().items_center().gap_2()
                 .child(Button::new("database-previous").xsmall().ghost().label("Previous rows").disabled(page.offset == 0).on_click(cx.listener(move |this,_,_,cx| this.load_database(previous_path.clone(),Some(previous_table.clone()),previous,cx))))
                 .child(format!("{} rows at offset {}",page.rows.len(),page.offset))
                 .child(Button::new("database-next").xsmall().ghost().label("Next rows").disabled(!page.more).on_click(cx.listener(move |this,_,_,cx| this.load_database(next_path.clone(),Some(next_table.clone()),next,cx)))))
-            .child(SelectableText::new("database-rows",page.text()));
+            .child(div().id("database-rows").h(px(280.)).min_w_0()
+                .child(DataTable::new(&self.database_table).small()));
         content.into_any_element()
     }
 }

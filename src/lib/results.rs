@@ -412,6 +412,52 @@ impl ResultStore {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())
     }
+    pub fn registry_entries(
+        &self,
+        runs: &[String],
+    ) -> Result<Vec<crate::result_tree::RegistryEntry>> {
+        if runs.is_empty() {
+            return Ok(vec![]);
+        }
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = db
+            .prepare(&format!(
+                "SELECT id, fields_json FROM records WHERE run_id IN ({marks}) ORDER BY id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(runs), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.map(|row| {
+            let (id, json) = row.map_err(|e| e.to_string())?;
+            let record = Record {
+                fields: serde_json::from_str(&json).map_err(|e| e.to_string())?,
+                depth: 0,
+            };
+            let offset = crate::investigation::registry::hive_offset(&record);
+            let value_type = record.text("Type");
+            Ok(crate::result_tree::RegistryEntry {
+                id,
+                hive: offset
+                    .map(|offset| format!("Hive {offset:#x}"))
+                    .unwrap_or_else(|| "Registry artifacts".into()),
+                path: record.text("Key"),
+                name: record.text("Name"),
+                value_type: if value_type.is_empty() {
+                    "Hive".into()
+                } else {
+                    value_type
+                },
+            })
+        })
+        .collect()
+    }
+
     pub fn record(&self, run: &str, row: usize) -> Result<Option<StoredRecord>> {
         let id = self
             .connect()?

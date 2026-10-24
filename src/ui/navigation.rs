@@ -74,6 +74,7 @@ impl Workspace {
         self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.result_scroll = UniformListScrollHandle::default();
+        self.reset_result_table(cx);
         self.query
             .update(cx, |s, cx| s.set_value(location.query, window, cx));
         self.query_due = None;

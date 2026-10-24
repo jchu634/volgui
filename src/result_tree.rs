@@ -13,10 +13,21 @@ pub struct TreeEntry {
 }
 
 #[derive(Clone, Debug)]
+pub struct RegistryEntry {
+    pub id: i64,
+    pub hive: String,
+    pub path: String,
+    pub name: String,
+    pub value_type: String,
+}
+
+#[derive(Clone, Debug)]
 pub enum TreeNodeKind {
     Process,
     File,
     Directory,
+    RegistryKey,
+    RegistryValue,
 }
 
 #[derive(Clone, Debug)]
@@ -227,6 +238,90 @@ impl ResultTree {
             node.children = children;
         }
         tree.compact_folders();
+        tree.filter(matches);
+        tree
+    }
+
+    pub fn registry(entries: Vec<RegistryEntry>, matches: &[i64]) -> Self {
+        let mut tree = Self::default();
+        let mut keys = HashMap::new();
+        for entry in entries {
+            let mut parent = None;
+            let components = std::iter::once(entry.hive.as_str())
+                .chain(entry.path.split('\\').filter(|part| !part.is_empty()));
+            for label in components {
+                let key = (parent, label.to_lowercase());
+                let i = *keys.entry(key).or_insert_with(|| {
+                    tree.push_node(TreeNode {
+                        kind: TreeNodeKind::RegistryKey,
+                        record_id: None,
+                        label: label.to_owned(),
+                        pid: None,
+                        children: vec![],
+                        parent,
+                    })
+                });
+                parent = Some(i);
+            }
+            if entry.value_type == "Hive" {
+                if let Some(i) = parent {
+                    if tree.nodes[i].record_id.is_none() {
+                        tree.nodes[i].record_id = Some(entry.id);
+                        if !entry.name.is_empty() {
+                            tree.nodes[i].label = format!("{} - {}", entry.hive, entry.name);
+                        }
+                    } else {
+                        tree.push_node(TreeNode {
+                            kind: TreeNodeKind::RegistryKey,
+                            record_id: Some(entry.id),
+                            label: entry.name,
+                            pid: None,
+                            children: vec![],
+                            parent,
+                        });
+                    }
+                }
+            } else if entry.value_type == "Key" {
+                let key = (parent, entry.name.to_lowercase());
+                let i = *keys.entry(key).or_insert_with(|| {
+                    tree.push_node(TreeNode {
+                        kind: TreeNodeKind::RegistryKey,
+                        record_id: None,
+                        label: entry.name.clone(),
+                        pid: None,
+                        children: vec![],
+                        parent,
+                    })
+                });
+                // Keep duplicate observations selectable without duplicating branches.
+                if tree.nodes[i].record_id.is_none() {
+                    tree.nodes[i].record_id = Some(entry.id);
+                } else {
+                    tree.push_node(TreeNode {
+                        kind: TreeNodeKind::RegistryKey,
+                        record_id: Some(entry.id),
+                        label: entry.name,
+                        pid: None,
+                        children: vec![],
+                        parent,
+                    });
+                }
+            } else {
+                let name = if entry.name.is_empty() {
+                    "(Default)"
+                } else {
+                    &entry.name
+                };
+                tree.push_node(TreeNode {
+                    kind: TreeNodeKind::RegistryValue,
+                    record_id: Some(entry.id),
+                    label: format!("{name} - {}", entry.value_type),
+                    pid: None,
+                    children: vec![],
+                    parent,
+                });
+            }
+        }
         tree.filter(matches);
         tree
     }

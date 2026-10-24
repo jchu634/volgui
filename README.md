@@ -21,6 +21,8 @@ VolGUI runs a separately installed Volatility engine and stores analysis results
 
 Views share workspace state and call its actions. They do not run SQLite queries or CLI processes while rendering. This keeps background work and navigation consistent across views without introducing a second state synchronization layer. A separate state object per view would duplicate selection and case ownership, so the split follows rendering and action responsibilities instead.
 
+Artifact grids, the analysis chooser, and recovered SQLite previews use GPUI Kit's native `DataTable`. Artifact grids retain background row loading and database sorting, selectable cell text, resizable columns, and double-click column fitting. Process and file hierarchies use their tree views.
+
 With no case open, a welcome dialog requires opening or creating a case. Escape, backdrop clicks, and a close button cannot dismiss it. The sidebar offers Processes, Network, Files, Browser activity, Registry, Global string search, and Bookmarks. Raw investigation artifacts remain available at the bottom.
 
 Processes appear beneath their parents, and files are grouped by directory. Single-child folder chains share one row, stopping at branches or files. Both trees support branch expansion, collapse, search and record selection. Process searches retain ancestor branches for context. PPID and exit time remain available in record details and exports.
