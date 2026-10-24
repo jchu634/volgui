@@ -123,7 +123,6 @@ impl Workspace {
         });
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("Welcome to VolGUI")
                 .width(px(760.))
                 .close_button(false)
                 .overlay_closable(false)

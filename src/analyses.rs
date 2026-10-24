@@ -74,7 +74,7 @@ pub fn queue_retries(case: &mut Case, engine: &Installation, ids: &[String]) -> 
 pub fn chooser_plugins(
     plugins: &[Plugin],
     os: OperatingSystem,
-    advanced: bool,
+    extended: bool,
     query: &str,
 ) -> Vec<Plugin> {
     let query = query.to_lowercase();
@@ -82,7 +82,7 @@ pub fn chooser_plugins(
         .iter()
         .filter(|plugin| {
             os.accepts(&plugin.id)
-                && (advanced || basic_label(&plugin.id).is_some())
+                && (extended || basic_label(&plugin.id).is_some())
                 && format!(
                     "{} {} {}",
                     plugin.id,

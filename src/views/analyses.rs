@@ -70,7 +70,7 @@ impl Workspace {
                                         format_arguments(&run.arguments),
                                     );
                                 }
-                                this.show_advanced = basic_label(&run.plugin).is_none();
+                                this.show_extended = basic_label(&run.plugin).is_none();
                                 this.focus_plugin(run.plugin, window, cx);
                             }
                         })),

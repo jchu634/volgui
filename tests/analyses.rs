@@ -66,7 +66,7 @@ fn shift_selection_respects_filters_and_separate_evidence_drafts() {
 }
 
 #[test]
-fn basic_catalog_includes_the_requested_tasks_and_sorts_before_advanced() {
+fn basic_catalog_includes_the_requested_tasks_and_sorts_before_extended() {
     let requested = [
         "windows.info.Info",
         "windows.pslist.PsList",

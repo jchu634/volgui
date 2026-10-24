@@ -33,7 +33,11 @@ impl Workspace {
             return;
         }
         self.analysis_active = 0;
-        self.show_advanced = false;
+        self.show_extended = false;
+        self.analysis_collapsed_groups = ArtifactGroup::BROWSER
+            .into_iter()
+            .chain(ArtifactGroup::SHORTCUTS)
+            .collect();
         self.analysis_error = None;
         self.analysis_group_filter = None;
         self.plugin = None;
@@ -50,7 +54,6 @@ impl Workspace {
         let width = (window.viewport_size().width - px(64.)).min(px(1100.));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("Choose analyses")
                 .width(width)
                 .overlay_closable(false)
                 .child(panel.clone())
@@ -66,7 +69,12 @@ impl Workspace {
             return div().into_any_element();
         };
         let total: usize = self.analysis_drafts.iter().map(|d| d.selected.len()).sum();
-        let mut evidence = div().flex().gap_2().items_center().flex_wrap();
+        let mut evidence = div().flex().gap_2().items_center().flex_wrap().child(
+            div()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Choose analyses"),
+        );
         for (i, draft) in self.analysis_drafts.iter().enumerate() {
             let name = self
                 .case
@@ -81,7 +89,7 @@ impl Workspace {
             evidence = evidence.child(
                 Button::new(key("analysis-evidence", &draft.evidence_id))
                     .small()
-                    .label(format!("{name} · {} selected", draft.selected.len()))
+                    .label(format!("{name}"))
                     .selected(i == self.analysis_active)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_analysis_evidence(i, window, cx)
@@ -121,14 +129,14 @@ impl Workspace {
         let mut plugins = chooser_plugins(
             &engine.plugins,
             draft.os,
-            self.show_advanced,
+            self.show_extended,
             self.plugin_query.read(cx).value().as_ref(),
         );
         if let Some(group) = self.analysis_group_filter {
             plugins.retain(|p| ArtifactGroup::for_plugin(&p.id) == group);
         }
         let visible_ids: Vec<_> = plugins.iter().map(|p| p.id.clone()).collect();
-        let range_ids = Rc::new(visible_ids.clone());
+
         let all_visible_selected =
             !visible_ids.is_empty() && visible_ids.iter().all(|id| draft.selected.contains(id));
         let basic_count = plugins
@@ -149,11 +157,11 @@ impl Workspace {
                         .flex_1(),
                 )
                 .child(
-                    Checkbox::new("show-advanced")
-                        .label("Show advanced analyses")
-                        .checked(self.show_advanced)
+                    Checkbox::new("show-extended")
+                        .label("Show extended analyses")
+                        .checked(self.show_extended)
                         .on_change(cx.listener(|this, value, _, cx| {
-                            this.show_advanced = *value;
+                            this.show_extended = *value;
                             cx.notify();
                         })),
                 ),
@@ -217,19 +225,148 @@ impl Workspace {
             .child(
                 div()
                     .id("analysis-options-header")
-                    .w(px(58.))
+                    .w(px(150.))
                     .role(Role::ColumnHeader)
                     .text_xs()
                     .child("Options"),
             );
-        let len = plugins.len();
+        let plugin_count = plugins.len();
+        // Keep group headers and children in one virtualized list.
+        let mut rows = Vec::new();
+        let mut displayed_ids = Vec::new();
+        let searching = !self.plugin_query.read(cx).value().trim().is_empty();
+        for group in ArtifactGroup::BROWSER
+            .into_iter()
+            .chain(ArtifactGroup::SHORTCUTS)
+        {
+            let members: Vec<_> = plugins
+                .iter()
+                .enumerate()
+                .filter(|(_, plugin)| {
+                    basic_label(&plugin.id).is_some()
+                        && ArtifactGroup::for_plugin(&plugin.id) == group
+                })
+                .collect();
+            if members.is_empty() {
+                continue;
+            }
+            if let [(index, plugin)] = members.as_slice() {
+                displayed_ids.push(plugin.id.clone());
+                rows.push(Some((group, Some(*index), false, 1, 0)));
+                continue;
+            }
+            let expanded = searching || !self.analysis_collapsed_groups.contains(&group);
+            let count = members.len();
+            let selected_count = members
+                .iter()
+                .filter(|(_, plugin)| selected.contains(&plugin.id))
+                .count();
+            rows.push(Some((group, None, expanded, count, selected_count)));
+            if expanded {
+                for (index, plugin) in members {
+                    displayed_ids.push(plugin.id.clone());
+                    rows.push(Some((group, Some(index), true, 0, 0)));
+                }
+            }
+        }
+        let extended: Vec<_> = plugins
+            .iter()
+            .enumerate()
+            .filter(|(_, plugin)| basic_label(&plugin.id).is_none())
+            .collect();
+        if !extended.is_empty() {
+            // A nonselectable section header separates the individual extended analyses.
+            rows.push(None);
+            for (index, plugin) in extended {
+                displayed_ids.push(plugin.id.clone());
+                rows.push(Some((
+                    ArtifactGroup::for_plugin(&plugin.id),
+                    Some(index),
+                    false,
+                    1,
+                    0,
+                )));
+            }
+        }
+        let range_ids = Rc::new(displayed_ids);
+        let len = rows.len();
         let list = uniform_list(
             "analysis-table-rows",
             len,
             cx.processor(move |_, range: Range<usize>, _, cx| {
                 range
                     .map(|i| {
-                        let plugin = &plugins[i];
+                        let Some((group, index, expanded, count, selected_count)) = rows[i] else {
+                            return div().id("extended-analyses-header").h(px(38.)).w_full()
+                                .flex().items_center().px_2().bg(cx.theme().muted)
+                                .text_sm().font_weight(FontWeight::SEMIBOLD).child("Extended");
+                        };
+                        let Some(index) = index else {
+                            let group_ids: Vec<_> = plugins
+                                .iter()
+                                .filter(|plugin| basic_label(&plugin.id).is_some() && ArtifactGroup::for_plugin(&plugin.id) == group)
+                                .map(|plugin| plugin.id.clone())
+                                .collect();
+                            let basic_count = group_ids.iter().filter(|id| basic_label(id).is_some()).count();
+                            let level = if basic_count == count { "Basic" }
+                                else if basic_count == 0 { "Extended" } else { "Mixed" };
+                            return div()
+                                .id(key("analysis-group-row", group.label()))
+                                .h(px(38.))
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .px_2()
+                                .gap_2()
+                                .role(Role::Row)
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div().w(px(24.)).child(
+                                        Checkbox::new(key("select-analysis-group", group.label()))
+                                            .accessibility_label(format!(
+                                                "Select {} analyses",
+                                                group.label()
+                                            ))
+                                            .checked(selected_count > 0)
+                                            .on_change(cx.listener(move |this, checked, _, cx| {
+                                                if let Some(draft) = this
+                                                    .analysis_drafts
+                                                    .get_mut(this.analysis_active)
+                                                {
+                                                    for id in &group_ids {
+                                                        if *checked {
+                                                            draft.selected.insert(id.clone());
+                                                        } else {
+                                                            draft.selected.remove(id);
+                                                        }
+                                                    }
+                                                }
+                                                this.analysis_error = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                                )
+                                .child(div().flex_1().min_w_0().text_sm().truncate().child(group.label()))
+                                .child(div().flex_1().min_w_0().text_xs()
+                                    .text_color(cx.theme().muted_foreground).child("Multiple"))
+                                .child(div().w(px(70.)).text_xs()
+                                    .text_color(cx.theme().muted_foreground).child(level))
+                                .child(div().w(px(150.)).flex().items_center().justify_end().gap_1()
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                                        .child(format!("{selected_count}/{count} selected")))
+                                    .child(Button::new(key("analysis-group", group.label()))
+                                            .xsmall().ghost()
+                                            .icon(if expanded { IconName::ChevronDown } else { IconName::ChevronRight })
+                                            .tooltip(format!("Show individual {} analyses ({selected_count}/{count} selected)", group.label()))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !this.analysis_collapsed_groups.remove(&group) {
+                                                    this.analysis_collapsed_groups.insert(group);
+                                                }
+                                                cx.notify();
+                                            }))));
+                        };
+                        let plugin = &plugins[index];
                         let id = plugin.id.clone();
                         let check_id = id.clone();
                         let range_ids = range_ids.clone();
@@ -277,6 +414,7 @@ impl Workspace {
                             .child(
                                 div()
                                     .id(key("analysis-label", &id))
+                                    .when(count == 0, |cell| cell.pl_4())
                                     .flex_1()
                                     .min_w_0()
                                     .text_sm()
@@ -300,14 +438,14 @@ impl Workspace {
                                     .w(px(70.))
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(if basic { "Basic" } else { "Advanced" }),
+                                    .child(if basic { "Basic" } else { "Extended" }),
                             )
                             .child(
                                 Button::new(key("analysis-options", &id))
                                     .xsmall()
                                     .ghost()
                                     .label("Options")
-                                    .w(px(58.))
+                                    .w(px(150.))
                                     .tooltip(format!("Options for {id}"))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.focus_plugin(options_id.clone(), window, cx)
@@ -333,7 +471,7 @@ impl Workspace {
             .child(header)
             .when(len == 0, |s| {
                 s.child(div().p_4().text_sm().child(
-                    "No matching analyses. Try showing advanced analyses or changing the search.",
+                    "No matching analyses. Try showing extended analyses or changing the search.",
                 ))
             })
             .child(list);
@@ -352,8 +490,8 @@ impl Workspace {
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .child(format!(
-                    "{basic_count} basic · {} advanced · Shift-click checkboxes to select a range",
-                    len - basic_count
+                    "{basic_count} basic · {} extended · Shift-click checkboxes to select a range",
+                    plugin_count - basic_count
                 )),
         )
         .child(body)

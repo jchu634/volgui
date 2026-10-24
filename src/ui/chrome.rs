@@ -3,6 +3,71 @@ use super::*;
 use gpui_kit::component::dialog::DialogButtonProps;
 
 impl Workspace {
+    // The modal backdrop covers the title bar's native hit-test regions.
+    // Paint only the window controls above it, leaving application controls modal.
+    pub(in crate::ui) fn render_modal_window_controls(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> impl IntoElement {
+        // Match gpui-kit 0.8 TitleBar dimensions.
+        const TITLE_BAR_HEIGHT: Pixels = px(34.);
+
+        deferred(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .h(TITLE_BAR_HEIGHT)
+                .flex()
+                .children(
+                    [
+                        (
+                            "modal-minimize",
+                            IconName::WindowMinimize,
+                            WindowControlArea::Min,
+                        ),
+                        (
+                            "modal-maximize",
+                            if window.is_maximized() {
+                                IconName::WindowRestore
+                            } else {
+                                IconName::WindowMaximize
+                            },
+                            WindowControlArea::Max,
+                        ),
+                        (
+                            "modal-close",
+                            IconName::WindowClose,
+                            WindowControlArea::Close,
+                        ),
+                    ]
+                    .into_iter()
+                    .map(|(id, icon, area)| {
+                        div()
+                            .id(id)
+                            .w(TITLE_BAR_HEIGHT)
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(cx.theme().title_bar)
+                            .hover(|style| {
+                                if id == "modal-close" {
+                                    style
+                                        .bg(cx.theme().danger)
+                                        .text_color(cx.theme().danger_foreground)
+                                } else {
+                                    style.bg(cx.theme().secondary_hover)
+                                }
+                            })
+                            .window_control_area(area)
+                            .child(Icon::new(icon).small())
+                    }),
+                ),
+        )
+        .with_priority(100)
+    }
     pub(in crate::ui) fn file_item(
         label: impl Into<SharedString>,
         command: FileCommand,
