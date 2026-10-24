@@ -365,3 +365,17 @@ fn batch_selection_preserves_individual_options_and_is_saved_atomically() {
             .is_err()
     );
 }
+
+#[test]
+fn only_completed_or_active_runs_block_plugin_selection() {
+    for status in [RunStatus::Queued, RunStatus::Running, RunStatus::Completed] {
+        assert!(status.blocks_plugin_selection(), "{status:?}");
+    }
+    for status in [
+        RunStatus::Failed,
+        RunStatus::Cancelled,
+        RunStatus::Interrupted,
+    ] {
+        assert!(!status.blocks_plugin_selection(), "{status:?}");
+    }
+}

@@ -86,6 +86,19 @@ impl Workspace {
             let case = self.case.as_ref().ok_or("Open a case first")?;
             let mut runs = Vec::new();
             for draft in &self.analysis_drafts {
+                if !self.allow_previous_plugins
+                    && draft.selected.iter().any(|id| {
+                        case.document.runs.iter().any(|run| {
+                            run.status.blocks_plugin_selection()
+                                && run.evidence_id == draft.evidence_id
+                                && &run.plugin == id
+                        })
+                    })
+                {
+                    return Err(
+                        "Enable Allow previously run plugins to queue a previous analysis".into(),
+                    );
+                }
                 let evidence = case
                     .document
                     .evidence

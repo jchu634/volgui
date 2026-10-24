@@ -34,6 +34,7 @@ impl Workspace {
         }
         self.analysis_active = 0;
         self.show_extended = false;
+        self.allow_previous_plugins = false;
         self.analysis_collapsed_groups = ArtifactGroup::BROWSER
             .into_iter()
             .chain(ArtifactGroup::SHORTCUTS)
@@ -135,7 +136,27 @@ impl Workspace {
         if let Some(group) = self.analysis_group_filter {
             plugins.retain(|p| ArtifactGroup::for_plugin(&p.id) == group);
         }
-        let visible_ids: Vec<_> = plugins.iter().map(|p| p.id.clone()).collect();
+        let previous: BTreeSet<String> = self
+            .case
+            .as_ref()
+            .map(|case| {
+                case.document
+                    .runs
+                    .iter()
+                    .filter(|run| {
+                        run.status.blocks_plugin_selection() && run.evidence_id == draft.evidence_id
+                    })
+                    .map(|run| run.plugin.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let allow_previous = self.allow_previous_plugins;
+        let selectable = |id: &String| allow_previous || !previous.contains(id);
+        let visible_ids: Vec<_> = plugins
+            .iter()
+            .map(|p| p.id.clone())
+            .filter(&selectable)
+            .collect();
 
         let all_visible_selected =
             !visible_ids.is_empty() && visible_ids.iter().all(|id| draft.selected.contains(id));
@@ -165,6 +186,29 @@ impl Workspace {
                             cx.notify();
                         })),
                 ),
+        );
+        page = page.child(
+            Checkbox::new("allow-previous-plugins")
+                .label("Allow previously run plugins")
+                .checked(self.allow_previous_plugins)
+                .on_change(cx.listener(|this, value, _, cx| {
+                    this.allow_previous_plugins = *value;
+                    if !*value {
+                        if let Some(case) = &this.case {
+                            for draft in &mut this.analysis_drafts {
+                                draft.selected.retain(|id| {
+                                    !case.document.runs.iter().any(|run| {
+                                        run.status.blocks_plugin_selection()
+                                            && run.evidence_id == draft.evidence_id
+                                            && &run.plugin == id
+                                    })
+                                });
+                            }
+                        }
+                    }
+                    this.analysis_error = None;
+                    cx.notify();
+                })),
         );
         let selected = draft.selected.clone();
         let focused = self.plugin.clone();
@@ -251,7 +295,9 @@ impl Workspace {
                 continue;
             }
             if let [(index, plugin)] = members.as_slice() {
-                displayed_ids.push(plugin.id.clone());
+                if selectable(&plugin.id) {
+                    displayed_ids.push(plugin.id.clone());
+                }
                 rows.push(Some((group, Some(*index), false, 1, 0)));
                 continue;
             }
@@ -264,7 +310,9 @@ impl Workspace {
             rows.push(Some((group, None, expanded, count, selected_count)));
             if expanded {
                 for (index, plugin) in members {
-                    displayed_ids.push(plugin.id.clone());
+                    if selectable(&plugin.id) {
+                        displayed_ids.push(plugin.id.clone());
+                    }
                     rows.push(Some((group, Some(index), true, 0, 0)));
                 }
             }
@@ -278,7 +326,9 @@ impl Workspace {
             // A nonselectable section header separates the individual extended analyses.
             rows.push(None);
             for (index, plugin) in extended {
-                displayed_ids.push(plugin.id.clone());
+                if selectable(&plugin.id) {
+                    displayed_ids.push(plugin.id.clone());
+                }
                 rows.push(Some((
                     ArtifactGroup::for_plugin(&plugin.id),
                     Some(index),
@@ -307,11 +357,16 @@ impl Workspace {
                                 .filter(|plugin| basic_label(&plugin.id).is_some() && ArtifactGroup::for_plugin(&plugin.id) == group)
                                 .map(|plugin| plugin.id.clone())
                                 .collect();
+                            let blocked = !allow_previous && group_ids.iter().all(|id| previous.contains(id));
                             let basic_count = group_ids.iter().filter(|id| basic_label(id).is_some()).count();
                             let level = if basic_count == count { "Basic" }
                                 else if basic_count == 0 { "Extended" } else { "Mixed" };
+                            let group_ids: Vec<_> = group_ids.into_iter()
+                                .filter(|id| allow_previous || !previous.contains(id))
+                                .collect();
                             return div()
                                 .id(key("analysis-group-row", group.label()))
+                                .when(blocked, |row| row.opacity(0.45))
                                 .h(px(38.))
                                 .w_full()
                                 .flex()
@@ -329,6 +384,7 @@ impl Workspace {
                                                 group.label()
                                             ))
                                             .checked(selected_count > 0)
+                                            .disabled(group_ids.is_empty())
                                             .on_change(cx.listener(move |this, checked, _, cx| {
                                                 if let Some(draft) = this
                                                     .analysis_drafts
@@ -374,8 +430,11 @@ impl Workspace {
                         let label = basic_label(&id)
                             .map(str::to_owned)
                             .unwrap_or_else(|| id.rsplit('.').next().unwrap_or(&id).to_string());
+                        let blocked = !allow_previous && previous.contains(&id);
                         let basic = basic_label(&id).is_some();
-                        let description = plugin.description.clone();
+                        let description = if previous.contains(&id) {
+                            format!("{} Completed, queued, or running for this evidence. Enable Allow previously run plugins to select it again.", plugin.description)
+                        } else { plugin.description.clone() };
                         div()
                             .id(key("analysis-row", &id))
                             .role(Role::Row)
@@ -387,6 +446,7 @@ impl Workspace {
                             .px_2()
                             .border_b_1()
                             .border_color(cx.theme().border)
+                            .when(blocked, |row| row.opacity(0.45))
                             .when(focused.as_ref() == Some(&id), |row| {
                                 row.bg(cx.theme().accent)
                             })
@@ -395,6 +455,7 @@ impl Workspace {
                                     Checkbox::new(key("select-analysis", &id))
                                         .accessibility_label(format!("Select {id}"))
                                         .checked(selected.contains(&id))
+                                        .disabled(blocked)
                                         .on_change(cx.listener(move |this, value, window, cx| {
                                             if let Some(draft) =
                                                 this.analysis_drafts.get_mut(this.analysis_active)
