@@ -1,3 +1,4 @@
+// Persists case metadata, evidence, runs, and bookmarks.
 use std::{
     collections::{BTreeSet, HashSet},
     fs::{self, File, OpenOptions},

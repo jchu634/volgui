@@ -1,3 +1,4 @@
+// Defines result table columns and cell formatting.
 use crate::{
     artifacts::ArtifactGroup,
     volatility::{Record, display_value},

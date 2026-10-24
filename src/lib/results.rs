@@ -1,7 +1,8 @@
+// Stores and queries analysis results in SQLite.
 //! SQLite owns completed records. UI queries return IDs and fetch only visible fields.
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value as SqlValue};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -43,11 +44,6 @@ pub struct BrowserEntry {
     pub pid: Option<String>,
     pub ppid: Option<String>,
     pub path: Option<String>,
-}
-#[derive(Clone, Debug)]
-pub struct ProcessNode {
-    pub entry: BrowserEntry,
-    pub children: Vec<ProcessNode>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct ProcessRelations {
@@ -359,41 +355,6 @@ impl ResultStore {
             .transpose()
             .map(Option::flatten)
     }
-    pub fn navigation(&self, query: &Query) -> Result<Vec<BrowserEntry>> {
-        if query.runs.is_empty() {
-            return Ok(vec![]);
-        }
-        let db = self.connect()?;
-        let marks = std::iter::repeat_n("?", query.runs.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
-        let mut sql =
-            format!("SELECT id,title,pid,ppid,path FROM records WHERE run_id IN ({marks})");
-        if !query.text.is_empty() {
-            sql.push_str(" AND instr(search_text,?)>0");
-            values.push(SqlValue::Text(query.text.to_lowercase()));
-        }
-        sql.push_str(" ORDER BY CASE run_id ");
-        for (i, run) in query.runs.iter().enumerate() {
-            sql.push_str(&format!("WHEN ? THEN {i} "));
-            values.push(SqlValue::Text(run.clone()));
-        }
-        sql.push_str("END,row_index");
-        let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
-        stmt.query_map(params_from_iter(values), |r| {
-            Ok(BrowserEntry {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                pid: r.get(2)?,
-                ppid: r.get(3)?,
-                path: r.get(4)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())
-    }
     pub fn process_record(&self, runs: &[String], pid: &str) -> Result<Option<StoredRecord>> {
         let db = self.connect()?;
         for run in runs {
@@ -499,77 +460,4 @@ impl ResultStore {
         }
         Ok(output)
     }
-}
-
-/// Each process appears once. Cycles and missing parents become roots instead of disappearing.
-pub fn process_forest(entries: &[BrowserEntry]) -> Vec<ProcessNode> {
-    let mut chosen = BTreeMap::new();
-    let mut loose = vec![];
-    for e in entries {
-        if let Some(pid) = &e.pid {
-            chosen.entry(pid.clone()).or_insert_with(|| e.clone());
-        } else {
-            loose.push(e.clone());
-        }
-    }
-    let mut parents: HashMap<String, String> = chosen
-        .iter()
-        .filter_map(|(pid, e)| {
-            e.ppid
-                .as_ref()
-                .filter(|ppid| *ppid != pid && chosen.contains_key(*ppid))
-                .map(|p| (pid.clone(), p.clone()))
-        })
-        .collect();
-    for pid in chosen.keys() {
-        let mut seen = HashSet::new();
-        let mut cursor = pid.clone();
-        while let Some(p) = parents.get(&cursor) {
-            if !seen.insert(cursor.clone()) || seen.len() >= 100 {
-                parents.remove(&cursor);
-                break;
-            }
-            cursor = p.clone();
-        }
-    }
-    let mut children: HashMap<String, Vec<String>> = HashMap::new();
-    for (pid, parent) in &parents {
-        children
-            .entry(parent.clone())
-            .or_default()
-            .push(pid.clone());
-    }
-    fn build(
-        pid: &str,
-        chosen: &BTreeMap<String, BrowserEntry>,
-        children: &HashMap<String, Vec<String>>,
-        depth: usize,
-    ) -> ProcessNode {
-        let mut nested = if depth < 100 {
-            children
-                .get(pid)
-                .into_iter()
-                .flatten()
-                .map(|id| build(id, chosen, children, depth + 1))
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-        nested.sort_by(|a, b| a.entry.title.cmp(&b.entry.title));
-        ProcessNode {
-            entry: chosen[pid].clone(),
-            children: nested,
-        }
-    }
-    let mut roots = chosen
-        .keys()
-        .filter(|id| !parents.contains_key(*id))
-        .map(|id| build(id, &chosen, &children, 0))
-        .collect::<Vec<_>>();
-    roots.extend(loose.into_iter().map(|entry| ProcessNode {
-        entry,
-        children: vec![],
-    }));
-    roots.sort_by(|a, b| a.entry.title.cmp(&b.entry.title));
-    roots
 }

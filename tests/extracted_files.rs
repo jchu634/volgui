@@ -1,3 +1,4 @@
+// Checks extracted files behavior.
 use serde_json::json;
 use std::fs;
 use std::sync::atomic::AtomicBool;

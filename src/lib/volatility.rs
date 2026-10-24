@@ -1,3 +1,4 @@
+// Validates and runs the Volatility command line engine.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},

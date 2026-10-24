@@ -1,3 +1,4 @@
+// Renders artifact pickers and the analysis queue.
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

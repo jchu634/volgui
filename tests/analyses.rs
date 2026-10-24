@@ -1,3 +1,4 @@
+// Checks analyses behavior.
 use std::{fs, sync::atomic::AtomicBool};
 use volgui::{
     analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries},

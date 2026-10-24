@@ -1,3 +1,4 @@
+// Demonstrates seed workspace.
 //! Generate synthetic scan data for UI/performance checks. No acquisition or CLI is used.
 use serde_json::json;
 use std::{collections::BTreeMap, fs, path::PathBuf, sync::atomic::AtomicBool};

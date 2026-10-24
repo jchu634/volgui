@@ -1,3 +1,4 @@
+// Finds and opens extracted analysis files.
 use std::{
     fs,
     path::{Path, PathBuf},

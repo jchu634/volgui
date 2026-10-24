@@ -1,3 +1,4 @@
+// Builds analysis drafts and retry queues.
 //! Analysis chooser policy and per-evidence selections.
 use std::{
     collections::{BTreeMap, BTreeSet},

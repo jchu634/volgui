@@ -1,3 +1,4 @@
+// Provides the test Volatility engine.
 //! Test-only CLI fixture. Never included in a normal application build.
 use std::{io::Write, time::Duration};
 
