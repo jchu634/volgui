@@ -342,16 +342,30 @@ impl Workspace {
             let _ = tx.send(Event::Selected(epoch, result));
         });
     }
-    pub(super) fn load_annotation(&mut self, run: String, row: usize, cx: &mut Context<Self>) {
+    pub(super) fn load_annotation(
+        &mut self,
+        run: String,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(store) = self.store() else {
             return;
         };
-        self.remember_location(cx);
+        self.select_run(run.clone(), window, cx);
         self.selection_epoch += 1;
         let epoch = self.selection_epoch;
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let _ = tx.send(Event::Selected(epoch, store.record(&run, row)));
+            let _ = tx.send(Event::Selected(
+                epoch,
+                store.record(&run, row).and_then(|record| match record {
+                    Some(record) => store
+                        .fetch_enriched(&[record.id])
+                        .map(|mut rows| rows.pop()),
+                    None => Ok(None),
+                }),
+            ));
         });
     }
     pub(super) fn show_record(
