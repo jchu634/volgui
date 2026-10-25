@@ -20,7 +20,7 @@ impl Column {
         if self.ports.is_empty() {
             cell_text(&value)
         } else {
-            endpoint_text(&value, &field_text(record, &self.ports))
+            cell_text(&endpoint_text(&value, &field_text(record, &self.ports)))
         }
     }
 
@@ -36,6 +36,8 @@ impl Column {
             "sessionid" => 96.,
             "threads" => 88.,
             "protocol" => 96.,
+            "browser" => 112.,
+            "type" => 152.,
             "createtime" | "exittime" | "created" | "modified" | "accesstime" => 240.,
             "process" | "target" | "source" => 220.,
             "path" => 300.,
@@ -104,10 +106,10 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         Some(ArtifactGroup::Web) => &[
             ("PID", &["PID"]),
             ("Browser", &["Browser"]),
-            ("Search terms", &["Search terms"]),
+            ("Type", &["Kind"]),
             ("Domain", &["Domain"]),
+            ("Search terms", &["Search terms"]),
             ("URL", &["URL"]),
-            ("Kind", &["Kind"]),
             ("Virtual address", &["Virtual address"]),
             ("Source file", &["Source file"]),
         ],
@@ -235,6 +237,9 @@ fn visible_column(name: &str) -> bool {
 
 /// Compact table presentation only. The stored value is kept for details and exports.
 pub fn cell_text(value: &str) -> String {
+    if value.is_empty() || value == "N/A" {
+        return "N.A.".into();
+    }
     let bytes = value.as_bytes();
     if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' {
         return value.into();
@@ -266,10 +271,10 @@ mod tests {
         let names = [
             "PID",
             "Browser",
-            "Search terms",
-            "Domain",
-            "URL",
             "Kind",
+            "Domain",
+            "Search terms",
+            "URL",
             "Virtual address",
             "Source file",
         ];
@@ -282,7 +287,7 @@ mod tests {
         assert_eq!(
             actual
                 .iter()
-                .map(|column| column.label.as_str())
+                .map(|column| column.key.as_str())
                 .collect::<Vec<_>>(),
             names
         );
@@ -420,16 +425,23 @@ mod tests {
             cell_text("2026-10-24T07:03:09-03:30"),
             "07:03:09 (24-10-2026)(-03:30)"
         );
-        for value in [
-            "N/A",
-            "Disabled",
-            "624",
-            "csrss.exe",
-            "2026-10-24",
-            "invalid time",
-        ] {
+        for value in ["Disabled", "624", "csrss.exe", "2026-10-24", "invalid time"] {
             assert_eq!(cell_text(value), value);
         }
+    }
+
+    #[test]
+    fn empty_cells_display_na_without_changing_records() {
+        let table =
+            Table::parse(r#"[{"PID":null,"Browser":"","URL":"https://example.com"}]"#).unwrap();
+        let columns = columns(Some(ArtifactGroup::Web), &table.columns);
+        assert_eq!(columns[0].text(&table.rows[0]), "N.A.");
+        assert_eq!(columns[1].text(&table.rows[0]), "N.A.");
+        assert_eq!(cell_text(""), "N.A.");
+        assert_eq!(cell_text("N/A"), "N.A.");
+        assert_eq!(cell_text("0"), "0");
+        assert!(table.rows[0].fields["PID"].is_null());
+        assert_eq!(table.rows[0].text("Browser"), "");
     }
 
     #[test]
@@ -460,6 +472,23 @@ mod tests {
             "CommandLine",
         ] {
             assert!(visible_column(column), "{column}");
+        }
+    }
+}
+
+/// Recover the host for profile artifacts and older saved browser results.
+pub fn populate_domain(record: &mut Record) {
+    if record
+        .fields
+        .get("Domain")
+        .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
+    {
+        if let Ok(url) = url::Url::parse(&record.text("URL")) {
+            if let Some(host) = url.host_str() {
+                record
+                    .fields
+                    .insert("Domain".into(), serde_json::json!(host));
+            }
         }
     }
 }

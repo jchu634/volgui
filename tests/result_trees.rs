@@ -193,6 +193,7 @@ fn files_group_paths_keep_duplicate_records_and_search_with_directory_context() 
             runs,
             text: "report.txt".into(),
             sort: None,
+            ..Default::default()
         })
         .unwrap();
     let tree = ResultTree::files(entries, &index.ids);
@@ -313,6 +314,7 @@ fn single_child_folders_compact_until_a_branch_or_file() {
             runs,
             text: "branch\\test1\\test2\\test3".into(),
             sort: None,
+            ..Default::default()
         })
         .unwrap();
     let tree = ResultTree::files(entries, &index.ids);
@@ -413,6 +415,7 @@ fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
             runs: vec!["handles".into()],
             text: "notes.txt".into(),
             sort: None,
+            ..Default::default()
         })
         .unwrap()
         .ids;
@@ -436,6 +439,7 @@ fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
             runs: vec!["processes".into()],
             text: "editor.exe".into(),
             sort: None,
+            ..Default::default()
         })
         .unwrap()
         .ids;

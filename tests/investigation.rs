@@ -209,6 +209,10 @@ fn browser_analysis_parses_history_searches_and_provenance_and_excludes_other_ev
     );
     assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
     let rows = &outcome.table.as_ref().unwrap().rows;
+    for row in rows.iter().filter(|row| row.text("Kind") == "Web search") {
+        let url = url::Url::parse(&row.text("URL")).unwrap();
+        assert_eq!(row.text("Domain"), url.host_str().unwrap());
+    }
     assert_eq!(
         rows.iter()
             .filter(|r| r.text("Kind") == "Web history")

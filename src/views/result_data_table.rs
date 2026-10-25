@@ -37,6 +37,119 @@ impl TableDelegate for ResultTable {
         self.layout[col].clone()
     }
 
+    fn render_th(
+        &mut self,
+        col: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let column = &self.columns[col];
+        let weak = self.workspace.clone();
+        let filterable = weak
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).result_group() == Some(ArtifactGroup::Web))
+            && matches!(column.key.as_str(), "PID" | "Browser" | "Kind" | "Domain");
+        let header = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_xs()
+            .child(column.label.clone());
+        if !filterable {
+            return header.into_any_element();
+        }
+        let label = column.label.clone();
+        let column = column.key.clone();
+        let active = weak
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).column_filters.contains_key(&column));
+        header
+            .child(
+                Button::new(key("column-filter", &column))
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::ChevronDown)
+                    .selected(active)
+                    .tooltip(format!("Filter {label}"))
+                    .accessibility_label(format!("Filter {label}"))
+                    .dropdown_menu(move |mut menu, _, cx| {
+                        let Some(workspace) = weak.upgrade() else {
+                            return menu;
+                        };
+                        cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
+                        let state = workspace.read(cx);
+                        let values = match state
+                            .store()
+                            .map(|store| store.filter_values(&state.scope, &column))
+                        {
+                            Some(Ok(values)) => values,
+                            Some(Err(error)) => {
+                                return menu.label(format!("Could not load filters: {error}"));
+                            }
+                            None => return menu,
+                        };
+                        menu = menu.scrollable(true).max_h(px(360.)).min_w(px(200.));
+                        let clear_weak = weak.clone();
+                        let clear_column = column.clone();
+                        menu = menu
+                            .item(PopupMenuItem::new("Select all").on_click(move |_, _, cx| {
+                                let _ = clear_weak.update(cx, |state, cx| {
+                                    state.column_filters.remove(&clear_column);
+                                    state.start_query(cx);
+                                });
+                            }))
+                            .separator();
+                        let values = std::sync::Arc::new(values);
+                        for (i, value) in values.iter().enumerate() {
+                            let weak = weak.clone();
+                            let column = column.clone();
+                            let value = value.clone();
+                            let all = values.clone();
+                            menu = menu.item(PopupMenuItem::element(move |_, cx| {
+                                let checked = weak.upgrade().is_some_and(|workspace| {
+                                    workspace
+                                        .read(cx)
+                                        .column_filters
+                                        .get(&column)
+                                        .is_none_or(|selected| selected.contains(&value))
+                                });
+                                let weak = weak.clone();
+                                let column = column.clone();
+                                let value = value.clone();
+                                let all = all.clone();
+                                Checkbox::new(("filter-value", i))
+                                    .label(if value.is_empty() {
+                                        "N.A.".into()
+                                    } else {
+                                        value.clone()
+                                    })
+                                    .checked(checked)
+                                    .on_change(move |checked, _, cx| {
+                                        cx.stop_propagation();
+                                        let _ = weak.update(cx, |state, cx| {
+                                            let selected = state
+                                                .column_filters
+                                                .entry(column.clone())
+                                                .or_insert_with(|| all.iter().cloned().collect());
+                                            if *checked {
+                                                selected.insert(value.clone());
+                                            } else {
+                                                selected.remove(&value);
+                                            }
+                                            if selected.len() == all.len() {
+                                                state.column_filters.remove(&column);
+                                            }
+                                            state.start_query(cx);
+                                        });
+                                    })
+                            }));
+                        }
+                        menu
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn perform_sort(
         &mut self,
         col: usize,
@@ -171,7 +284,7 @@ impl TableDelegate for ResultTable {
             || (state.result_group() == Some(ArtifactGroup::Web) && column.key == "PID"))
             && value
                 .as_ref()
-                .is_some_and(|value| !value.is_empty() && value != "0")
+                .is_some_and(|value| value.parse::<u64>().is_ok_and(|pid| pid != 0))
             && !state.group_runs(ArtifactGroup::Processes).is_empty();
         let value = value.unwrap_or_else(|| "...".into());
         let cell = div().text_xs().whitespace_nowrap().overflow_hidden();

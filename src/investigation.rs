@@ -105,7 +105,10 @@ pub fn execute(
     }
 }
 
-fn table(rows: Vec<Record>) -> Table {
+fn table(mut rows: Vec<Record>) -> Table {
+    for row in &mut rows {
+        crate::result_table::populate_domain(row);
+    }
     let columns: BTreeSet<_> = rows.iter().flat_map(|r| r.fields.keys().cloned()).collect();
     Table {
         columns: columns.into_iter().collect(),

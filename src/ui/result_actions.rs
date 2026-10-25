@@ -112,6 +112,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.column_filters.clear();
         self.scope = runs;
         self.selection_epoch += 1;
         self.relation_epoch += 1;
@@ -139,6 +140,11 @@ impl Workspace {
     }
     pub(super) fn active_query(&self, cx: &App) -> Query {
         Query {
+            filters: if self.result_group() == Some(ArtifactGroup::Web) {
+                self.column_filters.clone()
+            } else {
+                Default::default()
+            },
             runs: self.scope.clone(),
             text: self.query.read(cx).value().to_string(),
             sort: self.sort.clone(),
@@ -186,6 +192,7 @@ impl Workspace {
                             runs: file_runs,
                             text: query.text.clone(),
                             sort: None,
+                            ..Default::default()
                         })?;
                         let mut matches = index.ids.clone();
                         matches.extend(file_matches.ids);
