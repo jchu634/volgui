@@ -102,21 +102,13 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         ],
         Some(ArtifactGroup::Files) => &[("Name", &["Name", "FileName", "Path", "FilePath"])],
         Some(ArtifactGroup::Web) => &[
-            ("Kind", &["Kind"]),
-            ("Browser", &["Browser"]),
             ("PID", &["PID"]),
-            ("Process role", &["Process role"]),
+            ("Browser", &["Browser"]),
             ("Search terms", &["Search terms"]),
-            ("Query origin", &["Query origin"]),
             ("Domain", &["Domain"]),
             ("URL", &["URL"]),
-            ("Title", &["Title"]),
-            ("Attribution", &["Attribution"]),
-            ("Related PIDs", &["Related PIDs"]),
+            ("Kind", &["Kind"]),
             ("Virtual address", &["Virtual address"]),
-            ("Occurrences", &["Occurrences"]),
-            ("Time (UTC)", &["Time (UTC)"]),
-            ("Original path", &["Original path"]),
             ("Source file", &["Source file"]),
         ],
         Some(ArtifactGroup::Strings) => &[
@@ -268,6 +260,33 @@ mod tests {
     use super::*;
     use crate::volatility::Table;
     use serde_json::json;
+
+    #[test]
+    fn browser_columns_follow_significance_and_keep_metadata_in_details() {
+        let names = [
+            "PID",
+            "Browser",
+            "Search terms",
+            "Domain",
+            "URL",
+            "Kind",
+            "Virtual address",
+            "Source file",
+        ];
+        let available = names
+            .iter()
+            .chain(["Process role", "Observation", "Attribution"].iter())
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let actual = columns(Some(ArtifactGroup::Web), &available);
+        assert_eq!(
+            actual
+                .iter()
+                .map(|column| column.label.as_str())
+                .collect::<Vec<_>>(),
+            names
+        );
+    }
 
     #[test]
     fn process_columns_follow_investigation_order_and_keep_original_keys() {

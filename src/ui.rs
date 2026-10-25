@@ -206,6 +206,7 @@ pub struct Workspace {
     sidebar_visible: bool,
     busy: Option<Busy>,
     queue_paused: bool,
+    browser_recovery_pending: bool,
     batch_total: usize,
     batch_finished: usize,
     tx: Sender<Event>,
@@ -453,6 +454,7 @@ impl Workspace {
             sidebar_visible: true,
             busy: None,
             queue_paused: false,
+            browser_recovery_pending: false,
             batch_total: 0,
             batch_finished: 0,
             tx,
@@ -539,6 +541,7 @@ impl Workspace {
         Some(ResultStore::at(&self.case.as_ref()?.directory))
     }
     fn cancel_run(&mut self, id: String, cx: &mut Context<Self>) {
+        self.browser_recovery_pending = false;
         if let Some(b) = &self.busy
             && b.run_id.as_ref() == Some(&id)
         {

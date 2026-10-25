@@ -283,7 +283,16 @@ impl Workspace {
         }
         cx.notify();
     }
+    pub(super) fn remove_queue_run(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(case) = self.case.as_mut() {
+            if let Err(error) = case.remove_queue_run(id) {
+                self.error = Some(error);
+            }
+        }
+        cx.notify();
+    }
     pub(super) fn clear_queue(&mut self, scope: QueueClearScope, cx: &mut Context<Self>) {
+        self.browser_recovery_pending = false;
         let Some(case) = self.case.as_mut() else {
             return;
         };
@@ -310,6 +319,10 @@ impl Workspace {
             .iter()
             .position(|r| r.status == RunStatus::Queued)
         else {
+            if self.browser_recovery_pending {
+                self.browser_recovery_pending = false;
+                self.prepare_browser_recovery(cx);
+            }
             return;
         };
         let native = volgui::investigation::is_native(&case.document.runs[i].plugin);

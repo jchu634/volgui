@@ -5,16 +5,10 @@ impl Workspace {
         let mut tools = div().flex().flex_col().gap_2().px_3().py_2();
         match self.result_group() {
             Some(ArtifactGroup::Web) => {
-                tools = tools.child(div().text_xs().child("Collect browser processes, then recover browser memory to find Edge, Firefox and Tor URLs and searches with their PID. Search the results for a phrase, domain or PID. Memory findings can include stale strings, resources and suggestions; they do not alone prove a visit. Process dumps are saved in the case and can use several GB."))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(Button::new("collect-browser-processes").small().ghost().label("Collect browser processes").disabled(self.busy.is_some() || self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_browser_processes(window,cx))))
-                        .child(Button::new("recover-browser-memory").small().label("Recover browser memory").disabled(self.busy.is_some() || self.installation.is_none()).on_click(cx.listener(|this,_,_,cx| this.recover_browser_memory(cx)))))
-                    .child(div().text_xs().child("For recorded history and saved tabs, scan for files or collect Process handles, then recover profile files. File handle PIDs identify file owners. Session tabs describe the saved snapshot."))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(Button::new("collect-browser-file-scan").small().ghost().label("Scan for files").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_source("windows.filescan.FileScan",window,cx))))
-                        .child(Button::new("recover-browser").small().label("Recover profile files").disabled(self.busy.is_some() || self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.analyze_browser(true,window,cx))))
-                        .child(Button::new("analyze-browser-files").small().ghost().label("Analyze recovered data").disabled(self.busy.as_ref().is_some_and(|b| b.run_id.is_none())).on_click(cx.listener(|this,_,window,cx| this.analyze_browser(false,window,cx))))
-                        .child(Button::new("browser-offset-space").small().ghost().label(if self.file_offset_physical { "FileScan: physical offsets" } else { "FileScan: virtual offsets" }).tooltip("Unlabelled FileScan offsets use virtual memory on Windows 10+, physical memory on older captures.").on_click(cx.listener(|this,_,_,cx| { this.file_offset_physical = !this.file_offset_physical; cx.notify(); }))));
+                tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches. Memory findings may include stale strings and do not alone prove a visit. Process dumps can use several GB."))
+                    .child(div().flex().items_center().child(Button::new("recover-analyze-browser").small().label("Start analysis")
+                        .disabled(self.busy.is_some() || self.browser_recovery_pending || self.installation.is_none())
+                        .on_click(cx.listener(|this, _, window, cx| this.recover_and_analyze_browser(window, cx)))));
             }
             Some(ArtifactGroup::Strings) => {
                 tools = tools.child(div().text_xs().child("Search the selected evidence file for a literal string in UTF-8, UTF-16LE and UTF-16BE. Results include byte offsets and context. Maximum 10,000 matches per analysis."))

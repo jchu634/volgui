@@ -6,33 +6,19 @@ history as Volatility jobs, and their findings support bookmarks and CSV export.
 
 ## Browser activity
 
-1. Choose **Browser activity**, then **Collect browser processes**. This collects
-   process names, parent PIDs and command lines for the selected Windows capture.
-2. Choose **Recover browser memory**. VolGUI queues PID-scoped Memmap dumps for
-   browser and content processes, then scans their user memory for URL strings.
-   GPU and utility processes are skipped. Embedded WebView processes are excluded. Tor Browser is identified by its
-   installation path in the command line, or a confirmed Tor parent process.
-3. Search for a phrase, domain or PID. **Memory search** rows include decoded
-   terms, browser, PID and process role. **Memory URL** rows retain other URLs.
-   Repeated exact URLs are grouped per PID with an occurrence count. Decoded URL
-   parameters also make phrases searchable in URLs that are not result pages.
-4. Select a finding and choose **View URL bytes** to inspect the dump at its
-   recorded offset. The details also include a process virtual address, encoding,
-   command line and source extraction. **Open source extraction** opens the dump job.
+1. Choose **Browser activity**, then **Start analysis**. VolGUI
+   collects processes, command lines and file candidates, recovers browser memory
+   and profile files, then analyzes URLs, searches, history and saved tabs.
+   GPU and utility processes are skipped. Completed dumps are reused.
+2. Search for a phrase, domain or PID. Select a blue PID to open the process.
+3. Select a finding to inspect its process, URL and decoded search terms or URL
+   parameters. **View URL bytes** opens memory at the recorded offset.
+   **Open source extraction** opens the dump job.
 
-Process dumps can occupy several GB each and remain in the case. Completed dumps
-are reused. To recover only selected PIDs, use **Process memory maps / dumps** in
-New analysis with `--pid <PID> --dump`, then **Analyze recovered data**.
-
-For recorded history and saved tabs, choose **Scan for files** or collect
-**Process handles**, then **Recover profile files**. This queues per-file
-extractions for recognized browser history and session paths. Filter the results
-by `Web history`, `Web search` or `Session tab`.
-
-**Analyze recovered data** reparses existing profile files and browser process
-dumps without requiring an engine. File handle owners are labelled separately
-from URLs found in process memory. If several PIDs hold a profile file, all appear
-in Related PIDs rather than choosing one as the process that performed a search.
+Memory findings can include stale strings, resources and suggestions and do not
+alone prove a visit. Process dumps can occupy several GB and remain in the case.
+File handle owners identify profile file owners, rather than which process
+performed a search. Multiple owners appear in Related PIDs in the details.
 
 Supported sources:
 

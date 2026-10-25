@@ -127,11 +127,13 @@ impl Workspace {
             }
             DetailTab::Overview => {
                 if let Some(record) = record {
+                    let browser = self.result_group() == Some(ArtifactGroup::Web);
+                    let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
                     if matches!(
                         record.record.text("Kind").as_str(),
                         "Memory URL" | "Memory search"
                     ) {
-                        content = content.child(
+                        actions = actions.child(
                             Button::new("view-browser-url-bytes")
                                 .small()
                                 .ghost()
@@ -146,7 +148,7 @@ impl Workspace {
                         .and_then(|v| v.as_str())
                     {
                         let source = source.to_string();
-                        content = content.child(
+                        actions = actions.child(
                             Button::new("open-finding-source")
                                 .small()
                                 .ghost()
@@ -157,7 +159,39 @@ impl Workspace {
                         );
                     }
                     let mut fields = div().flex().flex_wrap().gap_x_4().items_start().w_full();
-                    for (i, (name, value)) in record.record.fields.iter().enumerate() {
+                    content = content.child(actions);
+                    let mut ordered: Vec<_> = record
+                        .record
+                        .fields
+                        .iter()
+                        .filter(|(name, _)| {
+                            !browser
+                                || (!matches!(
+                                    name.as_str(),
+                                    "Source run" | "Observation" | "String boundary"
+                                ) && !(name.as_str() == "URL parameters"
+                                    && !record.record.text("Search terms").is_empty()))
+                        })
+                        .collect();
+                    if browser {
+                        let priority = [
+                            "PID",
+                            "Browser",
+                            "Process",
+                            "Process role",
+                            "URL",
+                            "Search terms",
+                            "URL parameters",
+                            "Domain",
+                        ];
+                        ordered.sort_by_key(|(name, _)| {
+                            priority
+                                .iter()
+                                .position(|key| key == name)
+                                .unwrap_or(priority.len())
+                        });
+                    }
+                    for (i, (name, value)) in ordered.into_iter().enumerate() {
                         let text = display_value(value);
                         let parent = self
                             .relations

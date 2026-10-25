@@ -245,9 +245,6 @@ impl Workspace {
         let has_failed = runs
             .iter()
             .any(|run| matches!(run.status, RunStatus::Failed | RunStatus::Interrupted));
-        let has_completed = runs
-            .iter()
-            .any(|run| QueueClearScope::Completed.includes(run.status));
         let has_finished = runs
             .iter()
             .any(|run| QueueClearScope::Finished.includes(run.status));
@@ -265,6 +262,7 @@ impl Workspace {
             let id = run.id.clone();
             let cancel = id.clone();
             let retry = id.clone();
+            let remove = id.clone();
             let cancel_label = format!("Cancel {}", run.plugin);
             let active = matches!(run.status, RunStatus::Running | RunStatus::Queued);
             let color = match run.status {
@@ -274,11 +272,7 @@ impl Workspace {
                 RunStatus::Cancelled => Some(cx.theme().muted_foreground),
                 _ => None,
             };
-            let status = if active {
-                run.status.label().into()
-            } else {
-                format!("{} · {} records", run.status.label(), run.row_count)
-            };
+            let status = run.status.label();
             list = list.child(
                 div()
                     .flex()
@@ -300,14 +294,25 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_sm()
-                                    .truncate()
-                                    .child(run.plugin),
+                            .child(div().min_w_0().text_sm().truncate().child(run.plugin))
+                            .when(
+                                !matches!(
+                                    run.status,
+                                    RunStatus::Failed
+                                        | RunStatus::Cancelled
+                                        | RunStatus::Interrupted
+                                ),
+                                |row| {
+                                    row.child(
+                                        div()
+                                            .text_xs()
+                                            .flex_shrink_0()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!("{} records", run.row_count)),
+                                    )
+                                },
                             )
+                            .child(div().flex_1())
                             .child(
                                 div()
                                     .text_xs()
@@ -322,7 +327,10 @@ impl Workspace {
                             })),
                     )
                     .when(
-                        matches!(run.status, RunStatus::Failed | RunStatus::Interrupted),
+                        matches!(
+                            run.status,
+                            RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled
+                        ),
                         |row| {
                             row.child(
                                 Button::new(key("retry-queued-run", &retry))
@@ -335,6 +343,19 @@ impl Workspace {
                             )
                         },
                     )
+                    .when(!active, |row| {
+                        row.child(
+                            Button::new(key("remove-queued-run", &remove))
+                                .accessibility_label("Remove finished analysis from queue")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::X)
+                                .tooltip("Remove from queue")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.remove_queue_run(&remove, cx)
+                                })),
+                        )
+                    })
                     .when(active, |row| {
                         row.child(
                             Button::new(key("cancel-queued-run", &cancel))
@@ -397,29 +418,12 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.retry_all_failed(window, cx);
                             })),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        Button::new("queue-clear-completed")
-                            .small()
-                            .outline()
-                            .label("Clear completed")
-                            .tooltip("Clear completed and cancelled jobs from the queue. History and results are kept.")
-                            .disabled(!has_completed)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.clear_queue(QueueClearScope::Completed, cx);
-                            })),
                     )
                     .child(
                         Button::new("queue-clear-finished")
                             .small()
                             .outline()
-                            .label("Clear finished")
+                            .label("Clear")
                             .tooltip("Clear completed, cancelled, failed and interrupted jobs from the queue. History and results are kept.")
                             .disabled(!has_finished)
                             .on_click(cx.listener(|this, _, _, cx| {

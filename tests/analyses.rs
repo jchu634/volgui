@@ -275,13 +275,29 @@ fn clearing_queue_preserves_active_jobs_history_and_results_and_survives_reopeni
     assert_eq!(reopened.document.queue_runs().count(), 2);
     assert_eq!(reopened.document.runs.len(), 6);
     assert_eq!(reopened.results(&completed_id).unwrap().rows.len(), 1);
+    // Individual removal preserves pending jobs and persists finished dismissals.
+    let interrupted_id = reopened
+        .document
+        .queue_runs()
+        .find(|run| run.status == RunStatus::Interrupted)
+        .unwrap()
+        .id
+        .clone();
+    reopened.remove_queue_run(&interrupted_id).unwrap();
+    assert_eq!(reopened.document.queue_runs().count(), 1);
+    assert_eq!(reopened.document.runs.len(), 6);
+    reopened = Case::open(&directory).unwrap();
+    assert_eq!(reopened.document.queue_runs().count(), 1);
     // Retrying a cleared run from History creates a visible new attempt.
     queue_retries(&mut reopened, &engine, &[failed_id]).unwrap();
-    assert_eq!(reopened.document.queue_runs().count(), 3);
+    assert_eq!(reopened.document.queue_runs().count(), 2);
     assert_eq!(
         reopened.document.runs.last().unwrap().status,
         RunStatus::Queued
     );
+    let queued_id = reopened.document.runs.last().unwrap().id.clone();
+    reopened.remove_queue_run(&queued_id).unwrap();
+    assert_eq!(reopened.document.queue_runs().count(), 2);
 }
 
 #[test]

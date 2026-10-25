@@ -167,7 +167,8 @@ impl TableDelegate for ResultTable {
             .row_cache
             .get(&id)
             .map(|record| column.text(&record.record));
-        let parent = column.key.eq_ignore_ascii_case("ppid")
+        let parent = (column.key.eq_ignore_ascii_case("ppid")
+            || (state.result_group() == Some(ArtifactGroup::Web) && column.key == "PID"))
             && value
                 .as_ref()
                 .is_some_and(|value| !value.is_empty() && value != "0")

@@ -108,28 +108,36 @@ impl Render for Workspace {
                 s.child(self.render_sidebar(cx))
             })
             .child(content);
-        let queued = self.case.as_ref().map_or(0, |c| {
-            c.document
-                .runs
-                .iter()
-                .filter(|r| r.status == RunStatus::Queued)
-                .count()
-        });
-        let running = self.busy.as_ref().is_some_and(|b| b.run_id.is_some());
-        let label = if running || queued > 0 {
-            format!("{} running · {queued} queued", usize::from(running))
-        } else {
-            format!(
-                "{} analyses · Ready",
-                self.case
-                    .as_ref()
-                    .map_or(0, |c| c.document.queue_runs().count())
+        let runs: Vec<_> = self
+            .case
+            .as_ref()
+            .map(|case| case.document.queue_runs().collect())
+            .unwrap_or_default();
+        let total = runs.len();
+        let finished = runs
+            .iter()
+            .filter(|run| !matches!(run.status, RunStatus::Running | RunStatus::Queued))
+            .count();
+        let failed = runs.iter().any(|run| {
+            matches!(
+                run.status,
+                RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled
             )
-        };
-        let progress = if self.batch_total == 0 {
+        });
+        let label = format!("{finished}/{total}");
+        let progress = if total == 0 {
             0.
         } else {
-            self.batch_finished as f32 / self.batch_total as f32 * 100.
+            finished as f32 / total as f32 * 100.
+        };
+        let progress_color = if total > 0 && finished == total {
+            if failed {
+                cx.theme().danger
+            } else {
+                cx.theme().success
+            }
+        } else {
+            rgb(0xffffff).into()
         };
         let queue_panel = self.popup_panel(popups::PanelKind::Queue, cx);
         let status = div()
@@ -194,40 +202,38 @@ impl Render for Workspace {
                 },
             )
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        ProgressCircle::new("queue-progress")
-                            .xsmall()
-                            .value(progress)
-                            .loading(running && self.batch_finished == 0)
-                            .accessibility_label("Finished analyses in current batch"),
-                    )
-                    .child(
-                        Popover::new("queue-popover")
-                            .anchor(Anchor::BottomRight)
-                            .open(self.queue_open)
-                            .on_open_change(cx.listener(|this, open, _, cx| {
-                                this.queue_open = *open;
-                                cx.notify();
-                            }))
-                            .trigger(
-                                Button::new("queue-indicator")
-                                    .xsmall()
-                                    .ghost()
-                                    .label(label)
-                                    .tooltip(
-                                        self.busy
-                                            .as_ref()
-                                            .map(|b| b.label.clone())
-                                            .unwrap_or_else(|| "Recent analyses and queue".into()),
-                                    )
-                                    .dropdown_caret(true),
-                            )
-                            .content(move |_, _, _| queue_panel.clone()),
-                    ),
+                div().flex().items_center().gap_2().child(
+                    Popover::new("queue-popover")
+                        .anchor(Anchor::BottomRight)
+                        .open(self.queue_open)
+                        .on_open_change(cx.listener(|this, open, _, cx| {
+                            this.queue_open = *open;
+                            cx.notify();
+                        }))
+                        .trigger(
+                            Button::new("queue-indicator")
+                                .xsmall()
+                                .ghost()
+                                .child(
+                                    ProgressCircle::new("queue-progress")
+                                        .xsmall()
+                                        .value(progress)
+                                        .color(progress_color)
+                                        .accessibility_label(
+                                            "Finished analyses out of total analyses",
+                                        ),
+                                )
+                                .child(label)
+                                .tooltip(
+                                    self.busy
+                                        .as_ref()
+                                        .map(|b| b.label.clone())
+                                        .unwrap_or_else(|| "Recent analyses and queue".into()),
+                                )
+                                .dropdown_caret(true),
+                        )
+                        .content(move |_, _, _| queue_panel.clone()),
+                ),
             );
         div()
             .id("workspace-root")
