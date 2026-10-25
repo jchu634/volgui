@@ -132,7 +132,6 @@ enum Event {
 struct Busy {
     label: String,
     cancel: Arc<AtomicBool>,
-    run_id: Option<String>,
     started: Instant,
     displayed_seconds: u64,
 }
@@ -205,6 +204,7 @@ pub struct Workspace {
     analysis_collapsed_groups: std::collections::HashSet<ArtifactGroup>,
     sidebar_visible: bool,
     busy: Option<Busy>,
+    running: HashMap<String, Busy>,
     queue_paused: bool,
     browser_recovery_pending: bool,
     batch_total: usize,
@@ -230,6 +230,7 @@ pub struct Workspace {
     engine_path: Entity<InputState>,
     symbol_path: Entity<InputState>,
     offline: bool,
+    job_limit: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 fn key(kind: &str, id: &str) -> ElementId {
@@ -385,6 +386,7 @@ impl Workspace {
                 window,
                 cx,
             ),
+            job_limit: field(settings.max_concurrent_jobs.to_string(), "2", window, cx),
             offline: settings.offline,
             settings,
             installation: None,
@@ -453,6 +455,7 @@ impl Workspace {
             analysis_collapsed_groups: std::collections::HashSet::new(),
             sidebar_visible: true,
             busy: None,
+            running: HashMap::new(),
             queue_paused: false,
             browser_recovery_pending: false,
             batch_total: 0,
@@ -500,13 +503,19 @@ impl Workspace {
             if let Some(b) = &this.busy {
                 b.cancel.store(true, Ordering::Relaxed);
             }
+            for job in this.running.values() {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
             async {}
         })
         .detach();
         this
     }
+    fn is_working(&self) -> bool {
+        self.busy.is_some() || !self.running.is_empty()
+    }
     fn can_switch(&self) -> bool {
-        self.busy.is_none() && !self.has_queued()
+        !self.is_working() && !self.has_queued()
     }
     fn has_queued(&self) -> bool {
         self.case.as_ref().is_some_and(|c| {
@@ -516,12 +525,11 @@ impl Workspace {
                 .any(|r| r.status == RunStatus::Queued)
         })
     }
-    fn start(&mut self, label: &str, run_id: Option<String>) -> Arc<AtomicBool> {
+    fn start(&mut self, label: &str) -> Arc<AtomicBool> {
         let cancel = Arc::new(AtomicBool::new(false));
         self.busy = Some(Busy {
             label: label.into(),
             cancel: cancel.clone(),
-            run_id,
             started: Instant::now(),
             displayed_seconds: 0,
         });
@@ -542,9 +550,7 @@ impl Workspace {
     }
     fn cancel_run(&mut self, id: String, cx: &mut Context<Self>) {
         self.browser_recovery_pending = false;
-        if let Some(b) = &self.busy
-            && b.run_id.as_ref() == Some(&id)
-        {
+        if let Some(b) = self.running.get(&id) {
             b.cancel.store(true, Ordering::Relaxed);
             self.message = "Cancelling analysis...".into();
             cx.notify();
@@ -590,7 +596,8 @@ impl Workspace {
                 Event::Validated(result) => {
                     self.busy = None;
                     match result {
-                        Ok(engine) => {
+                        Ok(mut engine) => {
+                            engine.settings.max_concurrent_jobs = self.settings.max_concurrent_jobs;
                             self.settings = engine.settings.clone();
                             if let Err(e) = self.settings.save() {
                                 self.error = Some(e);
@@ -688,7 +695,7 @@ impl Workspace {
                     }
                 }
                 Event::Finished(id, outcome) => {
-                    self.busy = None;
+                    self.running.remove(&id);
                     self.batch_finished += 1;
                     let saved = match self.case.as_mut().map(|c| c.finish(&id, &outcome)) {
                         Some(Ok(())) => true,
@@ -909,7 +916,7 @@ impl Workspace {
         if self.busy.is_none() {
             self.start_next(window, cx);
         }
-        if let Some(b) = &mut self.busy {
+        for b in self.busy.iter_mut().chain(self.running.values_mut()) {
             let seconds = b.started.elapsed().as_secs();
             if seconds != b.displayed_seconds {
                 b.displayed_seconds = seconds;

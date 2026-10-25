@@ -184,23 +184,20 @@ impl Render for Workspace {
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_hex(cx))),
             )
-            .when(
-                self.busy.as_ref().is_some_and(|b| b.run_id.is_none()),
-                |s| {
-                    s.child(
-                        Button::new("cancel-work")
-                            .xsmall()
-                            .ghost()
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(b) = &this.busy {
-                                    b.cancel.store(true, Ordering::Relaxed);
-                                }
-                                cx.notify();
-                            })),
-                    )
-                },
-            )
+            .when(self.busy.is_some(), |s| {
+                s.child(
+                    Button::new("cancel-work")
+                        .xsmall()
+                        .ghost()
+                        .label("Cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(b) = &this.busy {
+                                b.cancel.store(true, Ordering::Relaxed);
+                            }
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
                 div().flex().items_center().gap_2().child(
                     Popover::new("queue-popover")
@@ -225,10 +222,15 @@ impl Render for Workspace {
                                 )
                                 .child(label)
                                 .tooltip(
-                                    self.busy
-                                        .as_ref()
-                                        .map(|b| b.label.clone())
-                                        .unwrap_or_else(|| "Recent analyses and queue".into()),
+                                    self.busy.as_ref().map(|b| b.label.clone()).unwrap_or_else(
+                                        || {
+                                            format!(
+                                                "{} running / {} maximum",
+                                                self.running.len(),
+                                                self.settings.max_concurrent_jobs
+                                            )
+                                        },
+                                    ),
                                 )
                                 .dropdown_caret(true),
                         )

@@ -161,6 +161,7 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     fs::create_dir(&manifest).unwrap();
     assert!(queue_retries(&mut case, &engine, &ids).is_err());
     assert_eq!(case.document.runs.len(), 3);
+    assert!(case.document.cleared_queue_runs.is_empty());
     fs::remove_dir(&manifest).unwrap();
     fs::write(&manifest, saved).unwrap();
 
@@ -169,6 +170,8 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     assert_eq!(case.document.runs[0].status, RunStatus::Failed);
     assert_eq!(case.document.runs[1].status, RunStatus::Interrupted);
     assert_eq!(case.document.runs[2].status, RunStatus::Completed);
+    assert!(case.document.queue_runs().all(|run| !ids.contains(&run.id)));
+    assert_eq!(case.document.queue_runs().count(), 3);
     for run in &case.document.runs[3..] {
         assert!(!ids.contains(&run.id));
         assert_eq!(run.status, RunStatus::Queued);
@@ -181,6 +184,8 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     drop(case);
     let reopened = Case::open(&directory).unwrap();
     assert_eq!(reopened.document.runs.len(), 5);
+    assert!(reopened.document.queue_runs().all(|run| !ids.contains(&run.id)));
+    assert_eq!(reopened.document.queue_runs().count(), 3);
 }
 
 #[test]
@@ -286,7 +291,8 @@ fn clearing_queue_preserves_active_jobs_history_and_results_and_survives_reopeni
     reopened.remove_queue_run(&interrupted_id).unwrap();
     assert_eq!(reopened.document.queue_runs().count(), 1);
     assert_eq!(reopened.document.runs.len(), 6);
-    reopened = Case::open(&directory).unwrap();
+    drop(reopened);
+    let mut reopened = Case::open(&directory).unwrap();
     assert_eq!(reopened.document.queue_runs().count(), 1);
     // Retrying a cleared run from History creates a visible new attempt.
     queue_retries(&mut reopened, &engine, &[failed_id]).unwrap();
@@ -395,4 +401,86 @@ fn only_completed_or_active_runs_block_plugin_selection() {
     ] {
         assert!(!status.blocks_plugin_selection(), "{status:?}");
     }
+}
+
+#[test]
+fn global_job_limit_defaults_to_two_and_round_trips_with_legacy_settings() {
+    assert_eq!(Settings::default().max_concurrent_jobs.get(), 2);
+    let legacy: Settings =
+        serde_json::from_str(r#"{"offline":true,"recent_cases":["case"]}"#).unwrap();
+    assert_eq!(legacy.max_concurrent_jobs.get(), 2);
+    assert!(legacy.offline);
+    let mut settings = legacy;
+    settings.max_concurrent_jobs = std::num::NonZeroUsize::new(5).unwrap();
+    let saved = serde_json::to_vec(&settings).unwrap();
+    let loaded: Settings = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(loaded.max_concurrent_jobs.get(), 5);
+    assert_eq!(loaded.recent_cases, settings.recent_cases);
+    for invalid in ["0", "-1", "1.5", "null"] {
+        assert!(
+            serde_json::from_str::<Settings>(&format!(r#"{{"max_concurrent_jobs":{invalid}}}"#))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn queue_fills_slots_refills_out_of_order_and_obeys_limit_changes() {
+    use volgui::analyses::next_queued_run;
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"queue fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut runs: Vec<_> = (0..4)
+        .map(|_| {
+            volgui::investigation::prepare(
+                &evidence,
+                volgui::investigation::STRINGS,
+                vec!["search".into()],
+            )
+            .unwrap()
+        })
+        .collect();
+    let limit = |n| std::num::NonZeroUsize::new(n).unwrap();
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(0));
+    runs[0].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(1));
+    runs[1].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit(2)), None);
+    assert_eq!(next_queued_run(&runs, limit(3)), Some(2));
+    assert_eq!(next_queued_run(&runs, limit(1)), None);
+    runs[1].status = RunStatus::Cancelled;
+    assert_eq!(next_queued_run(&runs, limit(1)), None);
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(2));
+    runs[2].status = RunStatus::Running;
+    runs[0].status = RunStatus::Failed;
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(3));
+    runs[3].status = RunStatus::Completed;
+    assert_eq!(next_queued_run(&runs, limit(2)), None);
+}
+
+#[test]
+fn browser_analysis_waits_for_prior_jobs_and_keeps_later_jobs_queued() {
+    use volgui::analyses::next_queued_run;
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"queue fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut runs: Vec<_> = [
+        volgui::investigation::STRINGS,
+        volgui::investigation::BROWSER,
+        volgui::investigation::STRINGS,
+    ]
+    .into_iter()
+    .map(|plugin| volgui::investigation::prepare(&evidence, plugin, vec!["search".into()]).unwrap())
+    .collect();
+    let limit = Settings::default().max_concurrent_jobs;
+    runs[0].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit), None);
+    runs[0].status = RunStatus::Completed;
+    assert_eq!(next_queued_run(&runs, limit), Some(1));
+    runs[1].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit), None);
+    runs[1].status = RunStatus::Failed;
+    assert_eq!(next_queued_run(&runs, limit), Some(2));
 }

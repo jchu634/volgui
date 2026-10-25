@@ -295,6 +295,90 @@ mod process_tests {
     }
 
     #[test]
+    fn concurrent_cli_jobs_have_distinct_processes_and_independent_cancellation() {
+        use volgui::analyses::next_queued_run;
+        let engine = engine(PathBuf::from(env!("CARGO_BIN_EXE_volgui-test-engine")));
+        let temp = tempfile::tempdir().unwrap();
+        let mut case = Case::create(&temp.path().join("case"), "Concurrent CLI").unwrap();
+        let image = evidence(&temp.path().join("image.raw"));
+        case.add_evidence(image.clone()).unwrap();
+        let runs: Vec<_> = ["test.gated.Gated", "test.gated.Gated", "test.echo.Echo"]
+            .into_iter()
+            .map(|plugin| {
+                engine
+                    .prepare(&image, plugin, vec![], &case.directory.join("analyses"))
+                    .unwrap()
+            })
+            .collect();
+        case.queue_batch(runs.clone()).unwrap();
+        let limit = Settings::default().max_concurrent_jobs;
+        let mut workers = Vec::new();
+        for expected in 0..2 {
+            let index = next_queued_run(&case.document.runs, limit).unwrap();
+            assert_eq!(index, expected);
+            case.document.runs[index].status = RunStatus::Running;
+            let run = runs[index].clone();
+            let engine = engine.clone();
+            let output = case.run_dir(&run.id);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let worker_cancel = cancel.clone();
+            workers.push((
+                cancel,
+                std::thread::spawn(move || engine.execute(&run, &output, &worker_cancel)),
+            ));
+        }
+        assert_eq!(next_queued_run(&case.document.runs, limit), None);
+        assert!(!case.run_dir(&runs[2].id).exists());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !runs[..2]
+            .iter()
+            .all(|run| case.run_dir(&run.id).join("ready").exists())
+        {
+            assert!(
+                Instant::now() < deadline,
+                "Both CLI instances must be alive together"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pids: Vec<_> = runs[..2]
+            .iter()
+            .map(|run| fs::read_to_string(case.run_dir(&run.id).join("ready")).unwrap())
+            .collect();
+        assert_ne!(pids[0], pids[1]);
+        let (cancel, first) = workers.remove(0);
+        cancel.store(true, Ordering::Relaxed);
+        let outcome = first.join().unwrap();
+        assert_eq!(outcome.status, RunStatus::Cancelled);
+        case.finish(&runs[0].id, &outcome).unwrap();
+        assert!(
+            !workers[0].1.is_finished(),
+            "Cancelling one CLI must leave the other running"
+        );
+        assert_eq!(next_queued_run(&case.document.runs, limit), Some(2));
+        case.document.runs[2].status = RunStatus::Running;
+        let outcome = engine.execute(
+            &runs[2],
+            &case.run_dir(&runs[2].id),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+        case.finish(&runs[2].id, &outcome).unwrap();
+        fs::write(case.run_dir(&runs[1].id).join("release"), b"").unwrap();
+        let (_, second) = workers.remove(0);
+        let outcome = second.join().unwrap();
+        assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+        case.finish(&runs[1].id, &outcome).unwrap();
+        assert!(case.run_dir(&runs[1].id).join("artifact.txt").exists());
+        assert!(case.run_dir(&runs[2].id).join("artifact.txt").exists());
+        drop(case);
+        let reopened = Case::open(&temp.path().join("case")).unwrap();
+        assert_eq!(reopened.document.runs[0].status, RunStatus::Cancelled);
+        for run in &runs[1..] {
+            assert_eq!(reopened.results(&run.id).unwrap().rows.len(), 2);
+        }
+    }
+
+    #[test]
     fn reopening_recovers_unfinished_jobs_without_restarting_them() {
         let engine = engine(PathBuf::from(env!("CARGO_BIN_EXE_volgui-test-engine")));
         let temp = tempfile::tempdir().unwrap();

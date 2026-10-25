@@ -11,6 +11,26 @@ use crate::{
     volatility::{Installation, Plugin, parse_arguments},
 };
 
+/// Select the next job in queue order without exceeding the global limit.
+/// Browser parsing waits for preceding dumps and blocks later jobs until complete.
+pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<usize> {
+    let running = runs.iter().filter(|run| run.status == RunStatus::Running);
+    if running.clone().count() >= limit.get()
+        || running
+            .clone()
+            .any(|run| run.plugin == crate::investigation::BROWSER)
+    {
+        return None;
+    }
+    let index = runs
+        .iter()
+        .position(|run| run.status == RunStatus::Queued)?;
+    if runs[index].plugin == crate::investigation::BROWSER && running.count() > 0 {
+        return None;
+    }
+    Some(index)
+}
+
 /// The common investigation tasks shown before the full plugin catalog.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
@@ -42,7 +62,7 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
     })
 }
 
-/// Queue fresh attempts together, preserving the original runs and their options.
+/// Queue fresh attempts and dismiss the originals from the queue, preserving history.
 pub fn queue_retries(case: &mut Case, engine: &Installation, ids: &[String]) -> Result<usize> {
     queue_retries_with_engine(case, Some(engine), ids)
 }
@@ -86,7 +106,12 @@ pub fn queue_retries_with_engine(
         })
         .collect::<Result<Vec<_>>>()?;
     let count = runs.len();
-    case.queue_batch(runs)?;
+    let previous_cleared = case.document.cleared_queue_runs.clone();
+    case.document.cleared_queue_runs.extend(ids.iter().cloned());
+    if let Err(error) = case.queue_batch(runs) {
+        case.document.cleared_queue_runs = previous_cleared;
+        return Err(error);
+    }
     Ok(count)
 }
 

@@ -1,15 +1,28 @@
 // Loads and saves application settings.
 use crate::case::{Result, atomic_json};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{fs, num::NonZeroUsize, path::PathBuf};
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub executable: PathBuf,
     pub symbols: PathBuf,
     pub offline: bool,
+    pub max_concurrent_jobs: NonZeroUsize,
     pub recent_cases: Vec<PathBuf>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            executable: PathBuf::new(),
+            symbols: PathBuf::new(),
+            offline: false,
+            max_concurrent_jobs: NonZeroUsize::new(2).unwrap(),
+            recent_cases: Vec::new(),
+        }
+    }
 }
 
 impl Settings {

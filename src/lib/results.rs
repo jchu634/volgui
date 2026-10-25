@@ -117,8 +117,25 @@ impl ResultStore {
         if cancel.load(Ordering::Relaxed) {
             return Err("Saving scan cancelled".into());
         }
-        let mut db = self.connect()?;
-        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let db = self.connect()?;
+        // Acquire the writer before reading, so simultaneous imports cannot try to
+        // upgrade stale WAL snapshots. Keep lock waits cancellable for large scans.
+        db.busy_timeout(Duration::from_millis(50))
+            .map_err(|e| e.to_string())?;
+        let tx = loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Saving scan cancelled".into());
+            }
+            match rusqlite::Transaction::new_unchecked(
+                &db,
+                rusqlite::TransactionBehavior::Immediate,
+            ) {
+                Ok(tx) => break tx,
+                Err(rusqlite::Error::SqliteFailure(error, _))
+                    if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        };
         // A run is immutable once imported. Repeating migration cannot change bookmark identities.
         if tx
             .query_row(

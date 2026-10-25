@@ -103,7 +103,7 @@ impl Workspace {
         let ws = workspace.read(cx);
         let disabled = !ws.can_switch();
         let recent = ws.settings.recent_cases.clone();
-        let evidence_disabled = ws.case.is_none() || ws.busy.is_some();
+        let evidence_disabled = ws.case.is_none() || ws.is_working();
         let close_disabled = ws.case.is_none() || disabled;
         let mut menu = menu
             .item(Self::file_item(
@@ -205,16 +205,52 @@ impl Workspace {
     }
     pub(in crate::ui) fn render_settings_content(&self, cx: &mut Context<Self>) -> AnyElement {
         div().flex().flex_col().gap_3().w_full()
+            .child(heading("ANALYSIS QUEUE",cx))
+            .child(heading("Maximum simultaneous jobs",cx))
+            .child(div().flex().gap_2()
+                .child(Input::new(&self.job_limit).id("job-limit").aria_label("Maximum simultaneous jobs").flex_1())
+                .child(Button::new("save-job-limit").small().label("Save job limit").on_click(cx.listener(|this,_,window,cx|this.save_job_limit(window,cx)))))
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("Current limit: {}. Default: 2. Lowering the limit lets active jobs finish before starting more.", self.settings.max_concurrent_jobs)))
             .child(heading("VOLATILITY INSTALLATION",cx))
             .child(div().text_sm().child("Select the separately installed CLI. Its supporting files stay beside the executable."))
-            .child(heading("Executable",cx)).child(div().flex().gap_2().child(Input::new(&self.engine_path).id("engine-path").aria_label("Volatility executable").flex_1()).child(Button::new("browse-engine").small().label("Browse").disabled(self.busy.is_some()).on_click(cx.listener(|this,_,window,cx|this.choose_path("engine",window,cx)))))
-            .child(heading("Symbols directory",cx)).child(div().flex().gap_2().child(Input::new(&self.symbol_path).id("symbol-path").aria_label("Symbols directory").flex_1()).child(Button::new("browse-symbols").small().label("Browse").disabled(self.busy.is_some()).on_click(cx.listener(|this,_,window,cx|this.choose_path("symbols",window,cx)))))
-            .child(Button::new("offline-mode").small().label(if self.offline{"Offline mode enabled"}else{"Online symbol lookup enabled"}).selected(self.offline).disabled(self.busy.is_some()).on_click(cx.listener(|this,_,_,cx|{this.offline = !this.offline;cx.notify();})))
-            .child(div().flex().gap_2().child(Button::new("validate-engine").small().primary().label("Validate and save").disabled(self.busy.is_some()||self.has_queued()).on_click(cx.listener(|this,_,_,cx|this.validate_engine(cx))))
-                .when(self.busy.as_ref().is_some_and(|b|b.run_id.is_none()),|s|s.child(Button::new("cancel-settings-job").small().label("Cancel check").on_click(cx.listener(|this,_,_,cx|{if let Some(b)=&this.busy{b.cancel.store(true,Ordering::Relaxed);}cx.notify();})))))
+            .child(heading("Executable",cx)).child(div().flex().gap_2().child(Input::new(&self.engine_path).id("engine-path").aria_label("Volatility executable").flex_1()).child(Button::new("browse-engine").small().label("Browse").disabled(self.is_working()).on_click(cx.listener(|this,_,window,cx|this.choose_path("engine",window,cx)))))
+            .child(heading("Symbols directory",cx)).child(div().flex().gap_2().child(Input::new(&self.symbol_path).id("symbol-path").aria_label("Symbols directory").flex_1()).child(Button::new("browse-symbols").small().label("Browse").disabled(self.is_working()).on_click(cx.listener(|this,_,window,cx|this.choose_path("symbols",window,cx)))))
+            .child(Button::new("offline-mode").small().label(if self.offline{"Offline mode enabled"}else{"Online symbol lookup enabled"}).selected(self.offline).disabled(self.is_working()).on_click(cx.listener(|this,_,_,cx|{this.offline = !this.offline;cx.notify();})))
+            .child(div().flex().gap_2().child(Button::new("validate-engine").small().primary().label("Validate and save").disabled(self.is_working()||self.has_queued()).on_click(cx.listener(|this,_,_,cx|this.validate_engine(cx))))
+                .when(self.busy.is_some(),|s|s.child(Button::new("cancel-settings-job").small().label("Cancel check").on_click(cx.listener(|this,_,_,cx|{if let Some(b)=&this.busy{b.cancel.store(true,Ordering::Relaxed);}cx.notify();})))))
             .when_some(self.installation.as_ref(),|s,e|s.child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{} · {} plugins",e.version,e.plugins.len()))))
             .when_some(self.error.clone(),|s,e|s.child(div().text_sm().text_color(cx.theme().danger).child(e)))
             .into_any_element()
+    }
+
+    fn save_job_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(limit) = self
+            .job_limit
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<std::num::NonZeroUsize>()
+        else {
+            self.error =
+                Some("Maximum simultaneous jobs must be a whole number of at least 1".into());
+            cx.notify();
+            return;
+        };
+        let mut settings = self.settings.clone();
+        settings.max_concurrent_jobs = limit;
+        match settings.save() {
+            Ok(()) => {
+                self.settings = settings;
+                if let Some(engine) = &mut self.installation {
+                    engine.settings.max_concurrent_jobs = limit;
+                }
+                self.error = None;
+                self.message = format!("Saved maximum simultaneous jobs: {limit}");
+                self.start_next(window, cx);
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
     }
 }
 #[derive(Clone)]

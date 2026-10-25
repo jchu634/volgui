@@ -41,7 +41,7 @@ impl Workspace {
     }
 
     pub(super) fn prepare_browser_recovery(&mut self, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.is_working() {
             return;
         }
         let (Some(evidence), Some(engine), Some(case)) = (
@@ -53,7 +53,7 @@ impl Workspace {
         };
         let directory = case.directory.clone();
         let document = case.document.clone();
-        let cancel = self.start("Finding browser processes to recover", None);
+        let cancel = self.start("Finding browser processes to recover");
         let tx = self.tx.clone();
         thread::spawn(move || {
             let result = (|| {

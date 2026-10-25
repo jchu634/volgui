@@ -190,7 +190,7 @@ impl Workspace {
                     })),
             );
         }
-        let blocked = self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) || plugins.is_empty();
+        let blocked = self.busy.is_some() || plugins.is_empty();
         div().w(px(440.)).p_3().flex().flex_col().gap_3()
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(group.label()))
             .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Choose analyses to populate this artifact. Each checked analysis adds a separate job."))

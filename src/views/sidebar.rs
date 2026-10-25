@@ -145,7 +145,7 @@ impl Workspace {
                             .ghost()
                             .icon(IconName::Plus)
                             .tooltip("Add evidence files")
-                            .disabled(self.busy.is_some())
+                            .disabled(self.is_working())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.choose_path("evidence", window, cx)
                             })),

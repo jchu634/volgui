@@ -8,7 +8,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) {
+        if self.busy.is_some() {
             return;
         }
         self.analysis_drafts = self
@@ -334,7 +334,7 @@ impl Workspace {
                 .child(div().text_sm().child(id.clone()))
                 .child(Input::new(&self.arguments).id("plugin-arguments").aria_label("Plugin arguments").small())
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Options are saved separately for each analysis. Select its checkbox to include it in the queue."))
-                .child(Button::new("load-options").small().label("Load options").disabled(self.busy.is_some()).on_click(cx.listener(|this,_,_,cx| this.plugin_help(cx))))
+                .child(Button::new("load-options").small().label("Load options").disabled(self.is_working()).on_click(cx.listener(|this,_,_,cx| this.plugin_help(cx))))
                 .child(div().id("plugin-help").flex_1().min_h_0().overflow_y_scroll().text_xs().font_family("Consolas").child(self.plugin_help.clone())));
         }
         page.child(
@@ -370,9 +370,7 @@ impl Workspace {
                         .small()
                         .primary()
                         .label(format!("Queue {total} analyses"))
-                        .disabled(
-                            total == 0 || self.busy.as_ref().is_some_and(|b| b.run_id.is_none()),
-                        )
+                        .disabled(total == 0 || self.busy.is_some())
                         .on_click(
                             cx.listener(|this, _, window, cx| this.queue_analyses(window, cx)),
                         ),

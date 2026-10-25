@@ -390,3 +390,55 @@ fn large_scan_query_returns_lightweight_ids_and_bounded_visible_rows() {
         "50k scan: import {import:?}, ID query {index_time:?}, indexed search {search_time:?}; visible fetch bounded to 128 rows"
     );
 }
+
+#[test]
+fn simultaneous_result_imports_wait_for_the_writer_and_remain_cancellable() {
+    use std::{
+        sync::{Arc, atomic::Ordering, mpsc},
+        time::Duration,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let writer = rusqlite::Connection::open(temp.path().join(DATABASE)).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let table = Table::parse(r#"[{"Name":"fixture"}]"#).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut workers = Vec::new();
+    for id in ["cancelled", "first", "second"] {
+        let store = store.clone();
+        let table = table.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let tx = tx.clone();
+        workers.push((
+            cancel,
+            std::thread::spawn(move || {
+                let result = store.insert_cancellable(
+                    &run(id, "windows.pslist.PsList"),
+                    &table,
+                    &worker_cancel,
+                );
+                tx.send((id, result)).unwrap();
+            }),
+        ));
+    }
+    assert!(
+        rx.recv_timeout(Duration::from_millis(150)).is_err(),
+        "Imports must wait while another writer owns SQLite"
+    );
+    workers[0].0.store(true, Ordering::Relaxed);
+    let (id, result) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(id, "cancelled");
+    assert!(result.unwrap_err().contains("cancelled"));
+    writer.execute_batch("COMMIT").unwrap();
+    for _ in 0..2 {
+        let (_, result) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        result.unwrap();
+    }
+    for (_, worker) in workers {
+        worker.join().unwrap();
+    }
+    assert!(!store.contains("cancelled").unwrap());
+    assert_eq!(store.count("first").unwrap(), 1);
+    assert_eq!(store.count("second").unwrap(), 1);
+}

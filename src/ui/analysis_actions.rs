@@ -3,13 +3,13 @@ use super::*;
 
 impl Workspace {
     pub(super) fn plugin_help(&mut self, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.is_working() {
             return;
         }
         let (Some(engine), Some(plugin)) = (self.installation.clone(), self.plugin.clone()) else {
             return;
         };
-        let cancel = self.start("Loading plugin options", None);
+        let cancel = self.start("Loading plugin options");
         let tx = self.tx.clone();
         thread::spawn(move || {
             let result = engine.help(&plugin, &cancel);
@@ -74,7 +74,7 @@ impl Workspace {
         cx.notify();
     }
     pub(super) fn queue_analyses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) {
+        if self.busy.is_some() {
             return;
         }
         self.save_plugin_arguments(cx);
@@ -165,7 +165,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) {
+        if self.busy.is_some() {
             return;
         }
         let result = (|| {
@@ -284,10 +284,10 @@ impl Workspace {
         cx.notify();
     }
     pub(super) fn remove_queue_run(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(case) = self.case.as_mut() {
-            if let Err(error) = case.remove_queue_run(id) {
-                self.error = Some(error);
-            }
+        if let Some(case) = self.case.as_mut()
+            && let Err(error) = case.remove_queue_run(id)
+        {
+            self.error = Some(error);
         }
         cx.notify();
     }
@@ -309,90 +309,105 @@ impl Workspace {
         if self.busy.is_some() || self.queue_paused {
             return;
         }
-        let engine = self.installation.clone();
-        let Some(case) = &mut self.case else {
-            return;
-        };
-        let Some(i) = case
-            .document
-            .runs
-            .iter()
-            .position(|r| r.status == RunStatus::Queued)
-        else {
-            if self.browser_recovery_pending {
-                self.browser_recovery_pending = false;
-                self.prepare_browser_recovery(cx);
+        loop {
+            let engine = self.installation.clone();
+            let Some(case) = &mut self.case else {
+                return;
+            };
+            let Some(i) = volgui::analyses::next_queued_run(
+                &case.document.runs,
+                self.settings.max_concurrent_jobs,
+            ) else {
+                if self.browser_recovery_pending && self.running.is_empty() && !self.has_queued() {
+                    self.browser_recovery_pending = false;
+                    self.prepare_browser_recovery(cx);
+                }
+                return;
+            };
+            let native = volgui::investigation::is_native(&case.document.runs[i].plugin);
+            if !native && engine.is_none() {
+                return;
             }
-            return;
-        };
-        let native = volgui::investigation::is_native(&case.document.runs[i].plugin);
-        if !native && engine.is_none() {
-            return;
-        }
-        let evidence = case
-            .document
-            .evidence
-            .iter()
-            .find(|e| e.id == case.document.runs[i].evidence_id)
-            .unwrap();
-        if let Err(e) = evidence.check_metadata() {
-            self.file_dumps.remove(&case.document.runs[i].id);
-            case.document.runs[i].status = RunStatus::Failed;
-            case.document.runs[i].message = e.clone();
-            case.document.runs[i].finished_at = Some(now());
-            self.error = Some(e);
+            let evidence = case
+                .document
+                .evidence
+                .iter()
+                .find(|e| e.id == case.document.runs[i].evidence_id)
+                .unwrap();
+            if let Err(e) = evidence.check_metadata() {
+                self.file_dumps.remove(&case.document.runs[i].id);
+                case.document.runs[i].status = RunStatus::Failed;
+                case.document.runs[i].message = e.clone();
+                case.document.runs[i].finished_at = Some(now());
+                self.error = Some(e);
+                if let Err(e) = case.save() {
+                    self.error = Some(e);
+                    self.queue_paused = true;
+                }
+                self.batch_finished += 1;
+                cx.notify();
+                if self.queue_paused {
+                    return;
+                }
+                continue;
+            }
+            case.document.runs[i].status = RunStatus::Running;
+            case.document.runs[i].started_at = Some(now());
             if let Err(e) = case.save() {
+                case.document.runs[i].status = RunStatus::Queued;
+                case.document.runs[i].started_at = None;
                 self.error = Some(e);
                 self.queue_paused = true;
+                return;
             }
-            self.batch_finished += 1;
-            cx.notify();
-            return;
-        }
-        case.document.runs[i].status = RunStatus::Running;
-        case.document.runs[i].started_at = Some(now());
-        if let Err(e) = case.save() {
-            case.document.runs[i].status = RunStatus::Queued;
-            self.error = Some(e);
-            self.queue_paused = true;
-            return;
-        }
-        let run = case.document.runs[i].clone();
-        let directory = case.run_dir(&run.id);
-        let store = ResultStore::at(&case.directory);
-        let case_directory = case.directory.clone();
-        let document = case.document.clone();
-        let cancel = self.start(&format!("Running {}", run.plugin), Some(run.id.clone()));
-        let tx = self.tx.clone();
-        thread::spawn(move || {
-            let mut outcome = if native {
-                volgui::investigation::execute(
-                    &case_directory,
-                    &document,
-                    &run,
-                    &cancel,
-                    |message| {
-                        let _ = tx.send(Event::Progress(message));
-                    },
-                )
-            } else {
-                engine
-                    .expect("engine checked before starting job")
-                    .execute(&run, &directory, &cancel)
-            };
-            if let Some(table) = outcome.table.take()
-                && let Err(e) = store.insert_cancellable(&run, &table, &cancel)
-            {
-                outcome.status = if cancel.load(Ordering::Relaxed) {
-                    RunStatus::Cancelled
+            let run = case.document.runs[i].clone();
+            let directory = case.run_dir(&run.id);
+            let store = ResultStore::at(&case.directory);
+            let case_directory = case.directory.clone();
+            let document = case.document.clone();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let label = format!("Running {}", run.plugin);
+            self.running.insert(
+                run.id.clone(),
+                Busy {
+                    label: label.clone(),
+                    cancel: cancel.clone(),
+                    started: Instant::now(),
+                    displayed_seconds: 0,
+                },
+            );
+            self.message = label;
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let mut outcome = if native {
+                    volgui::investigation::execute(
+                        &case_directory,
+                        &document,
+                        &run,
+                        &cancel,
+                        |message| {
+                            let _ = tx.send(Event::Progress(message));
+                        },
+                    )
                 } else {
-                    RunStatus::Failed
+                    engine
+                        .expect("engine checked before starting job")
+                        .execute(&run, &directory, &cancel)
                 };
-                outcome.message =
-                    format!("Could not save scan to SQLite: {e}. Raw output is retained.");
-            }
-            let _ = tx.send(Event::Finished(run.id, outcome));
-        });
-        cx.notify();
+                if let Some(table) = outcome.table.take()
+                    && let Err(e) = store.insert_cancellable(&run, &table, &cancel)
+                {
+                    outcome.status = if cancel.load(Ordering::Relaxed) {
+                        RunStatus::Cancelled
+                    } else {
+                        RunStatus::Failed
+                    };
+                    outcome.message =
+                        format!("Could not save scan to SQLite: {e}. Raw output is retained.");
+                }
+                let _ = tx.send(Event::Finished(run.id, outcome));
+            });
+            cx.notify();
+        }
     }
 }

@@ -7,7 +7,7 @@ fn main() {
     eprintln!("Volatility 3 Framework test-fixture");
     if args == ["--help"] {
         println!(
-            "Plugins:\n\n  PLUGIN\n    test.echo.Echo     Echo literal arguments and create an output artifact.\n    test.slow.Slow     Wait for cancellation.\n    test.fail.Fail     Emit a nonzero status.\n    test.bad.Bad       Emit malformed JSON.\n    windows.dumpfiles.DumpFiles     Extract a single synthetic file object."
+            "Plugins:\n\n  PLUGIN\n    test.echo.Echo     Echo literal arguments and create an output artifact.\n    test.gated.Gated     Wait for an explicit release file.\n    test.slow.Slow     Wait for cancellation.\n    test.fail.Fail     Emit a nonzero status.\n    test.bad.Bad       Emit malformed JSON.\n    windows.dumpfiles.DumpFiles     Extract a single synthetic file object."
         );
         return;
     }
@@ -17,6 +17,18 @@ fn main() {
     }
     if args.iter().any(|a| a == "test.slow.Slow") {
         std::thread::sleep(Duration::from_secs(30));
+    }
+    if args.iter().any(|a| a == "test.gated.Gated") {
+        let output = std::path::Path::new(&args[args.iter().position(|a| a == "-o").unwrap() + 1]);
+        std::fs::write(output.join("ready"), std::process::id().to_string()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !output.join("release").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Test did not release the CLI"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
     if args.iter().any(|a| a == "test.fail.Fail") {
         eprintln!("Unsatisfied requirement plugins.Fail.kernel.symbol_table_name");

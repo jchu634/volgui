@@ -7,7 +7,7 @@ impl Workspace {
             Some(ArtifactGroup::Web) => {
                 tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches. Memory findings may include stale strings and do not alone prove a visit. Process dumps can use several GB."))
                     .child(div().flex().items_center().child(Button::new("recover-analyze-browser").small().label("Start analysis")
-                        .disabled(self.busy.is_some() || self.browser_recovery_pending || self.installation.is_none())
+                        .disabled(self.is_working() || self.browser_recovery_pending || self.installation.is_none())
                         .on_click(cx.listener(|this, _, window, cx| this.recover_and_analyze_browser(window, cx)))));
             }
             Some(ArtifactGroup::Strings) => {
@@ -15,7 +15,7 @@ impl Workspace {
                     .child(div().flex().items_center().gap_2()
                         .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w(px(360.)))
                         .child(Checkbox::new("string-ignore-case").label("Ignore ASCII case").checked(self.string_ignore_case).on_click(cx.listener(|this,checked,_,cx| { this.string_ignore_case = *checked; cx.notify(); })))
-                        .child(Button::new("run-global-search").small().label("Search evidence").disabled(self.evidence().is_none() || self.busy.as_ref().is_some_and(|b| b.run_id.is_none())).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
+                        .child(Button::new("run-global-search").small().label("Search evidence").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
             }
             Some(ArtifactGroup::Registry) => {
                 let child = self

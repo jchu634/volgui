@@ -22,7 +22,7 @@ impl Workspace {
                 .plugins
                 .iter()
                 .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
-        }) && !self.busy.as_ref().is_some_and(|busy| busy.run_id.is_none());
+        }) && self.busy.is_none();
         let imhex = volgui::extracted_files::imhex().is_some();
         let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
         if target.needs_address_space() {
