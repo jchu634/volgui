@@ -13,7 +13,7 @@ impl Workspace {
             max_concurrent_jobs: self.settings.max_concurrent_jobs,
             recent_cases: self.settings.recent_cases.clone(),
         };
-        let cancel = self.start("Checking Volatility");
+        let cancel = self.start("Checking analysis engine");
         let tx = self.tx.clone();
         thread::spawn(move || {
             let _ = tx.send(Event::Validated(Installation::discover(settings, &cancel)));
@@ -146,7 +146,7 @@ impl Workspace {
                 match purpose {
                     "open" => "Open case.sqlite",
                     "evidence" => "Add memory images",
-                    "engine" => "Choose Volatility executable",
+                    "engine" => "Choose Volatility or vol-rs executable",
                     "symbols" => "Choose symbols directory",
                     _ => "Choose case directory",
                 }

@@ -65,6 +65,53 @@ fn discovery_handles_wrapped_help_without_confusing_descriptions_for_plugins() {
 }
 
 #[test]
+fn vol_rs_commands_supply_cache_and_symbols_without_unix_environment_variables() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = evidence(&temp.path().join("image.raw"));
+    let mut engine = Installation {
+        settings: Settings::default(),
+        version: "vol-rs 1.0.2".into(),
+        plugins: vec![volgui::volatility::Plugin {
+            id: "windows.pslist.PsList".into(),
+            description: String::new(),
+        }],
+    };
+    let run = engine
+        .prepare(&image, "windows.pslist.PsList", vec![], temp.path())
+        .unwrap();
+    let cache = run
+        .command
+        .windows(2)
+        .find(|pair| pair[0] == "--cache-path")
+        .unwrap();
+    assert!(std::path::Path::new(&cache[1]).is_dir());
+    let symbols = run.command.windows(2).find(|pair| pair[0] == "-s").unwrap();
+    assert!(std::path::Path::new(&symbols[1]).is_dir());
+    engine.settings.symbols = temp.path().to_path_buf();
+    let custom = engine
+        .prepare(&image, "windows.pslist.PsList", vec![], temp.path())
+        .unwrap();
+    assert_eq!(custom.command.iter().filter(|arg| *arg == "-s").count(), 1);
+    assert!(
+        custom
+            .command
+            .windows(2)
+            .any(|pair| pair[0] == "-s" && pair[1] == temp.path().display().to_string())
+    );
+    engine.version = "Volatility 3 Framework 2.28.3".into();
+    engine.settings.symbols.clear();
+    let original = engine
+        .prepare(&image, "windows.pslist.PsList", vec![], temp.path())
+        .unwrap();
+    assert!(
+        !original
+            .command
+            .iter()
+            .any(|arg| arg == "--cache-path" || arg == "-s")
+    );
+}
+
+#[test]
 fn csv_quotes_fields_and_neutralizes_spreadsheet_formulas() {
     let table = Table::parse(
         &json!([{"Text":"=HYPERLINK(\"http://invalid\")","Multiline":"a,\"b\"\nc","Number":-5}])
@@ -173,13 +220,20 @@ fn supplied_volatility_build_can_discover_and_run_without_a_capture() {
     let path = std::env::var_os("VOLGUI_TEST_VOLATILITY")
         .expect("Set VOLGUI_TEST_VOLATILITY to an external Volatility executable");
     let engine = engine(path.into());
-    assert!(engine.version.starts_with("Volatility 3 Framework"));
+    assert!(
+        engine.version.starts_with("Volatility 3 Framework")
+            || engine.version.starts_with("vol-rs ")
+    );
     assert!(
         engine
             .plugins
             .iter()
             .any(|p| p.id == "windows.pslist.PsList")
     );
+    let help = engine
+        .help("windows.pslist.PsList", &AtomicBool::new(false))
+        .unwrap();
+    assert!(help.contains("--pid"));
     let temp = tempfile::tempdir().unwrap();
     let mut case = Case::create(&temp.path().join("case"), "Engine integration").unwrap();
     let image = evidence(&temp.path().join("placeholder.raw"));
@@ -217,6 +271,35 @@ mod process_tests {
         sync::{Arc, atomic::Ordering},
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn missing_offline_symbols_explain_recovery_and_retain_diagnostics() {
+        let engine = engine(PathBuf::from(env!("CARGO_BIN_EXE_volgui-test-engine")));
+        let temp = tempfile::tempdir().unwrap();
+        let image = evidence(&temp.path().join("image.raw"));
+        let run = engine
+            .prepare(
+                &image,
+                "test.fail.Fail",
+                vec!["--missing-symbols".into()],
+                temp.path(),
+            )
+            .unwrap();
+        let output = temp.path().join(&run.id);
+        let result = engine.execute(&run, &output, &AtomicBool::new(false));
+        assert_eq!(result.status, RunStatus::Failed);
+        assert!(result.message.starts_with("Kernel symbols are missing"));
+        assert!(result.message.contains("Validate and save"));
+        assert!(result.message.contains("Symbols directory"));
+        assert!(
+            result
+                .message
+                .contains("plugins.Fail.kernel.symbol_table_name")
+        );
+        let raw = fs::read_to_string(output.join("stderr.log")).unwrap();
+        assert!(raw.contains("Symbols are not available offline"));
+        assert!(!raw.contains("Validate and save"));
+    }
 
     #[test]
     fn run_lifecycle_captures_large_stderr_literal_args_generated_files_and_annotations() {

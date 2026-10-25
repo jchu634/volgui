@@ -81,7 +81,7 @@ impl Workspace {
                 .tooltip(if available {
                     "Extract only this file from memory"
                 } else {
-                    "Configure Volatility with the Windows DumpFiles plugin in Settings"
+                    "Configure analysis engine with the Windows DumpFiles plugin in Settings"
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.dump_file(false, for_hex, window, cx)

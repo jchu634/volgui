@@ -31,6 +31,9 @@ fn main() {
         }
     }
     if args.iter().any(|a| a == "test.fail.Fail") {
+        if args.iter().any(|a| a == "--missing-symbols") {
+            eprintln!("[WARN] Symbols are not available offline");
+        }
         eprintln!("Unsatisfied requirement plugins.Fail.kernel.symbol_table_name");
         std::process::exit(7);
     }

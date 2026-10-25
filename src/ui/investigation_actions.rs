@@ -12,7 +12,7 @@ impl Workspace {
             let engine = self
                 .installation
                 .as_ref()
-                .ok_or("Configure Volatility in settings")?;
+                .ok_or("Configure analysis engine in settings")?;
             let output = self
                 .case
                 .as_ref()
@@ -91,7 +91,7 @@ impl Workspace {
             let engine = self
                 .installation
                 .as_ref()
-                .ok_or("Configure Volatility in settings")?;
+                .ok_or("Configure analysis engine in settings")?;
             let case = self.case.as_ref().ok_or("Open a case first")?;
             engine.prepare(evidence, plugin, vec![], &case.directory.join("analyses"))
         })();
@@ -186,10 +186,9 @@ impl Workspace {
             if let Some(cached) = analysis::registry::cached(case, source, &arguments) {
                 return Ok((cached.id.clone(), None));
             }
-            let engine = self
-                .installation
-                .as_ref()
-                .ok_or("Configure Volatility to read registry keys that have not been collected")?;
+            let engine = self.installation.as_ref().ok_or(
+                "Configure analysis engine to read registry keys that have not been collected",
+            )?;
             let requested =
                 analysis::registry::prepare(case, engine, source, &record.record, &key, recurse)?;
             Ok::<_, String>((requested.id.clone(), Some(requested)))
@@ -267,7 +266,10 @@ impl Workspace {
                 .map(|key| record.record.text(key))
                 .find(|p| p.parse::<u64>().is_ok())
                 .ok_or("Selected record has no PID")?;
-            let engine = self.installation.as_ref().ok_or("Configure Volatility")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure analysis engine")?;
             let plugin = match evidence.operating_system {
                 OperatingSystem::Linux => "linux.lsof.Lsof",
                 OperatingSystem::Macos => "mac.lsof.Lsof",

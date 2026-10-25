@@ -91,7 +91,7 @@ impl Workspace {
             let engine = self
                 .installation
                 .as_ref()
-                .ok_or("Configure Volatility in settings")?;
+                .ok_or("Configure analysis engine in settings")?;
             let case = self.case.as_ref().ok_or("Open a case first")?;
             let mut runs = Vec::new();
             for draft in &self.analysis_drafts {
@@ -188,7 +188,7 @@ impl Workspace {
             let engine = self
                 .installation
                 .as_ref()
-                .ok_or("Configure Volatility in settings")?;
+                .ok_or("Configure analysis engine in settings")?;
             let record = self.selected.as_ref().ok_or("Select a file first")?;
             let case = self.case.as_mut().ok_or("Open a case first")?;
             let id = volgui::extracted_files::queue_file_dump(

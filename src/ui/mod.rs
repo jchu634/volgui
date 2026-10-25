@@ -392,7 +392,7 @@ impl Workspace {
         let mut this = Self {
             engine_path: field(
                 settings.executable.display().to_string(),
-                "Path to vol.exe or its installation directory",
+                "Path to vol.exe, vol-rs.exe or its installation directory",
                 window,
                 cx,
             ),

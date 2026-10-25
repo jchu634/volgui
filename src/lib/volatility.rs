@@ -34,17 +34,23 @@ pub struct Installation {
 impl Installation {
     pub fn discover(mut settings: Settings, cancel: &AtomicBool) -> Result<Self> {
         if settings.executable.is_dir() {
-            settings.executable =
-                settings
-                    .executable
-                    .join(if cfg!(windows) { "vol.exe" } else { "vol" });
+            let names = if cfg!(windows) {
+                ["vol.exe", "vol-rs.exe"]
+            } else {
+                ["vol", "vol-rs"]
+            };
+            settings.executable = names
+                .iter()
+                .map(|name| settings.executable.join(name))
+                .find(|path| path.is_file())
+                .ok_or("The installation directory contains neither vol nor vol-rs")?;
         }
         settings.executable = settings
             .executable
             .canonicalize()
-            .map_err(|e| format!("Choose the installed Volatility executable: {e}"))?;
+            .map_err(|e| format!("Choose the installed Volatility or vol-rs executable: {e}"))?;
         if !settings.executable.is_file() {
-            return Err("Volatility path must be an executable file".into());
+            return Err("Engine path must be an executable file".into());
         }
         if !settings.symbols.as_os_str().is_empty() {
             settings.symbols = settings
@@ -75,12 +81,33 @@ impl Installation {
         }
         let help = read_text(&scratch.path().join("stdout.json"), 8 * 1024 * 1024)?;
         let diagnostics = read_tail(&scratch.path().join("stderr.log"));
-        let version = help
+        let version = if let Some(version) = help
             .lines()
             .chain(diagnostics.lines())
             .find(|s| s.starts_with("Volatility 3 Framework"))
-            .ok_or("The executable did not identify itself as Volatility 3")?
-            .to_string();
+        {
+            version.to_string()
+        } else {
+            // vol-rs keeps its help compatible with Volatility and identifies itself separately.
+            let captured = capture(
+                &settings.executable,
+                &["--version".into()],
+                scratch.path(),
+                cancel,
+                Some(Duration::from_secs(60)),
+            )?;
+            if captured.cancelled {
+                return Err("Engine validation cancelled".into());
+            }
+            let stdout = read_text(&scratch.path().join("stdout.json"), 1024 * 1024)?;
+            let stderr = read_tail(&scratch.path().join("stderr.log"));
+            stdout
+                .lines()
+                .chain(stderr.lines())
+                .find(|line| captured.exit_code == Some(0) && line.starts_with("vol-rs "))
+                .ok_or("The executable did not identify itself as Volatility 3 or vol-rs")?
+                .to_string()
+        };
         let plugins = parse_plugins(&help);
         if plugins.is_empty() {
             return Err("Volatility returned no plugins. Check its supporting files.".into());
@@ -110,6 +137,23 @@ impl Installation {
             "-r".into(),
             "json".into(),
         ];
+        if self.version.starts_with("vol-rs ") {
+            // vol-rs 1.0.2's default cache lookup only checks Unix environment variables.
+            let cache = Settings::path()
+                .parent()
+                .ok_or("Settings directory is unavailable")?
+                .join("cache")
+                .join("vol-rs");
+            fs::create_dir_all(&cache)
+                .map_err(|e| format!("Cannot create the vol-rs cache directory: {e}"))?;
+            command.extend(["--cache-path".into(), cache.display().to_string()]);
+            if self.settings.symbols.as_os_str().is_empty() {
+                let symbols = cache.join("symbols");
+                fs::create_dir_all(&symbols)
+                    .map_err(|e| format!("Cannot create the vol-rs symbols directory: {e}"))?;
+                command.extend(["-s".into(), symbols.display().to_string()]);
+            }
+        }
         if self.settings.offline {
             command.push("--offline".into());
         }
@@ -186,6 +230,10 @@ impl Installation {
                     message: if diagnostics.trim().is_empty() {
                         "Volatility exited without producing results. Inspect the raw output."
                             .into()
+                    } else if diagnostics.contains("Symbols are not available offline") {
+                        format!(
+                            "Kernel symbols are missing and offline mode prevents downloading them. In Settings, enable online symbol lookup and click Validate and save, then retry the failed analyses. To stay offline, select a Symbols directory containing symbols for this capture's kernel.\n\n{diagnostics}"
+                        )
                     } else {
                         diagnostics
                     },

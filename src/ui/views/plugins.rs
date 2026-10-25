@@ -123,8 +123,8 @@ impl Workspace {
             .child(evidence)
             .child(os);
         let Some(engine) = &self.installation else {
-            return page.child(div().text_sm().child("Configure Volatility to choose analyses. The evidence has already been added to the case."))
-                .child(Button::new("analysis-settings").label("Configure Volatility").on_click(cx.listener(|this,_,window,cx| this.open_settings(window,cx))))
+            return page.child(div().text_sm().child("Configure analysis engine to choose analyses. The evidence has already been added to the case."))
+                .child(Button::new("analysis-settings").label("Configure analysis engine").on_click(cx.listener(|this,_,window,cx| this.open_settings(window,cx))))
                 .child(Button::new("analysis-later").label("Choose later").on_click(|_,window,cx| window.close_dialog(cx))).into_any_element();
         };
         let mut plugins = chooser_plugins(

@@ -1,8 +1,8 @@
 # VolGUI
 
-A native Rust/GPUI investigation workspace for the external Volatility 3 CLI.
+A native Rust/GPUI investigation workspace for the external Volatility 3 and vol-rs CLIs.
 
-VolGUI runs a separately installed Volatility engine and stores analysis results, evidence fingerprints, and bookmarks in case directories. Volatility is not bundled with the application.
+VolGUI runs a separately installed Volatility 3 or vol-rs engine and stores analysis results, evidence fingerprints, and bookmarks in case directories. Volatility is not bundled with the application.
 
 ## Documentation
 
