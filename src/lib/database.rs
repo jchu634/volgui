@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 4;
 const APPLICATION_ID: i64 = 0x56475549;
 pub const DATABASE: &str = "case.sqlite";
 
@@ -70,10 +70,10 @@ pub fn initialize(directory: &Path) -> Result<Connection> {
         CREATE TABLE evidence(id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,size INTEGER NOT NULL,modified_ns TEXT,sha256 TEXT NOT NULL,added_at TEXT NOT NULL,verification_json TEXT,operating_system TEXT NOT NULL);
         CREATE TABLE analysis_runs(id TEXT PRIMARY KEY,evidence_id TEXT NOT NULL REFERENCES evidence(id),plugin TEXT NOT NULL,arguments_json TEXT NOT NULL,command_json TEXT NOT NULL,engine_version TEXT NOT NULL,created_at TEXT NOT NULL,started_at TEXT,finished_at TEXT,status TEXT NOT NULL,exit_code INTEGER,message TEXT NOT NULL,queue_hidden INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE annotations(run_id TEXT NOT NULL REFERENCES analysis_runs(id),row_index INTEGER NOT NULL,bookmarked INTEGER NOT NULL,note TEXT NOT NULL,PRIMARY KEY(run_id,row_index));
-        CREATE TABLE binary_chunks(sha256 BLOB PRIMARY KEY CHECK(length(sha256)=32),size INTEGER NOT NULL,pack_offset INTEGER NOT NULL,stored_size INTEGER NOT NULL) WITHOUT ROWID;
+        CREATE TABLE binary_chunks(sha256 BLOB PRIMARY KEY CHECK(length(sha256)=32),size INTEGER NOT NULL,pack_offset INTEGER NOT NULL,stored_size INTEGER NOT NULL);
         CREATE TABLE binary_objects(sha256 TEXT PRIMARY KEY,size INTEGER NOT NULL,manifest BLOB NOT NULL,manifest_sha256 TEXT NOT NULL);
-        CREATE TABLE analysis_outputs(run_id TEXT NOT NULL REFERENCES analysis_runs(id),name TEXT NOT NULL,object_sha256 TEXT REFERENCES binary_objects(sha256),blocked_reason TEXT,PRIMARY KEY(run_id,name));
-        PRAGMA user_version=2;
+        CREATE TABLE analysis_outputs(run_id TEXT NOT NULL REFERENCES analysis_runs(id),name TEXT NOT NULL,object_sha256 TEXT REFERENCES binary_objects(sha256),blob_id TEXT UNIQUE,size INTEGER CHECK(size>=0),sha256 TEXT,blocked_reason TEXT,PRIMARY KEY(run_id,name),CHECK((blob_id IS NULL AND object_sha256 IS NULL AND size IS NULL AND sha256 IS NULL) OR (size IS NOT NULL AND sha256 IS NOT NULL AND ((blob_id IS NOT NULL AND object_sha256 IS NULL) OR (blob_id IS NULL AND object_sha256 IS NOT NULL AND object_sha256=sha256)))));
+        PRAGMA user_version=4;
         PRAGMA application_id=1447515465;
         COMMIT;") .map_err(|e| format!("Cannot initialize case database: {e}"))?;
     Ok(db)

@@ -31,6 +31,30 @@ pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<us
     Some(index)
 }
 
+pub const BROWSER_RECOVERY_PENDING: &str =
+    "Waiting to prepare browser recovery after prerequisites";
+
+/// Resolve a deferred browser job using results from the jobs ahead of it.
+pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let mut draft = AnalysisDraft::new(evidence);
+    draft.selected.insert(crate::analysis::BROWSER.into());
+    let mut runs = draft.prepare_in_case(engine, evidence, case)?;
+    if runs
+        .iter()
+        .any(|run| run.message == BROWSER_RECOVERY_PENDING)
+    {
+        return Err("Browser recovery prerequisites did not complete successfully".into());
+    }
+    runs.retain(|run| run.plugin != crate::analysis::BROWSER);
+    Ok(runs)
+}
+
 /// The common investigation tasks shown before the full plugin catalog.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
@@ -72,7 +96,7 @@ pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
     catalog.extend([
         Plugin {
             id: crate::analysis::BROWSER.into(),
-            description: "Recover and parse browser memory, history and saved tabs. Requires completed PsList, CmdLine and FileScan jobs. Does not collect prerequisites.".into(),
+            description: "Recover and parse browser memory, history and saved tabs. Requires unfiltered PsList, CmdLine and FileScan jobs, completed or queued before this analysis. Does not collect prerequisites.".into(),
         },
         Plugin {
             id: REGISTRY_ALL.into(),
@@ -111,11 +135,15 @@ pub fn queue_retries_with_engine(
                 .find(|e| e.id == previous.evidence_id)
                 .ok_or("Evidence is no longer available")?;
             if crate::analysis::is_native(&previous.plugin) {
-                return crate::analysis::prepare(
+                let mut run = crate::analysis::prepare(
                     evidence,
                     &previous.plugin,
                     previous.arguments.clone(),
-                );
+                )?;
+                if previous.plugin == crate::analysis::BROWSER {
+                    run.message = BROWSER_RECOVERY_PENDING.into();
+                }
+                return Ok(run);
             }
             engine.ok_or("Configure Volatility in settings")?.prepare(
                 evidence,
@@ -266,11 +294,38 @@ impl AnalysisDraft {
                 })
             })
             .collect();
-            if !missing.is_empty() {
-                return Err(format!(
-                    "Browser recovery requires completed prerequisite jobs for this evidence with no filters: {}",
-                    missing.join(", ")
-                ));
+            if !missing.is_empty()
+                || runs.iter().any(|run| {
+                    matches!(
+                        run.plugin.as_str(),
+                        "windows.pslist.PsList"
+                            | "windows.cmdline.CmdLine"
+                            | "windows.filescan.FileScan"
+                    )
+                })
+            {
+                let unavailable: Vec<_> = missing
+                    .iter()
+                    .copied()
+                    .filter(|plugin| {
+                        !case.document.runs.iter().chain(runs.iter()).any(|run| {
+                            run.evidence_id == evidence.id
+                                && run.plugin == *plugin
+                                && run.arguments.is_empty()
+                                && matches!(run.status, RunStatus::Queued | RunStatus::Running)
+                        })
+                    })
+                    .collect();
+                if !unavailable.is_empty() {
+                    return Err(format!(
+                        "Browser recovery requires completed or preceding queued prerequisite jobs for this evidence with no filters: {}",
+                        unavailable.join(", ")
+                    ));
+                }
+                let mut run = crate::analysis::prepare(evidence, crate::analysis::BROWSER, vec![])?;
+                run.message = BROWSER_RECOVERY_PENDING.into();
+                runs.push(run);
+                return Ok(runs);
             }
             let mut browser_evidence = evidence.clone();
             browser_evidence.operating_system = self.os;

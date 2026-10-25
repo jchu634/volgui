@@ -99,6 +99,7 @@ impl Workspace {
         self.relation_epoch += 1;
         self.query_due = None;
         self.case = None;
+        self.reset_file_listing();
         self.handles = None;
         self.handles_loading = false;
         self.handle_epoch += 1;

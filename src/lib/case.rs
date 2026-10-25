@@ -776,7 +776,7 @@ impl CaseSnapshot {
         }
         html.push_str("</table><h2>Managed binary outputs</h2><table><tr><th>Analysis / logical name</th><th>Bytes</th><th>SHA-256</th><th>Availability</th></tr>");
         let db = crate::database::connect(directory)?;
-        let mut statement = db.prepare("SELECT run_id,name,b.size,o.object_sha256,blocked_reason FROM analysis_outputs o LEFT JOIN binary_objects b ON b.sha256=o.object_sha256 ORDER BY run_id,name").map_err(|e|e.to_string())?;
+        let mut statement = db.prepare("SELECT run_id,name,size,sha256,blocked_reason FROM analysis_outputs ORDER BY run_id,name").map_err(|e|e.to_string())?;
         let mut outputs = statement.query([]).map_err(|e| e.to_string())?;
         while let Some(output) = outputs.next().map_err(|e| e.to_string())? {
             let run: String = output.get(0).map_err(|e| e.to_string())?;

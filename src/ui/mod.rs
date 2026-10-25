@@ -83,6 +83,11 @@ struct FileDumpRequest {
     show_hex: bool,
 }
 
+struct FileListing {
+    target: (PathBuf, RunStatus),
+    result: Option<std::result::Result<Vec<volgui::extracted_files::ExtractedFile>, String>>,
+}
+
 #[derive(Default)]
 enum HexView {
     #[default]
@@ -101,6 +106,12 @@ enum Event {
     Verified(String, std::result::Result<Evidence, String>),
     Progress(String),
     Finished(String, Outcome),
+    FilesListed(
+        u64,
+        std::result::Result<Vec<volgui::extracted_files::ExtractedFile>, String>,
+    ),
+    FileActionCompleted(PathBuf, std::result::Result<String, String>),
+    ImHexLocated(Option<PathBuf>),
     Indexed(
         u64,
         std::result::Result<(ResultIndex, Vec<StoredRecord>, ResultTree), String>,
@@ -186,6 +197,9 @@ pub struct Workspace {
     queue_open: bool,
     popup_panels: RefCell<HashMap<popups::PanelKind, Entity<popups::PopupPanel>>>,
     file_dumps: HashMap<String, FileDumpRequest>,
+    file_listing: Option<FileListing>,
+    file_listing_epoch: u64,
+    imhex_path: Option<PathBuf>,
     file_offset_physical: bool,
     hex_view: HexView,
     hex_visible: bool,
@@ -433,6 +447,9 @@ impl Workspace {
             queue_open: false,
             popup_panels: RefCell::new(HashMap::new()),
             file_dumps: HashMap::new(),
+            file_listing: None,
+            file_listing_epoch: 0,
+            imhex_path: None,
             file_offset_physical: false,
             hex_view: HexView::Idle,
             hex_visible: false,
@@ -483,6 +500,7 @@ impl Workspace {
             case_directory: field("", "Folder to create the case in", window, cx),
             _subscriptions: subscriptions,
         };
+        this.locate_imhex();
         if let Some(path) = case_path {
             this.open_case(path, window, cx);
         } else if !this.settings.executable.as_os_str().is_empty() {
@@ -593,6 +611,29 @@ impl Workspace {
         while let Ok(event) = self.rx.try_recv() {
             changed = true;
             match event {
+                Event::FilesListed(epoch, result) => {
+                    if epoch == self.file_listing_epoch
+                        && self.detail == DetailTab::Files
+                        && self.file_listing_target().as_ref()
+                            == self.file_listing.as_ref().map(|listing| &listing.target)
+                        && let Some(listing) = &mut self.file_listing
+                    {
+                        listing.result = Some(result);
+                    }
+                }
+                Event::FileActionCompleted(directory, result) => {
+                    if self
+                        .case
+                        .as_ref()
+                        .is_some_and(|case| case.directory == directory)
+                    {
+                        match result {
+                            Ok(message) => self.message = message,
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
+                }
+                Event::ImHexLocated(path) => self.imhex_path = path,
                 Event::Opened(result) => {
                     self.busy = None;
                     match result {
@@ -922,6 +963,7 @@ impl Workspace {
                 }
             }
         }
+        self.refresh_file_listing(cx);
         if self.query_due.is_some_and(|t| Instant::now() >= t) {
             self.query_due = None;
             self.start_query(cx);

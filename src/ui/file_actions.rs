@@ -3,6 +3,80 @@ use super::*;
 use volgui::extracted_files::{self, HexPage};
 
 impl Workspace {
+    pub(super) fn locate_imhex(&self) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Event::ImHexLocated(extracted_files::imhex()));
+        });
+    }
+
+    pub(super) fn file_listing_target(&self) -> Option<(PathBuf, RunStatus)> {
+        let case = self.case.as_ref()?;
+        let run = case
+            .document
+            .runs
+            .iter()
+            .find(|run| Some(&run.id) == self.selected_run.as_ref())?;
+        let run = self
+            .selected
+            .as_ref()
+            .and_then(|record| {
+                extracted_files::completed_dump(case, record, self.file_offset_physical)
+            })
+            .unwrap_or(run);
+        Some((case.run_dir(&run.id), run.status))
+    }
+
+    pub(super) fn reset_file_listing(&mut self) {
+        self.file_listing_epoch += 1;
+        self.file_listing = None;
+    }
+
+    pub(super) fn refresh_file_listing(&mut self, cx: &mut Context<Self>) {
+        let target = (self.detail == DetailTab::Files)
+            .then(|| self.file_listing_target())
+            .flatten();
+        if target.as_ref() == self.file_listing.as_ref().map(|listing| &listing.target) {
+            return;
+        }
+        self.reset_file_listing();
+        if let Some(target) = target {
+            let directory = target.0.clone();
+            self.file_listing = Some(FileListing {
+                target,
+                result: None,
+            });
+            let epoch = self.file_listing_epoch;
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send(Event::FilesListed(
+                    epoch,
+                    extracted_files::listing(&directory),
+                ));
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn open_in_imhex(
+        &mut self,
+        executable: PathBuf,
+        file: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(case) = &self.case else { return };
+        let directory = case.directory.clone();
+        let tx = self.tx.clone();
+        self.message = "Preparing file for ImHex...".into();
+        thread::spawn(move || {
+            let result = extracted_files::open(&executable, &file)
+                .map(|()| "Opened in ImHex".into())
+                .map_err(|error| format!("Could not open ImHex: {error}"));
+            let _ = tx.send(Event::FileActionCompleted(directory, result));
+        });
+        cx.notify();
+    }
+
     pub(super) fn toggle_hex(&mut self, cx: &mut Context<Self>) {
         self.hex_visible = !self.hex_visible;
         if self.hex_visible {

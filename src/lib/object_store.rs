@@ -5,19 +5,21 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 
 pub const CHUNK_SIZE: usize = 4096;
-const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
+const ENTRY_SIZE: usize = 48;
+const MAX_MANIFEST_BYTES: u64 = 384 * 1024 * 1024;
+const BLOBS: &str = "objects/blobs";
 const PACK: &str = "objects/chunks.pack";
 
 fn manifest_length(size: u64) -> Result<usize> {
     let length = size
         .div_ceil(CHUNK_SIZE as u64)
-        .checked_mul(32)
+        .checked_mul(ENTRY_SIZE as u64)
         .ok_or("Object is too large")?;
     if length > MAX_MANIFEST_BYTES {
         return Err("Output exceeds the supported 32 GiB object size; capture retained".into());
@@ -32,6 +34,11 @@ fn error(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+fn sql_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+}
+
 #[derive(Clone)]
 pub struct ObjectStore {
     root: PathBuf,
@@ -44,8 +51,8 @@ impl ObjectStore {
         }
     }
 
-    /// Catalog and durably store outputs before removing any captured bytes.
-    /// Uncommitted pack tails are unreachable and safe after interruption.
+    /// Deduplicate analysis outputs; individually recovered files stay ordinary files.
+    /// Bytes become durable before their SQLite references, then captures are removed.
     pub fn capture_run(&self, run: &str, cancel: &AtomicBool) -> Result<()> {
         uuid::Uuid::parse_str(run).map_err(|_| "Invalid analysis identifier")?;
         let directory = self.root.join("analyses").join(run);
@@ -64,12 +71,8 @@ impl ObjectStore {
         {
             return Err("Analysis capture escapes the case directory".into());
         }
-        let mut files = Vec::new();
-        collect(&directory, &directory, &mut files)?;
-        if files.is_empty() {
-            return Ok(());
-        }
-        fs::create_dir_all(self.root.join("objects")).map_err(|e| e.to_string())?;
+        fs::create_dir_all(self.root.join(BLOBS)).map_err(|e| e.to_string())?;
+        // Serialize pack appends, not result imports or metadata saves. Waiting is cancellable.
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -77,24 +80,56 @@ impl ObjectStore {
             .truncate(false)
             .open(self.root.join("objects/.writer.lock"))
             .map_err(|e| e.to_string())?;
-        lock.lock().map_err(|e| e.to_string())?;
+        loop {
+            cancelled(cancel)?;
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(25))
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        // Collect after acquiring the lock so concurrent retries cannot capture a removed file.
+        let mut files = Vec::new();
+        collect(&directory, &directory, &mut files)?;
+        if files.is_empty() {
+            return Ok(());
+        }
         let db = database::connect(&self.root)?;
-        let mut pack = OpenOptions::new()
+        let plugin: String = db
+            .query_row("SELECT plugin FROM analysis_runs WHERE id=?1", [run], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        let pack_file = OpenOptions::new()
             .read(true)
-            .append(true)
+            .write(true)
             .create(true)
+            .truncate(false)
             .open(self.root.join(PACK))
             .map_err(|e| e.to_string())?;
-        let mut chunks: HashMap<[u8; 32], (u64, usize, usize)> = HashMap::new();
+        let mut pending_pack = PendingPack {
+            length: pack_file.metadata().map_err(|e| e.to_string())?.len(),
+            file: pack_file,
+            published: false,
+        };
+        let mut offset = pending_pack.length;
+        let mut append = pending_pack.file.try_clone().map_err(|e| e.to_string())?;
+        append.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
+        let mut pack = BufWriter::with_capacity(1024 * 1024, append);
+        let mut existing_pack = ChunkFile::open(&self.root.join(PACK))?;
+        // Known chunks have already been verified once during this publication.
+        let mut known: HashMap<[u8; 32], Location> = HashMap::new();
+        let mut chunks = Vec::new();
         let mut objects = Vec::new();
+        let mut blobs = Vec::new();
         let mut blocked = Vec::new();
         let mut lookup = db
             .prepare("SELECT pack_offset,size,stored_size FROM binary_chunks WHERE sha256=?1")
             .map_err(|e| e.to_string())?;
-        for path in &files {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Archiving analysis cancelled; capture retained".into());
-            }
+        for path in files {
+            cancelled(cancel)?;
             let name = path
                 .strip_prefix(&directory)
                 .map_err(|e| e.to_string())?
@@ -104,22 +139,32 @@ impl ObjectStore {
             if let Some(original) = name.strip_suffix(".volgui-blocked") {
                 blocked.push((
                     original.to_owned(),
-                    fs::read_to_string(path).map_err(|e| e.to_string())?,
+                    fs::read_to_string(&path).map_err(|e| e.to_string())?,
                 ));
                 continue;
             }
-            let mut source =
-                File::open(path).map_err(|e| format!("Cannot archive {}: {e}", path.display()))?;
-            let before = source.metadata().map_err(|e| e.to_string())?;
-            manifest_length(before.len())?;
+            if plugin == crate::extracted_files::DUMP_FILES
+                && !matches!(name.as_str(), "stdout.json" | "stderr.log")
+            {
+                blobs.push(PendingBlob::copy(
+                    path,
+                    name,
+                    &self.root.join(BLOBS),
+                    cancel,
+                )?);
+                continue;
+            }
+            let mut source = BufReader::with_capacity(
+                1024 * 1024,
+                File::open(&path).map_err(|e| e.to_string())?,
+            );
+            let before = source.get_ref().metadata().map_err(|e| e.to_string())?;
+            let mut manifest = Vec::with_capacity(manifest_length(before.len())?);
             let mut digest = Sha256::new();
-            let mut manifest = Vec::new();
             let mut total = 0u64;
             let mut buffer = [0; CHUNK_SIZE];
             loop {
-                if cancel.load(Ordering::Relaxed) {
-                    return Err("Archiving analysis cancelled; capture retained".into());
-                }
+                cancelled(cancel)?;
                 let mut count = 0;
                 while count < buffer.len() {
                     let n = source
@@ -138,47 +183,60 @@ impl ObjectStore {
                 }
                 let bytes = &buffer[..count];
                 digest.update(bytes);
-                let chunk: [u8; 32] = Sha256::digest(bytes).into();
-                manifest.extend_from_slice(&chunk);
-                let location = if let Some(location) = chunks.get(&chunk) {
-                    Some(*location)
+                let sha: [u8; 32] = Sha256::digest(bytes).into();
+                let location = if let Some(location) = known.get(&sha) {
+                    *location
                 } else {
-                    lookup
-                        .query_row([chunk.as_slice()], |r| {
-                            Ok((
-                                r.get::<_, i64>(0)? as u64,
-                                r.get::<_, i64>(1)? as usize,
-                                r.get::<_, i64>(2)? as usize,
-                            ))
+                    let stored = lookup
+                        .query_row([sha.as_slice()], |r| {
+                            Ok(Location {
+                                offset: sql_u64(r, 0)?,
+                                size: r.get(1)?,
+                                stored: r.get(2)?,
+                            })
                         })
                         .optional()
-                        .map_err(|e| e.to_string())?
-                };
-                if let Some((offset, size, stored)) = location {
-                    let existing = read_chunk(&mut pack, offset, size, stored, &chunk)
                         .map_err(|e| e.to_string())?;
-                    if existing != bytes {
-                        return Err(
-                            "Stored chunk does not match its incoming SHA-256 identity".into()
-                        );
-                    }
-                } else {
-                    let compressed = lz4_flex::block::compress(bytes);
-                    let offset = pack.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
-                    pack.write_all(&compressed).map_err(|e| e.to_string())?;
-                    chunks.insert(chunk, (offset, count, compressed.len()));
-                }
+                    let location = if let Some(location) = stored {
+                        let data = existing_pack
+                            .read_chunk(location, &sha)
+                            .map_err(|e| e.to_string())?;
+                        if data != bytes {
+                            return Err(
+                                "Stored chunk does not match its incoming SHA-256 identity".into(),
+                            );
+                        }
+                        location
+                    } else {
+                        let encoded = lz4_flex::block::compress(bytes);
+                        let location = Location {
+                            offset,
+                            size: count as u32,
+                            stored: encoded.len() as u32,
+                        };
+                        pack.write_all(&encoded).map_err(|e| e.to_string())?;
+                        offset += encoded.len() as u64;
+                        chunks.push((sha, location));
+                        location
+                    };
+                    known.insert(sha, location);
+                    location
+                };
+                manifest.extend_from_slice(&sha);
+                manifest.extend_from_slice(&location.offset.to_le_bytes());
+                manifest.extend_from_slice(&location.size.to_le_bytes());
+                manifest.extend_from_slice(&location.stored.to_le_bytes());
                 total += count as u64;
             }
-            let after = source.metadata().map_err(|e| e.to_string())?;
-            if before.len() != total
+            let after = source.get_ref().metadata().map_err(|e| e.to_string())?;
+            if total != before.len()
                 || after.len() != total
-                || before.modified().ok() != after.modified().ok()
+                || after.modified().ok() != before.modified().ok()
             {
                 return Err("Analysis output changed while archiving; capture retained".into());
             }
             objects.push((
-                path.clone(),
+                path,
                 name,
                 format!("{:x}", digest.finalize()),
                 total,
@@ -188,22 +246,22 @@ impl ObjectStore {
             ));
         }
         drop(lookup);
-        pack.sync_all().map_err(|e| e.to_string())?;
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Archiving analysis cancelled; capture retained".into());
-        }
+        pack.flush().map_err(|e| e.to_string())?;
+        pack.get_ref().sync_all().map_err(|e| e.to_string())?;
+        drop(pack);
         let tx = database::write_transaction(&db, cancel)?;
         {
             let mut insert = tx
                 .prepare("INSERT INTO binary_chunks VALUES(?1,?2,?3,?4)")
                 .map_err(|e| e.to_string())?;
-            for (chunk, (offset, size, stored)) in &chunks {
+            for (sha, location) in chunks {
+                cancelled(cancel)?;
                 insert
                     .execute(params![
-                        chunk.as_slice(),
-                        *size as i64,
-                        *offset as i64,
-                        *stored as i64
+                        sha.as_slice(),
+                        location.size,
+                        i64::try_from(location.offset).map_err(|_| "Chunk pack is too large")?,
+                        location.stored
                     ])
                     .map_err(|e| e.to_string())?;
             }
@@ -214,49 +272,185 @@ impl ObjectStore {
                 params![sha, *size as i64, manifest, manifest_sha],
             )
             .map_err(|e| e.to_string())?;
-            let (known_size, known_manifest): (i64, String) = tx
+            let identity: (u64, String, Vec<u8>) = tx
                 .query_row(
-                    "SELECT size,manifest_sha256 FROM binary_objects WHERE sha256=?1",
+                    "SELECT size,manifest_sha256,manifest FROM binary_objects WHERE sha256=?1",
                     [sha],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((sql_u64(r, 0)?, r.get(1)?, r.get(2)?)),
                 )
                 .map_err(|e| e.to_string())?;
-            if known_size as u64 != *size || known_manifest != *manifest_sha {
+            if identity.0 != *size || &identity.1 != manifest_sha || &identity.2 != manifest {
                 return Err("Object identity or ordered chunk manifest mismatch".into());
             }
-            let previous: Option<String> = tx
-                .query_row(
-                    "SELECT object_sha256 FROM analysis_outputs WHERE run_id=?1 AND name=?2",
-                    params![run, name],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?
-                .flatten();
-            if previous.as_ref().is_some_and(|p| p != sha) {
-                return Err("An immutable analysis output changed".into());
-            }
-            tx.execute("INSERT INTO analysis_outputs(run_id,name,object_sha256) VALUES(?1,?2,?3) ON CONFLICT(run_id,name) DO UPDATE SET object_sha256=excluded.object_sha256",params![run,name,sha]).map_err(|e|e.to_string())?;
+            check_identity(&tx, run, name, sha)?;
+            tx.execute("INSERT INTO analysis_outputs(run_id,name,object_sha256,size,sha256) VALUES(?1,?2,?3,?4,?3)
+                ON CONFLICT(run_id,name) DO UPDATE SET object_sha256=excluded.object_sha256,size=excluded.size,sha256=excluded.sha256",
+                params![run,name,sha,*size as i64]).map_err(|e|e.to_string())?;
+        }
+        for blob in &blobs {
+            check_identity(&tx, run, &blob.name, &blob.sha256)?;
+            tx.execute("INSERT INTO analysis_outputs(run_id,name,blob_id,size,sha256) VALUES(?1,?2,?3,?4,?5)
+                ON CONFLICT(run_id,name) DO UPDATE SET blob_id=COALESCE(analysis_outputs.blob_id,excluded.blob_id),size=excluded.size,sha256=excluded.sha256",
+                params![run,blob.name,blob.id,blob.size as i64,blob.sha256]).map_err(|e|e.to_string())?;
         }
         for (name, reason) in blocked {
-            tx.execute("INSERT INTO analysis_outputs(run_id,name,blocked_reason) VALUES(?1,?2,?3) ON CONFLICT(run_id,name) DO UPDATE SET blocked_reason=excluded.blocked_reason",params![run,name,reason]).map_err(|e|e.to_string())?;
+            tx.execute("INSERT INTO analysis_outputs(run_id,name,blocked_reason) VALUES(?1,?2,?3) ON CONFLICT(run_id,name) DO UPDATE SET blocked_reason=excluded.blocked_reason",
+                params![run,name,reason]).map_err(|e|e.to_string())?;
         }
+        // A retry keeps its original ordinary file rather than orphaning it.
+        let retained_blobs = blobs
+            .iter()
+            .map(|blob| {
+                tx.query_row(
+                    "SELECT blob_id FROM analysis_outputs WHERE run_id=?1 AND name=?2",
+                    params![run, blob.name],
+                    |r| r.get::<_, String>(0),
+                )
+                .map(|id| id == blob.id)
+                .map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        cancelled(cancel)?;
         tx.commit().map_err(|e| e.to_string())?;
-        // References are durable. Delete only the exact regular files inspected.
+        pending_pack.published = true;
+        for (blob, retained) in blobs.iter_mut().zip(retained_blobs) {
+            blob.published = retained;
+        }
+        for blob in blobs {
+            cleanup(&blob.original, blob.size, blob.modified)?;
+        }
         for (path, _, _, size, _, _, modified) in objects {
-            let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.len() == size
-                && metadata.modified().ok() == modified
-            {
-                fs::remove_file(&path)
-                    .map_err(|e| format!("Output archived but capture cleanup failed: {e}"))?;
-            } else {
-                return Err("Output archived but capture changed before cleanup".into());
-            }
+            cleanup(&path, size, modified)?;
         }
         Ok(())
+    }
+}
+
+fn cancelled(cancel: &AtomicBool) -> Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        Err("Archiving analysis cancelled; capture retained".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn check_identity(db: &Connection, run: &str, name: &str, sha: &str) -> Result<()> {
+    let previous: Option<String> = db
+        .query_row(
+            "SELECT sha256 FROM analysis_outputs WHERE run_id=?1 AND name=?2",
+            params![run, name],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    if previous.as_ref().is_some_and(|known| known != sha) {
+        return Err("An immutable analysis output changed".into());
+    }
+    Ok(())
+}
+
+fn cleanup(path: &Path, size: u64, modified: Option<std::time::SystemTime>) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.len() == size
+        && metadata.modified().ok() == modified
+    {
+        fs::remove_file(path)
+            .map_err(|e| format!("Output archived but capture cleanup failed: {e}"))
+    } else {
+        Err("Output archived but capture changed before cleanup".into())
+    }
+}
+
+struct PendingPack {
+    file: File,
+    length: u64,
+    published: bool,
+}
+impl Drop for PendingPack {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = self.file.set_len(self.length);
+            let _ = self.file.sync_all();
+        }
+    }
+}
+
+struct PendingBlob {
+    original: PathBuf,
+    name: String,
+    id: String,
+    path: PathBuf,
+    size: u64,
+    sha256: String,
+    modified: Option<std::time::SystemTime>,
+    published: bool,
+}
+
+impl PendingBlob {
+    fn copy(
+        original: PathBuf,
+        name: String,
+        directory: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<Self> {
+        let mut source = File::open(&original).map_err(|e| e.to_string())?;
+        let before = source.metadata().map_err(|e| e.to_string())?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = directory.join(&id);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let mut blob = Self {
+            original,
+            name,
+            id,
+            path,
+            size: 0,
+            sha256: String::new(),
+            modified: before.modified().ok(),
+            published: false,
+        };
+        let mut digest = Sha256::new();
+        let mut buffer = vec![0; 1024 * 1024];
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Archiving analysis cancelled; capture retained".into());
+            }
+            let count = source.read(&mut buffer).map_err(|e| e.to_string())?;
+            if count == 0 {
+                break;
+            }
+            blob.size += count as u64;
+            if blob.size > before.len() {
+                return Err("Analysis output grew while archiving; capture retained".into());
+            }
+            digest.update(&buffer[..count]);
+            file.write_all(&buffer[..count])
+                .map_err(|e| e.to_string())?;
+        }
+        let after = source.metadata().map_err(|e| e.to_string())?;
+        if blob.size != before.len()
+            || after.len() != before.len()
+            || after.modified().ok() != blob.modified
+        {
+            return Err("Analysis output changed while archiving; capture retained".into());
+        }
+        file.sync_all().map_err(|e| e.to_string())?;
+        blob.sha256 = format!("{:x}", digest.finalize());
+        Ok(blob)
+    }
+}
+
+impl Drop for PendingBlob {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -331,7 +525,7 @@ pub fn stored_hash(path: &Path) -> Result<Option<String>> {
     };
     let db = database::connect(&root)?;
     db.query_row(
-        "SELECT object_sha256 FROM analysis_outputs WHERE run_id=?1 AND name=?2",
+        "SELECT sha256 FROM analysis_outputs WHERE run_id=?1 AND name=?2",
         params![run, name],
         |r| r.get(0),
     )
@@ -340,25 +534,84 @@ pub fn stored_hash(path: &Path) -> Result<Option<String>> {
     .map_err(|e| e.to_string())
 }
 
+struct StoredBlob {
+    path: PathBuf,
+    size: u64,
+    sha256: String,
+}
+
+fn stored_blob(path: &Path) -> Result<Option<StoredBlob>> {
+    let Some((root, run, name)) = address(path) else {
+        return Ok(None);
+    };
+    let db = database::connect(&root)?;
+    let entry: Option<(String, i64, String)> = db
+        .query_row(
+            "SELECT blob_id,size,sha256 FROM analysis_outputs WHERE run_id=?1 AND name=?2 AND blob_id IS NOT NULL",
+            params![run, name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    entry
+        .map(|(id, size, sha256)| {
+            let id = uuid::Uuid::parse_str(&id).map_err(|_| "Invalid stored blob identifier")?;
+            Ok(StoredBlob {
+                path: root.join(BLOBS).join(id.to_string()),
+                size: u64::try_from(size).map_err(|_| "Invalid stored file size")?,
+                sha256,
+            })
+        })
+        .transpose()
+}
+
+fn open_blob(blob: &StoredBlob) -> Result<File> {
+    let mut file = File::open(&blob.path).map_err(|e| format!("Stored file unavailable: {e}"))?;
+    let before = file.metadata().map_err(|e| e.to_string())?;
+    if before.len() != blob.size {
+        return Err("Stored file size mismatch".into());
+    }
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; 1024 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    let after = file.metadata().map_err(|e| e.to_string())?;
+    if format!("{:x}", digest.finalize()) != blob.sha256
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return Err("Stored file SHA-256 mismatch".into());
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
 pub fn block(path: &Path, reason: &str) -> Result<bool> {
     let Some((root, run, name)) = address(path) else {
         return Ok(false);
     };
     // A handled case path must never create a sidecar marker as a fallback.
     // Busy connections and sharing violations remain retryable.
-    let permanent = if stored_hash(path)?.is_some() {
+    let permanent = if let Some(blob) = stored_blob(path)? {
+        reason.contains("Stored file SHA-256 mismatch")
+            || reason.contains("Stored file size mismatch")
+            || blob.path.try_exists().is_ok_and(|exists| !exists)
+    } else if stored_hash(path)?.is_some() {
         [
-            "Object chunk manifest SHA-256 mismatch",
-            "Invalid object manifest",
-            "Truncated object manifest",
+            "manifest",
             "Stored chunk SHA-256 mismatch",
-            "Complete file SHA-256 mismatch",
             "Corrupt stored chunk",
             "Invalid chunk bounds",
+            "Complete file SHA-256 mismatch",
         ]
         .iter()
         .any(|message| reason.contains(message))
-            || !root.join(PACK).try_exists().unwrap_or(true)
+            || root.join(PACK).try_exists().is_ok_and(|exists| !exists)
     } else {
         !matches!(name.as_str(), "stdout.json" | "stderr.log")
             && path.try_exists().is_ok_and(|exists| !exists)
@@ -417,7 +670,9 @@ pub fn output_metadata(directory: &Path) -> Result<HashMap<PathBuf, OutputMetada
     let prefix = prefix.strip_suffix(".list").unwrap_or("");
     let db = database::connect(&root)?;
     let mut query = db
-        .prepare("SELECT name,object_sha256,blocked_reason FROM analysis_outputs WHERE run_id=?1 ORDER BY name")
+        .prepare(
+            "SELECT name,sha256,blocked_reason FROM analysis_outputs WHERE run_id=?1 ORDER BY name",
+        )
         .map_err(|e| e.to_string())?;
     let names = query
         .query_map([run], |r| {
@@ -441,32 +696,66 @@ pub fn output_metadata(directory: &Path) -> Result<HashMap<PathBuf, OutputMetada
         .collect())
 }
 
-fn read_chunk(
-    pack: &mut File,
+#[derive(Clone, Copy)]
+struct Location {
     offset: u64,
-    size: usize,
-    stored: usize,
-    expected: &[u8; 32],
-) -> io::Result<Vec<u8>> {
-    if size == 0 || size > CHUNK_SIZE || stored == 0 || stored > CHUNK_SIZE + 64 {
-        return Err(error("Invalid chunk bounds"));
+    size: u32,
+    stored: u32,
+}
+
+struct ChunkFile {
+    file: BufReader<File>,
+    position: u64,
+}
+
+impl ChunkFile {
+    fn open(path: &Path) -> Result<Self> {
+        Ok(Self {
+            file: BufReader::with_capacity(
+                1024 * 1024,
+                File::open(path).map_err(|e| e.to_string())?,
+            ),
+            position: 0,
+        })
     }
-    pack.seek(SeekFrom::Start(offset))?;
-    let mut encoded = vec![0; stored];
-    pack.read_exact(&mut encoded)?;
-    let data = lz4_flex::block::decompress(&encoded, size)
-        .map_err(|e| error(format!("Corrupt stored chunk: {e}")))?;
-    let actual: [u8; 32] = Sha256::digest(&data).into();
-    if &actual != expected || data.len() != size {
-        return Err(error("Stored chunk SHA-256 mismatch"));
+
+    fn read_chunk(&mut self, location: Location, expected: &[u8; 32]) -> io::Result<Vec<u8>> {
+        let Location {
+            offset,
+            size,
+            stored,
+        } = location;
+        if size == 0
+            || size as usize > CHUNK_SIZE
+            || stored == 0
+            || stored as usize > CHUNK_SIZE + 64
+        {
+            return Err(error("Invalid chunk bounds"));
+        }
+        let delta = i64::try_from(i128::from(offset) - i128::from(self.position))
+            .map_err(|_| error("Invalid chunk bounds"))?;
+        self.file.seek_relative(delta)?;
+        self.position = offset;
+        let mut encoded = vec![0; stored as usize];
+        if let Err(error) = self.file.read_exact(&mut encoded) {
+            self.position = self.file.stream_position()?;
+            return Err(error);
+        }
+        self.position += u64::from(stored);
+        let bytes = lz4_flex::block::decompress(&encoded, size as usize)
+            .map_err(|e| error(format!("Corrupt stored chunk: {e}")))?;
+        let actual: [u8; 32] = Sha256::digest(&bytes).into();
+        if &actual != expected || bytes.len() != size as usize {
+            return Err(error("Stored chunk SHA-256 mismatch"));
+        }
+        Ok(bytes)
     }
-    Ok(data)
 }
 
 pub struct ObjectReader {
-    db: Connection,
-    pack: File,
-    chunks: Vec<[u8; 32]>,
+    pack: ChunkFile,
+    // Each authenticated entry includes the digest and location. Reading bytes needs no SQL.
+    manifest: Vec<u8>,
     size: u64,
     position: u64,
     cached: Option<(usize, Vec<u8>)>,
@@ -477,35 +766,29 @@ pub struct ObjectReader {
 impl ObjectReader {
     fn open(root: &Path, sha: &str) -> Result<Self> {
         let db = database::connect(root)?;
-        let (size, manifest, manifest_sha): (i64, Vec<u8>, String) = db
+        let (size, manifest, manifest_sha): (u64, Vec<u8>, String) = db
             .query_row(
                 "SELECT size,manifest,manifest_sha256 FROM binary_objects WHERE sha256=?1",
                 [sha],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((sql_u64(r, 0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(|e| e.to_string())?;
-        let size = u64::try_from(size).map_err(|_| "Invalid object size")?;
-        let expected_length = manifest_length(size)? as u64;
+        let expected_length = manifest_length(size)?;
         let announced = manifest
             .get(..4)
-            .map(|v| u32::from_le_bytes(v.try_into().unwrap()) as u64)
+            .map(|v| u32::from_le_bytes(v.try_into().unwrap()) as usize)
             .ok_or("Truncated object manifest")?;
         if announced != expected_length {
             return Err("Invalid object manifest size".into());
         }
-        let manifest = lz4_flex::decompress_size_prepended(&manifest).map_err(|e| e.to_string())?;
-        if hash(&manifest) != manifest_sha {
+        let manifest = lz4_flex::decompress_size_prepended(&manifest)
+            .map_err(|e| format!("Invalid object manifest: {e}"))?;
+        if manifest.len() != expected_length || hash(&manifest) != manifest_sha {
             return Err("Object chunk manifest SHA-256 mismatch".into());
         }
-        let chunks = manifest
-            .chunks_exact(32)
-            .map(|s| s.try_into().unwrap())
-            .collect();
-        let pack = File::open(root.join(PACK)).map_err(|e| e.to_string())?;
         Ok(Self {
-            db,
-            pack,
-            chunks,
+            pack: ChunkFile::open(&root.join(PACK))?,
+            manifest,
             size,
             position: 0,
             cached: None,
@@ -528,42 +811,42 @@ impl Read for ObjectReader {
             }
             return Ok(0);
         }
-        let index = (self.position / CHUNK_SIZE as u64) as usize;
-        if self.cached.as_ref().is_none_or(|(i, _)| *i != index) {
-            let sha = &self.chunks[index];
-            let (offset, size, stored): (u64, usize, usize) = self
-                .db
-                .query_row(
-                    "SELECT pack_offset,size,stored_size FROM binary_chunks WHERE sha256=?1",
-                    [sha.as_slice()],
-                    |r| {
-                        Ok((
-                            r.get::<_, i64>(0)? as u64,
-                            r.get::<_, i64>(1)? as usize,
-                            r.get::<_, i64>(2)? as usize,
-                        ))
-                    },
-                )
-                .map_err(|e| error(e.to_string()))?;
-            let expected =
-                (self.size - index as u64 * CHUNK_SIZE as u64).min(CHUNK_SIZE as u64) as usize;
-            if size != expected {
-                return Err(error("Chunk length does not match object extent"));
+        let mut written = 0;
+        while written < buffer.len() && self.position < self.size {
+            let index = (self.position / CHUNK_SIZE as u64) as usize;
+            if self.cached.as_ref().is_none_or(|(i, _)| *i != index) {
+                let entry = &self.manifest[index * ENTRY_SIZE..(index + 1) * ENTRY_SIZE];
+                let sha: [u8; 32] = entry[..32].try_into().unwrap();
+                let location = Location {
+                    offset: u64::from_le_bytes(entry[32..40].try_into().unwrap()),
+                    size: u32::from_le_bytes(entry[40..44].try_into().unwrap()),
+                    stored: u32::from_le_bytes(entry[44..48].try_into().unwrap()),
+                };
+                let expected =
+                    (self.size - index as u64 * CHUNK_SIZE as u64).min(CHUNK_SIZE as u64);
+                if u64::from(location.size) != expected {
+                    return Err(error("Chunk length does not match object extent"));
+                }
+                self.cached = Some((index, self.pack.read_chunk(location, &sha)?));
             }
-            self.cached = Some((
-                index,
-                read_chunk(&mut self.pack, offset, size, stored, sha)?,
-            ));
+            let offset = (self.position % CHUNK_SIZE as u64) as usize;
+            let bytes = &self.cached.as_ref().unwrap().1;
+            let count = (buffer.len() - written).min(bytes.len() - offset);
+            buffer[written..written + count].copy_from_slice(&bytes[offset..offset + count]);
+            if let Some(digest) = &mut self.whole_hash {
+                digest.update(&bytes[offset..offset + count]);
+            }
+            self.position += count as u64;
+            written += count;
         }
-        let offset = (self.position % CHUNK_SIZE as u64) as usize;
-        let bytes = &self.cached.as_ref().unwrap().1;
-        let count = buffer.len().min(bytes.len() - offset);
-        buffer[..count].copy_from_slice(&bytes[offset..offset + count]);
-        if let Some(digest) = &mut self.whole_hash {
-            digest.update(&buffer[..count]);
+        // Verify at the final byte, including consumers that use read_exact rather than EOF.
+        if self.position == self.size
+            && let Some(digest) = &self.whole_hash
+            && format!("{:x}", digest.clone().finalize()) != self.expected
+        {
+            return Err(error("Complete file SHA-256 mismatch"));
         }
-        self.position += count as u64;
-        Ok(count)
+        Ok(written)
     }
 }
 
@@ -592,6 +875,7 @@ pub enum ArtifactReader {
     File(File),
     Object(Box<ObjectReader>),
 }
+
 pub struct ArtifactMetadata(u64);
 impl ArtifactMetadata {
     pub fn len(&self) -> u64 {
@@ -610,29 +894,31 @@ impl ArtifactReader {
     }
 }
 impl Read for ArtifactReader {
-    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self {
-            Self::File(f) => f.read(b),
-            Self::Object(o) => o.read(b),
+            Self::File(f) => f.read(buffer),
+            Self::Object(o) => o.read(buffer),
         }
     }
 }
 impl Seek for ArtifactReader {
-    fn seek(&mut self, p: SeekFrom) -> io::Result<u64> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
         match self {
-            Self::File(f) => f.seek(p),
-            Self::Object(o) => o.seek(p),
+            Self::File(f) => f.seek(position),
+            Self::Object(o) => o.seek(position),
         }
     }
 }
 
 pub fn open(path: &Path) -> Result<ArtifactReader> {
     ensure_openable(path)?;
+    if let Some(blob) = stored_blob(path)? {
+        return open_blob(&blob).map(ArtifactReader::File);
+    }
     if let Some((root, _, _)) = address(path)
         && let Some(sha) = stored_hash(path)?
     {
-        return ObjectReader::open(&root, &sha)
-            .map(|reader| ArtifactReader::Object(Box::new(reader)));
+        return ObjectReader::open(&root, &sha).map(|o| ArtifactReader::Object(Box::new(o)));
     }
     File::open(path)
         .map(ArtifactReader::File)
@@ -656,7 +942,7 @@ mod tests {
     #[test]
     fn writer_and_reader_share_an_overflow_safe_manifest_bound() {
         let maximum = 32 * 1024 * 1024 * 1024;
-        assert_eq!(super::manifest_length(maximum).unwrap(), 256 * 1024 * 1024);
+        assert_eq!(super::manifest_length(maximum).unwrap(), 384 * 1024 * 1024);
         assert!(super::manifest_length(maximum + 1).is_err());
         assert!(super::manifest_length(u64::MAX).is_err());
     }

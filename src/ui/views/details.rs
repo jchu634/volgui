@@ -3,7 +3,41 @@ use super::*;
 
 impl Workspace {
     pub(in crate::ui) fn render_file_actions(&self, for_hex: bool, cx: &mut Context<Self>) -> Div {
-        let prefix = if for_hex { "hex" } else { "details" };
+        if for_hex {
+            let HexView::Ready { page, .. } = &self.hex_view else {
+                return div();
+            };
+            let executable = self.imhex_path.clone();
+            let file = page.path.clone();
+            return div().flex().items_center().mb_2().child(
+                Button::new("hex-open-imhex")
+                    .small()
+                    .label("Open in ImHex")
+                    .disabled(executable.is_none())
+                    .tooltip(if executable.is_some() {
+                        "Open the displayed file in ImHex"
+                    } else {
+                        "Install ImHex in its default location or add it to PATH"
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(executable) = &executable {
+                            this.open_in_imhex(executable.clone(), file.clone(), cx);
+                        }
+                    })),
+            );
+        }
+        if self
+            .case
+            .as_ref()
+            .zip(self.selected.as_ref())
+            .is_some_and(|(case, record)| {
+                volgui::extracted_files::completed_dump(case, record, self.file_offset_physical)
+                    .is_some()
+            })
+        {
+            return div();
+        }
+        let prefix = "details";
         let target = self.selected.as_ref().and_then(|record| {
             let run = self
                 .case
@@ -23,7 +57,6 @@ impl Workspace {
                 .iter()
                 .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
         }) && self.busy.is_none();
-        let imhex = volgui::extracted_files::imhex().is_some();
         let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
         if target.needs_address_space() {
             actions = actions.child(
@@ -40,39 +73,99 @@ impl Workspace {
                         })),
                 );
         }
-        actions
-            .child(
-                Button::new(key("dump-selected-file", prefix))
-                    .small()
-                    .label(if for_hex {
-                        "Extract and view hex"
-                    } else {
-                        "Dump file"
-                    })
-                    .disabled(!available)
-                    .tooltip(if available {
-                        "Extract only this file from memory"
-                    } else {
-                        "Configure Volatility with the Windows DumpFiles plugin in Settings"
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.dump_file(false, for_hex, window, cx)
-                    })),
-            )
-            .child(
-                Button::new(key("dump-selected-file-imhex", prefix))
-                    .small()
-                    .label("Dump and open in ImHex")
-                    .disabled(!available || !imhex)
-                    .tooltip(if !imhex {
-                        "Install ImHex in its default location or add it to PATH"
-                    } else {
-                        "Extract this file and open its cached contents in ImHex"
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.dump_file(true, for_hex, window, cx)
-                    })),
-            )
+        actions.child(
+            Button::new(key("dump-selected-file", prefix))
+                .small()
+                .label("Dump file")
+                .disabled(!available)
+                .tooltip(if available {
+                    "Extract only this file from memory"
+                } else {
+                    "Configure Volatility with the Windows DumpFiles plugin in Settings"
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.dump_file(false, for_hex, window, cx)
+                })),
+        )
+    }
+
+    fn render_extracted_files(&self, cx: &mut Context<Self>) -> Div {
+        let Some(target) = self.file_listing_target() else {
+            return div().child("Select an analysis to view its extracted files.");
+        };
+        let mut content = div().flex().flex_col().gap_2().child(
+            Button::new("refresh-extracted-files")
+                .self_start()
+                .small()
+                .label("Refresh files")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.reset_file_listing();
+                    this.refresh_file_listing(cx);
+                    this.locate_imhex();
+                })),
+        );
+        let listing = self
+            .file_listing
+            .as_ref()
+            .filter(|listing| listing.target == target);
+        let Some(result) = listing.and_then(|listing| listing.result.as_ref()) else {
+            return content.child("Loading extracted files...");
+        };
+        let entries = match result {
+            Ok(entries) => entries,
+            Err(error) => return content.child(format!("Could not list extracted files: {error}")),
+        };
+        if entries.is_empty() {
+            return content.child("No extracted files. Select a file-scan result and choose Dump file, or run a dump plugin.");
+        }
+        let files: Vec<_> = entries.iter().map(|entry| entry.path.clone()).collect();
+        for (i, entry) in entries.iter().enumerate() {
+            let file = &entry.path;
+            let name = file
+                .strip_prefix(&target.0)
+                .unwrap_or(file)
+                .display()
+                .to_string();
+            if !entry.available {
+                content = content.child(
+                    div()
+                        .py_1()
+                        .text_sm()
+                        .child(format!("{name}: Unavailable artifact. Opening is blocked.")),
+                );
+                continue;
+            }
+            let source = file.clone();
+            let hex_file = file.clone();
+            let hex_files = files.clone();
+            let mut row = div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .py_1()
+                .child(div().flex_1().text_sm().child(name))
+                .child(
+                    Button::new(("hex-extracted", i))
+                        .small()
+                        .label("View hex")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_hex_file(hex_files.clone(), hex_file.clone(), 0, cx);
+                        })),
+                )
+                .child(
+                    Button::new(("save-extracted", i))
+                        .small()
+                        .label("Save as...")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.export_file(source.clone(), window, cx);
+                        })),
+                );
+            if let Some(sha256) = &entry.sha256 {
+                row = row.child(div().text_xs().child(format!("SHA-256 {sha256}")));
+            }
+            content = content.child(row);
+        }
+        content
     }
 
     pub(in crate::ui) fn render_details(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -400,127 +493,7 @@ impl Workspace {
                 }
             }
             DetailTab::Files => {
-                if let Some((case, run)) = self.case.as_ref().and_then(|case| {
-                    case.document
-                        .runs
-                        .iter()
-                        .find(|run| Some(&run.id) == self.selected_run.as_ref())
-                        .map(|run| (case, run))
-                }) {
-                    let run = record
-                        .and_then(|record| {
-                            volgui::extracted_files::completed_dump(
-                                case,
-                                record,
-                                self.file_offset_physical,
-                            )
-                        })
-                        .unwrap_or(run);
-                    let directory = case.run_dir(&run.id);
-                    match volgui::extracted_files::list(&directory) {
-                        Ok(files) if files.is_empty() => {
-                            content = content.child("No extracted files. Select a file-scan result and choose Dump file, or run a dump plugin.");
-                        }
-                        Ok(files) => {
-                            let metadata = volgui::object_store::output_metadata(&directory)
-                                .unwrap_or_default();
-                            let imhex = volgui::extracted_files::imhex();
-                            if imhex.is_none() {
-                                content = content.child(div().text_sm().child("ImHex was not found. Install it in its default location or add it to PATH to open files here."));
-                            }
-                            for (i, file) in files.iter().cloned().enumerate() {
-                                let available = metadata.get(&file).map_or_else(
-                                    || {
-                                        file.is_file()
-                                            && volgui::extracted_files::ensure_openable(&file)
-                                                .is_ok()
-                                    },
-                                    |info| info.sha256.is_some() && info.blocked_reason.is_none(),
-                                );
-                                if !available {
-                                    content = content.child(div().py_1().text_sm().child(format!(
-                                        "{} — Unavailable artifact. Opening is blocked.",
-                                        file.strip_prefix(&directory).unwrap_or(&file).display()
-                                    )));
-                                    continue;
-                                }
-                                let source = file.clone();
-                                let hex_file = file.clone();
-                                let hex_files = files.clone();
-                                let mut row = div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .py_1()
-                                    .child(
-                                        div().flex_1().text_sm().child(
-                                            file.strip_prefix(&directory)
-                                                .unwrap_or(&file)
-                                                .display()
-                                                .to_string(),
-                                        ),
-                                    )
-                                    .child(
-                                        Button::new(("hex-extracted", i))
-                                            .small()
-                                            .label("View hex")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.open_hex_file(
-                                                    hex_files.clone(),
-                                                    hex_file.clone(),
-                                                    0,
-                                                    cx,
-                                                );
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(("save-extracted", i))
-                                            .small()
-                                            .label("Save as...")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.export_file(source.clone(), window, cx)
-                                            })),
-                                    );
-                                if let Some(sha256) =
-                                    metadata.get(&file).and_then(|info| info.sha256.as_ref())
-                                {
-                                    row = row
-                                        .child(div().text_xs().child(format!("SHA-256 {sha256}")));
-                                }
-                                if let Some(executable) = imhex.clone() {
-                                    row = row.child(
-                                        Button::new(("imhex-extracted", i))
-                                            .small()
-                                            .label("Open in ImHex")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                match volgui::extracted_files::open(
-                                                    &executable,
-                                                    &file,
-                                                ) {
-                                                    Ok(()) => {
-                                                        this.message = "Opened in ImHex".into()
-                                                    }
-                                                    Err(error) => {
-                                                        this.error = Some(format!(
-                                                            "Could not open ImHex: {error}"
-                                                        ))
-                                                    }
-                                                }
-                                                cx.notify();
-                                            })),
-                                    );
-                                }
-                                content = content.child(row);
-                            }
-                        }
-                        Err(error) => {
-                            content =
-                                content.child(format!("Could not list extracted files: {error}"))
-                        }
-                    }
-                } else {
-                    content = content.child("Select an analysis to view its extracted files.");
-                }
+                content = content.child(self.render_extracted_files(cx));
             }
             DetailTab::Diagnostics => {
                 if let Some(run) = self.case.as_ref().and_then(|c| {

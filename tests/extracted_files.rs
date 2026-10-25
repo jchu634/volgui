@@ -140,6 +140,63 @@ fn dump_case() -> (tempfile::TempDir, Case, Installation, StoredRecord) {
 }
 
 #[test]
+fn file_listing_snapshot_includes_archived_missing_and_blocked_outputs() {
+    let (_temp, mut case, engine, stored) = dump_case();
+    let id = queue_file_dump(&mut case, &engine, &stored, false).unwrap();
+    let directory = case.run_dir(&id);
+    fs::create_dir_all(&directory).unwrap();
+    let available = directory.join("file.available.dat");
+    let blocked = directory.join("file.blocked.dat");
+    let missing = directory.join("file.missing.dat");
+    fs::write(&available, b"recovered file").unwrap();
+    fs::write(
+        directory.join("file.blocked.dat.volgui-blocked"),
+        "removed by antivirus",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("stdout.json"),
+        json!([
+            {"File output":"file.available.dat"},
+            {"File output":"file.blocked.dat"},
+            {"File output":"file.missing.dat"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    volgui::object_store::ObjectStore::at(&case.directory)
+        .capture_run(&id, &AtomicBool::new(false))
+        .unwrap();
+    let snapshot = volgui::extracted_files::listing(&directory).unwrap();
+    assert_eq!(snapshot.len(), 3);
+    let entry = |path: &std::path::Path| snapshot.iter().find(|entry| entry.path == path).unwrap();
+    assert!(entry(&available).available);
+    assert!(entry(&available).sha256.is_some());
+    assert!(!entry(&blocked).available);
+    assert!(!entry(&missing).available);
+    // A later worker-side integrity failure is reflected by a refreshed snapshot.
+    let db = volgui::database::connect(&case.directory).unwrap();
+    let blob_id: String = db
+        .query_row(
+            "SELECT blob_id FROM analysis_outputs WHERE run_id=?1 AND name='file.available.dat'",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    fs::remove_file(case.directory.join("objects/blobs").join(blob_id)).unwrap();
+    assert!(volgui::extracted_files::open_artifact(&available).is_err());
+    assert!(
+        !volgui::extracted_files::listing(&directory)
+            .unwrap()
+            .iter()
+            .find(|entry| entry.path == available)
+            .unwrap()
+            .available
+    );
+    assert!(entry(&available).available);
+}
+
+#[test]
 fn queues_one_file_without_a_previous_dump_and_preserves_source_evidence() {
     let (_temp, mut case, engine, stored) = dump_case();
     let id = queue_file_dump(&mut case, &engine, &stored, false).unwrap();

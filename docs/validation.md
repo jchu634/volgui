@@ -82,3 +82,15 @@ URL decoding, false provider hosts, templates, autocomplete exclusions, UTF-16,
 chunk boundaries, mapping gaps, masked kernel mappings, occurrence counts,
 Tor parent attribution, multiple file handle owners, evidence separation,
 completed dump reuse, persistence and CSV export.
+
+For a synthetic storage and browser-read benchmark, run:
+
+```powershell
+cargo test --locked --no-default-features --features test-engine --test object_store benchmark_shared_dumps_and_browser_range_reads -- --ignored --nocapture
+```
+
+This creates four temporary 64 MiB process dumps sharing kernel pages. It checks
+user-range bytes before and after archival and reports logical output size,
+retained pack and catalog size, archival time, and full-file hashing plus range
+reads compared with verified chunk reads. It does not invoke Volatility or time
+the complete browser parser. Temporary files are removed when the test finishes.

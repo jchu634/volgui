@@ -1,47 +1,109 @@
 # Authoritative case storage
 
-## Problem and grounding
-
-The old case JSON owned runs, evidence and annotations while SQLite owned results. A completed scan could be committed to one store before the other. Each execution repeated result payloads and retained independent binary dumps. Browser recovery and hex inspection depended on physical paths. These paths must remain usable as logical addresses while storage changes.
-
-The user explicitly authorized a breaking pre-alpha format with no legacy migration. Existing case directories must remain untouched when rejected. The prior storage documentation justified raw outputs for provenance and immutable run imports for bookmark identity. Both requirements carry forward. Source history and local documentation were consulted; no external issue, chat, observability or analytics connectors were available for historical rationale. The referenced `how` and `arena` skills were not installed, so grounding was traced directly and two independent design runners were used.
-
 ## Usage
 
 ```rust,ignore
 let case = Case::create_named(parent, "Investigation")?;
 let case = Case::open(parent.join("Investigation/case.sqlite"))?;
-// Execution workers produce independent captures; publication archives the bytes.
 ObjectStore::at(&case.directory).capture_run(&run.id, cancel)?;
 ResultStore::at(&case.directory).insert_cancellable(&run, &table, cancel)?;
 let mut bytes = extracted_files::open_artifact(&logical_output_path)?;
 bytes.seek(SeekFrom::Start(original_dump_offset))?;
 ```
 
-## Shape and synthesis
+## Ownership
 
-Candidate A proposed normalized entities, immutable observations and a deep case API. Candidate B proposed an immutable observation spine with derived entity views. The implementation combines A's explicit entity identities with B's exact observation sharing and immutable source payloads. SQL projections retain the existing display-facing record interface while replacing its persistence.
+SQLite v4 owns case metadata, evidence fingerprints, run history, bookmarks,
+immutable observations, entity facts and output provenance. The in-memory case
+is a disposable metadata snapshot. Most binary outputs use the managed chunk
+store. Files recovered by DumpFiles use ordinary files in `objects/blobs`.
 
-SQLite v2 owns case metadata, evidence fingerprints, run history, bookmarks, observations, entity enrichment, binary object manifests and output provenance. In-memory case state is a disposable snapshot loaded from SQLite. There is no case JSON manifest or JSON-to-SQLite migration.
+The storage module owns this policy and exposes the same capture/open/materialize
+API to callers. SQLite records complete output SHA-256 hashes and sizes for both
+forms. Chunked objects additionally have ordered, compressed manifests containing
+chunk hashes and pack locations. Run/name provenance remains separate from byte
+identity. Formats before v4 are rejected without modifying their data.
 
-Binary storage uses SHA-256 for whole-file and 4 KiB chunk identities. Chunks are compressed into an append-only pack, avoiding millions of tiny filesystem files. SQLite stores compressed ordered chunk manifests and pack offsets. Logical outputs retain distinct run/name provenance even when their content hashes match. Physical acquisition addresses never authorize byte deduplication.
+Canonical subjects and immutable observations remain distinct. Process identity
+is evidence-scoped and accounts for object address or creation time; ambiguous
+PID matches stay separate. Paths and URLs alone do not establish forensic
+identity. Conflicting facts retain their sources, and grouped browsing retains
+stable per-run row addresses for provenance and bookmarks.
 
-Ingestion writes and synchronizes pack bytes before publishing references in SQLite. A rolled-back operation can leave an unreachable pack tail; it cannot publish missing bytes. Chunk reuse verifies stored bytes against incoming bytes. Random reads verify each chunk. Materialization and export additionally verify the whole-file digest. Corruption fails closed. Complete kernel and user mappings are retained.
+## Publication and reads
 
-Workers retain independent capture directories. Published files are removed only after catalog commit and a metadata stability check. Unpublished captures remain available after errors. The existing exclusive case lock and SQLite WAL coordinate concurrent workers.
+Workers own independent CLI capture directories. Publication buffers reads and
+pack writes outside a SQLite transaction. One cancellable filesystem lock
+serializes archivers for a case. A local digest-to-location cache verifies a
+reused stored chunk once per publication and avoids repeated SQL lookups for
+shared pages. Ordinary recovered files are copied and hashed independently.
 
-Canonical subjects and immutable observations have different identities. Process identity is evidence-scoped and must account for object address or creation time; ambiguous PID matches remain separate. File paths and URLs alone cannot establish forensic identity. Conflicting facts retain their sources. Grouped browsing can coalesce duplicate observations; per-run row addresses remain available for provenance and bookmarks.
+Publication synchronizes all output bytes, then commits the chunk catalog,
+object manifests and output references together. Run/name identities remain
+immutable. Failed or cancelled publication truncates its pack tail and removes
+unpublished ordinary files. Staging cleanup removes only unchanged files after
+references commit. Retrying an ordinary file keeps its original catalogued blob.
+A crash may leave unreferenced bytes; garbage collection is not included.
 
-Materialized files are disposable leases for SQLite inspection and external viewers. They are not authoritative. The case database and managed object directory are protected from export replacement.
+Chunk readers authenticate the manifest before opening and each requested chunk
+before returning bytes. Manifest entries contain pack locations, so readers
+need no SQLite connection while scanning. Buffered seeks reuse nearby encoded
+bytes. A sequential read verifies the whole-file hash at its final byte. Random
+reads verify their pages; they do not certify unread pages. Ordinary files verify
+the complete hash before opening. SQLite previews and external viewers receive
+disposable verified copies outside the case. Exports protect the case database,
+managed output directory, staging files and registered evidence.
 
-## Alternatives and tradeoffs
+## Storage design decision
 
-- Whole-file-only deduplication preserves a simpler reader but misses repeated kernel pages across different process dumps.
-- One file per chunk causes excessive filesystem overhead. An append-only pack trades garbage tail space after interrupted writes for fewer filesystem objects and a smaller public reader API.
-- Putting all binary payloads into SQLite couples multi-gigabyte payload writes to the query database. The managed pack keeps SQLite authoritative over identities and references while separating bulk bytes.
-- No old-case conversion is provided. Rejecting incompatible formats is explicit and does not delete their data.
-- Capturing the external CLI's full files before archiving still requires temporary space. Avoiding that peak requires a different engine-output protocol.
+The caller continues to use `capture_run`, `open` and `materialize`. The internal
+shapes are `PendingBlob` for ordinary recovered files, `PendingPack` for rollback
+of uncommitted appends, and `ObjectReader` for authenticated manifest reads.
+
+Two designs were compared. Restoring hash-only manifests and looking up every
+page in SQLite would retain the original format but repeat database work during
+browser scanning. Storing authenticated pack locations in the manifest keeps
+that lookup inside publication. The latter was chosen. It increases the raw
+manifest entry from 32 to 48 bytes, compressed on disk, while allowing scans and
+hex paging to read directly from the pack. Both reader and writer enforce the
+same 32 GiB object bound.
+
+Whole-file deduplication alone was rejected because different process dumps
+contain many identical pages in different orders. Chunk storage preserves the
+complete dumps, including kernel data, while letting browser scans read only
+user-space pages. DumpFiles outputs stay ordinary files because the intended
+exception permits duplicating recovered bytes outside those dumps.
+
+## Desktop responsiveness
+
+Case snapshots save through an ordered background worker. Analysis workers wait
+for a metadata checkpoint before executing; SQLite lock waits never block the UI.
+Finding imports and output publication retain cancellation-aware writer waits.
+
+The file details panel renders an asynchronously loaded listing. A directory or
+run-status change invalidates it, and an epoch rejects stale responses. Refresh
+files reloads filesystem availability. Rendering never traverses output folders,
+opens SQLite, reparses `stdout.json` or searches PATH for ImHex. Dump completion
+and external viewer preparation also run off-thread.
 
 ## Validation
 
-Required checks cover cross-file chunk sharing, exact reconstruction and SHA-256 identity, corrupt reused chunks, random offset reads, evidence separation, incremental entity facts, conflicting observations, cancelled transactions, reopen, bookmarks, browser and SQLite parsing, export protection and case-folder validation. Test claims belong in the completed work report, not this design sketch.
+Storage tests cover shared pages and complete objects across concurrent runs,
+ordinary duplicate files, random offsets, full hashes, manifest corruption,
+requested-page corruption, corrupt-chunk reuse, empty files, immutable output
+identities, cancellable pack locks, failed-publication rollback, staging retention,
+reopen, read-only SQLite inspection and export protection. Browser tests read
+archived dumps and verify findings, byte offsets and completed dump reuse.
+Listing tests cover archived, missing and blocked outputs plus refresh after an
+integrity failure. Queue tests hold a SQLite writer during desktop transitions,
+reads, cancellation and output publication. Older case formats are rejected
+without changing their version or metadata.
+
+An opt-in synthetic benchmark compares four 64 MiB dumps with shared,
+incompressible kernel pages and 2 MiB of distinct user pages per PID. On the
+validation machine, ordinary storage would retain 256 MiB; the chunk pack and
+case catalog retained 74.5 MiB. Full-file hashing followed by user-range reads
+took 153 ms, versus 49 ms for verified chunk range reads. Archival took 1.80 s.
+These measurements cover storage and reads, not Volatility dump generation or
+end-to-end browser analysis. They are a reproducible sample, not a performance
+guarantee.

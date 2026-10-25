@@ -517,7 +517,7 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
 }
 
 #[test]
-fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidence() {
+fn browser_recovery_requires_unfiltered_prerequisites_for_same_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let image = temp.path().join("image.raw");
     fs::write(&image, b"browser prerequisites").unwrap();
@@ -550,8 +550,6 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
         case.document.runs.push(run);
     }
     for status in [
-        RunStatus::Queued,
-        RunStatus::Running,
         RunStatus::Failed,
         RunStatus::Cancelled,
         RunStatus::Interrupted,
@@ -564,6 +562,13 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
                 .contains("PsList")
         );
     }
+    for status in [RunStatus::Queued, RunStatus::Running] {
+        case.document.runs[0].status = status;
+        let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].message, volgui::analyses::BROWSER_RECOVERY_PENDING);
+        assert!(volgui::analyses::prepare_browser_recovery(&case, &engine, &runs[0]).is_err());
+    }
     case.document.runs[0].status = RunStatus::Completed;
     case.document.runs[0].evidence_id = "other evidence".into();
     assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
@@ -575,4 +580,46 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].plugin, volgui::analysis::BROWSER);
     assert_eq!(case.document.runs.len(), 3);
+}
+
+#[test]
+fn browser_recovery_can_be_queued_with_its_prerequisites() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"browser batch").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut case = Case::create(&temp.path().join("case"), "Browser").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let ids = [
+        "windows.pslist.PsList",
+        "windows.cmdline.CmdLine",
+        "windows.filescan.FileScan",
+    ];
+    let engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: ids.into_iter().map(plugin).collect(),
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.extend(ids.into_iter().map(str::to_owned));
+    draft.selected.insert(volgui::analysis::BROWSER.into());
+    draft.arguments.insert(ids[0].into(), "--pid 42".into());
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+    draft.arguments.clear();
+    let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 4);
+    assert_eq!(runs[3].plugin, volgui::analysis::BROWSER);
+    assert_eq!(runs[3].message, volgui::analyses::BROWSER_RECOVERY_PENDING);
+    case.document.runs.extend(runs);
+    assert!(
+        volgui::analyses::prepare_browser_recovery(&case, &engine, &case.document.runs[3]).is_err()
+    );
+    for run in &mut case.document.runs[..3] {
+        run.status = RunStatus::Completed;
+    }
+    assert!(
+        volgui::analyses::prepare_browser_recovery(&case, &engine, &case.document.runs[3])
+            .unwrap()
+            .is_empty()
+    );
 }

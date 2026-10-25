@@ -179,7 +179,7 @@ impl Workspace {
         }
         let result = (|| {
             let executable = if open_in_imhex {
-                Some(volgui::extracted_files::imhex().ok_or(
+                Some(self.imhex_path.clone().ok_or(
                     "ImHex was not found. Install it in its default location or add it to PATH.",
                 )?)
             } else {
@@ -224,31 +224,39 @@ impl Workspace {
     }
     pub(super) fn finish_file_dump(&mut self, id: &str, executable: Option<PathBuf>) {
         let Some(case) = &self.case else { return };
-        match volgui::extracted_files::list(&case.run_dir(id)) {
-            Ok(files) if files.is_empty() => {
-                self.error = Some("No cached file contents could be extracted from memory. See Run details for diagnostics.".into());
-            }
-            Ok(files) => {
+        let directory = case.run_dir(id);
+        let case_directory = case.directory.clone();
+        let tx = self.tx.clone();
+        self.message = if executable.is_some() {
+            "Preparing extracted files for ImHex...".into()
+        } else {
+            "Loading extracted files...".into()
+        };
+        thread::spawn(move || {
+            let result = (|| {
+                let files = volgui::extracted_files::list(&directory)
+                    .map_err(|error| format!("Could not list extracted files: {error}"))?;
+                if files.is_empty() {
+                    return Err("No cached file contents could be extracted from memory. See Run details for diagnostics.".into());
+                }
                 if let Some(executable) = executable {
                     for file in &files {
-                        if let Err(error) = volgui::extracted_files::open(&executable, file) {
-                            self.error = Some(format!(
-                                "File extracted, but ImHex could not open it: {error}"
-                            ));
-                            return;
-                        }
+                        volgui::extracted_files::open(&executable, file).map_err(|error| {
+                            format!("File extracted, but ImHex could not open it: {error}")
+                        })?;
                     }
-                    self.message = format!("Opened {} extracted file(s) in ImHex", files.len());
+                    Ok(format!("Opened {} extracted file(s) in ImHex", files.len()))
                 } else {
-                    self.message = format!(
+                    Ok(format!(
                         "Extracted {} file(s). Use Save as... to export them.",
                         files.len()
-                    );
+                    ))
                 }
-            }
-            Err(error) => self.error = Some(format!("Could not list extracted files: {error}")),
-        }
+            })();
+            let _ = tx.send(Event::FileActionCompleted(case_directory, result));
+        });
     }
+
     pub(super) fn retry_run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.retry_runs(&[id.to_string()], window, cx);
     }
@@ -333,6 +341,49 @@ impl Workspace {
                 }
                 return;
             };
+            if case.document.runs[i].plugin == volgui::analysis::BROWSER
+                && case.document.runs[i].message == volgui::analyses::BROWSER_RECOVERY_PENDING
+            {
+                let Some(engine) = engine.as_ref() else {
+                    return;
+                };
+                match volgui::analyses::prepare_browser_recovery(
+                    case,
+                    engine,
+                    &case.document.runs[i],
+                ) {
+                    Ok(runs) => {
+                        let previous = case.document.runs.clone();
+                        case.document.runs[i].message.clear();
+                        let count = runs.len();
+                        case.document.runs.splice(i..i, runs);
+                        if let Err(error) = case.save() {
+                            case.document.runs = previous;
+                            self.error = Some(error);
+                            self.queue_paused = true;
+                            return;
+                        }
+                        self.batch_total += count;
+                        continue;
+                    }
+                    Err(error) => {
+                        case.document.runs[i].status = RunStatus::Failed;
+                        case.document.runs[i].message = error.clone();
+                        case.document.runs[i].finished_at = Some(now());
+                        self.error = Some(error);
+                        if let Err(error) = case.save() {
+                            self.error = Some(error);
+                            self.queue_paused = true;
+                        }
+                        self.batch_finished += 1;
+                        cx.notify();
+                        if self.queue_paused {
+                            return;
+                        }
+                        continue;
+                    }
+                }
+            }
             let native = volgui::analysis::is_native(&case.document.runs[i].plugin);
             if !native && engine.is_none() {
                 return;

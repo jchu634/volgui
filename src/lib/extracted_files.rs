@@ -353,6 +353,34 @@ pub fn list(directory: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+/// A display snapshot. Loading may read archived diagnostics or traverse outputs;
+/// callers must load it on a worker and render only the returned values.
+pub struct ExtractedFile {
+    pub path: PathBuf,
+    pub sha256: Option<String>,
+    pub available: bool,
+}
+
+pub fn listing(directory: &Path) -> Result<Vec<ExtractedFile>, String> {
+    let files = list(directory)?;
+    let mut metadata = crate::object_store::output_metadata(directory)?;
+    Ok(files
+        .into_iter()
+        .map(|path| {
+            let info = metadata.remove(&path);
+            let available = match &info {
+                Some(info) => info.sha256.is_some() && info.blocked_reason.is_none(),
+                None => path.is_file() && ensure_openable(&path).is_ok(),
+            };
+            ExtractedFile {
+                path,
+                sha256: info.and_then(|info| info.sha256),
+                available,
+            }
+        })
+        .collect())
+}
+
 pub fn imhex() -> Option<PathBuf> {
     let executable = if cfg!(windows) { "imhex.exe" } else { "imhex" };
     let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
