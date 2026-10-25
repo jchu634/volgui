@@ -489,3 +489,39 @@ mod process_tests {
         assert!(!recovered.run_dir(&run.id).exists());
     }
 }
+
+#[test]
+fn result_reader_accepts_output_larger_than_the_text_viewer_limit() {
+    use std::io::{Read, Write};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("stdout.json");
+    let mut file = std::fs::File::create(&path).unwrap();
+    // Large whitespace keeps the regression test's memory use small.
+    std::io::copy(
+        &mut std::io::repeat(b' ').take(128 * 1024 * 1024 + 1),
+        &mut file,
+    )
+    .unwrap();
+    file.write_all(br#"[{"Name":"Registry value","__children":[{"Data":"value"}]}]"#)
+        .unwrap();
+    drop(file);
+    let table = volgui::volatility::Table::read(&path).unwrap();
+    assert_eq!(table.rows.len(), 2);
+    assert_eq!(table.rows[1].depth, 1);
+    assert_eq!(table.rows[1].text("Data"), "value");
+}
+
+#[test]
+fn result_reader_accepts_banner_and_bom_and_rejects_trailing_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("stdout.json");
+    std::fs::write(
+        &path,
+        "\u{feff} \nVolatility 3 Framework 2.0\n[{\"Name\":\"key\"}]",
+    )
+    .unwrap();
+    let table = volgui::volatility::Table::read(&path).unwrap();
+    assert_eq!(table.rows[0].text("Name"), "key");
+    std::fs::write(&path, "[] trailing").unwrap();
+    assert!(volgui::volatility::Table::read(&path).is_err());
+}
