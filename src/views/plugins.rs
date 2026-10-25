@@ -128,7 +128,7 @@ impl Workspace {
                 .child(Button::new("analysis-later").label("Choose later").on_click(|_,window,cx| window.close_dialog(cx))).into_any_element();
         };
         let mut plugins = chooser_plugins(
-            &engine.plugins,
+            &volgui::analyses::application_plugins(&engine.plugins),
             draft.os,
             self.show_extended,
             self.plugin_query.read(cx).value().as_ref(),
@@ -347,9 +347,6 @@ impl Workspace {
                 )),
         )
         .child(body)
-        .when_some(self.analysis_error.clone(), |s, error| {
-            s.child(div().text_sm().text_color(cx.theme().danger).child(error))
-        })
         .child(
             div()
                 .flex()

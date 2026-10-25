@@ -196,7 +196,6 @@ impl Workspace {
             .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Choose analyses to populate this artifact. Each checked analysis adds a separate job."))
             .when(plugins.is_empty(),|panel|panel.child(div().text_sm().child("No matching analyses in the configured installation. Check the evidence OS and engine settings.")))
             .child(list)
-            .when_some(self.analysis_error.clone(),|panel,error|panel.child(div().text_xs().text_color(cx.theme().danger).child(error)))
             .child(div().flex().gap_2()
                 .child(Button::new("artifact-queue-selected").small().primary().label(format!("Queue selected ({count})")).disabled(blocked || count==0).on_click(cx.listener(move|this,_,window,cx|{
                     if this.prepare_artifact_selection(group,false) { this.queue_analyses(window,cx); if this.analysis_error.is_none(){this.artifact_open=None;} }

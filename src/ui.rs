@@ -22,6 +22,7 @@ use gpui_kit::{
         input::{Input, InputEvent, InputState},
         list::ListItem,
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+        notification::Notification,
         popover::Popover,
         progress::ProgressCircle,
         resizable::{h_resizable, resizable_panel, v_resizable},

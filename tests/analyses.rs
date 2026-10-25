@@ -184,7 +184,12 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     drop(case);
     let reopened = Case::open(&directory).unwrap();
     assert_eq!(reopened.document.runs.len(), 5);
-    assert!(reopened.document.queue_runs().all(|run| !ids.contains(&run.id)));
+    assert!(
+        reopened
+            .document
+            .queue_runs()
+            .all(|run| !ids.contains(&run.id))
+    );
     assert_eq!(reopened.document.queue_runs().count(), 3);
 }
 
@@ -483,4 +488,99 @@ fn browser_analysis_waits_for_prior_jobs_and_keeps_later_jobs_queued() {
     assert_eq!(next_queued_run(&runs, limit), None);
     runs[1].status = RunStatus::Failed;
     assert_eq!(next_queued_run(&runs, limit), Some(2));
+}
+
+#[test]
+fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
+    use volgui::analyses::{REGISTRY_ALL, application_plugins};
+    let catalog = application_plugins(&[]);
+    let choices = chooser_plugins(&catalog, OperatingSystem::Windows, false, "");
+    assert!(
+        choices
+            .iter()
+            .any(|p| p.id == volgui::investigation::BROWSER)
+    );
+    assert!(choices.iter().any(|p| p.id == REGISTRY_ALL));
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"registry fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut case = Case::create(&temp.path().join("case"), "Registry").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: vec![plugin(volgui::investigation::registry::PRINT_KEY)],
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.insert(REGISTRY_ALL.into());
+    let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].plugin, volgui::investigation::registry::PRINT_KEY);
+    assert_eq!(runs[0].arguments, ["--recurse"]);
+    draft
+        .arguments
+        .insert(REGISTRY_ALL.into(), "--key ignored".into());
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+}
+
+#[test]
+fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"browser prerequisites").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut case = Case::create(&temp.path().join("case"), "Browser").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let ids = [
+        "windows.pslist.PsList",
+        "windows.cmdline.CmdLine",
+        "windows.filescan.FileScan",
+    ];
+    let engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: ids.into_iter().map(plugin).collect(),
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.insert(volgui::investigation::BROWSER.into());
+    assert!(
+        draft
+            .prepare_in_case(&engine, &evidence, &case)
+            .unwrap_err()
+            .contains("PsList")
+    );
+    for id in ids {
+        let mut run = engine
+            .prepare(&evidence, id, vec![], &case.directory.join("analyses"))
+            .unwrap();
+        run.status = RunStatus::Completed;
+        case.document.runs.push(run);
+    }
+    for status in [
+        RunStatus::Queued,
+        RunStatus::Running,
+        RunStatus::Failed,
+        RunStatus::Cancelled,
+        RunStatus::Interrupted,
+    ] {
+        case.document.runs[0].status = status;
+        assert!(
+            draft
+                .prepare_in_case(&engine, &evidence, &case)
+                .unwrap_err()
+                .contains("PsList")
+        );
+    }
+    case.document.runs[0].status = RunStatus::Completed;
+    case.document.runs[0].evidence_id = "other evidence".into();
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+    case.document.runs[0].evidence_id = evidence.id.clone();
+    case.document.runs[0].arguments = vec!["--pid".into(), "42".into()];
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+    case.document.runs[0].arguments.clear();
+    let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].plugin, volgui::investigation::BROWSER);
+    assert_eq!(case.document.runs.len(), 3);
 }

@@ -6,6 +6,16 @@ impl Render for Workspace {
         if self.case.is_none() && !self.welcome_open {
             self.open_welcome(window, cx);
         }
+        // Defer notification updates until after the workspace finishes rendering.
+        // Taking the errors prevents unrelated redraws from repeating a toast.
+        for error in [self.error.take(), self.analysis_error.take()]
+            .into_iter()
+            .flatten()
+        {
+            window.defer(cx, move |window, cx| {
+                window.push_notification(Notification::error(error), cx);
+            });
+        }
         let file_weak = cx.entity().downgrade();
         let view_weak = cx.entity().downgrade();
         let case_open = self.case.is_some();
@@ -273,36 +283,6 @@ impl Render for Workspace {
             .child(title)
             .when(self.welcome_open && cfg!(target_os = "windows"), |s| {
                 s.child(self.render_modal_window_controls(window, cx))
-            })
-            .when_some(self.error.clone(), |s, e| {
-                s.child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .px_4()
-                        .py_2()
-                        .gap_3()
-                        .bg(rgb(0x321d25))
-                        .child(
-                            div()
-                                .id("error-message")
-                                .flex_1()
-                                .max_h(px(70.))
-                                .overflow_y_scroll()
-                                .text_xs()
-                                .child(e),
-                        )
-                        .child(
-                            Button::new("dismiss-error")
-                                .xsmall()
-                                .ghost()
-                                .label("Dismiss")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.error = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
             })
             .child(body)
             .child(status)

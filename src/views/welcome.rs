@@ -105,9 +105,6 @@ impl Render for WelcomePanel {
                                 })),
                         )
                     })
-                    .when_some(workspace.error.clone(), |s, error| {
-                        s.child(div().text_color(cx.theme().danger).child(error))
-                    })
                     .into_any_element()
             })
             .unwrap_or_else(|_| div().into_any_element())

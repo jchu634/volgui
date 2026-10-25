@@ -12,7 +12,11 @@ impl Workspace {
         let cancel = self.start("Loading plugin options");
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = engine.help(&plugin, &cancel);
+            let result = if plugin == volgui::investigation::BROWSER || plugin == volgui::analyses::REGISTRY_ALL {
+                Ok("This analysis accepts no custom options. Select its checkbox to queue it.".into())
+            } else {
+                engine.help(&plugin, &cancel)
+            };
             let _ = tx.send(Event::Help(plugin, result));
         });
         cx.notify();
@@ -107,7 +111,7 @@ impl Workspace {
                     .ok_or("Evidence is no longer available")?;
                 runs.extend(
                     draft
-                        .prepare(engine, evidence, &case.directory.join("analyses"))
+                        .prepare_in_case(engine, evidence, case)
                         .map_err(|error| format!("{}: {error}", evidence.name()))?,
                 );
             }
