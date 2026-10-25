@@ -72,7 +72,7 @@ impl Workspace {
                     {
                         return Ok(None);
                     }
-                    for record in store.fetch(chunk)? {
+                    for record in store.fetch_enriched(chunk)? {
                         width = width.max(measure(&column.text(&record.record)));
                     }
                 }
@@ -92,7 +92,10 @@ impl Workspace {
         });
     }
     pub(in crate::ui) fn render_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
-        let results = if self.hex_visible {
+        if self.result_group() == Some(ArtifactGroup::Applications) {
+            return self.render_application_memory(cx);
+        }
+        let results = if self.content_sidebar_visible {
             h_resizable("artifact-hex-split")
                 .child(
                     resizable_panel()

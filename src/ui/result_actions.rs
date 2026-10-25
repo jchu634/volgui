@@ -6,7 +6,6 @@ impl Workspace {
         let Some(case) = &self.case else {
             return vec![];
         };
-        let mut seen = HashSet::new();
         case.document
             .runs
             .iter()
@@ -15,18 +14,6 @@ impl Workspace {
                 Some(&r.evidence_id) == self.selected_evidence.as_ref()
                     && r.status == RunStatus::Completed
                     && ArtifactGroup::for_plugin(&r.plugin) == group
-            })
-            .filter(|r| {
-                seen.insert(
-                    if matches!(
-                        r.plugin.as_str(),
-                        "windows.handles.Handles" | "windows.registry.printkey.PrintKey"
-                    ) {
-                        format!("{}:{:?}", r.plugin, r.arguments)
-                    } else {
-                        r.plugin.clone()
-                    },
-                )
             })
             .map(|r| r.id.clone())
             .collect()
@@ -88,6 +75,15 @@ impl Workspace {
             return;
         };
         self.remember_location(cx);
+        if run.plugin == volgui::analysis::APPLICATION {
+            self.browser_group = ArtifactGroup::Applications;
+        }
+        if run.plugin == volgui::analysis::APPLICATION
+            && let Ok(pid) = volgui::analysis::application::target_pid(&run.arguments)
+        {
+            self.application_pid
+                .update(cx, |input, cx| input.set_value(pid.to_string(), window, cx));
+        }
         if run.plugin == volgui::analysis::registry::PRINT_KEY {
             let path = run
                 .arguments
@@ -103,7 +99,20 @@ impl Workspace {
             self.selected_evidence = Some(run.evidence_id.clone());
             self.sync_os();
         }
-        self.set_scope(vec![id], run.plugin, window, cx);
+        let open_memory = run.plugin == volgui::analysis::APPLICATION
+            && run.status == RunStatus::Completed
+            && volgui::analysis::application::target_pid(&run.arguments).is_ok();
+        let label = if run.plugin == volgui::analysis::APPLICATION {
+            volgui::analysis::application::target_pid(&run.arguments)
+                .map(|pid| format!("Process memory · PID {pid}"))
+                .unwrap_or_else(|_| "Process Memory".into())
+        } else {
+            run.plugin
+        };
+        self.set_scope(vec![id], label, window, cx);
+        if open_memory {
+            self.open_application_dump(cx);
+        }
     }
     pub(super) fn set_scope(
         &mut self,
@@ -112,8 +121,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let was_application = self.result_group() == Some(ArtifactGroup::Applications);
         self.column_filters.clear();
         self.scope = runs;
+        if !was_application && self.result_group() == Some(ArtifactGroup::Applications) {
+            self.content_sidebar_visible = true;
+            self.content_encoding = volgui::extracted_files::ContentEncoding::Utf8;
+        }
         self.selection_epoch += 1;
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
@@ -236,7 +250,7 @@ impl Workspace {
                 {
                     ids.push(*id);
                 }
-                let rows = store.fetch(&ids)?;
+                let rows = store.fetch_enriched(&ids)?;
                 Ok((index, rows, tree))
             });
             let _ = tx.send(Event::Indexed(epoch, result));
@@ -268,7 +282,7 @@ impl Workspace {
         let epoch = self.query_epoch.load(Ordering::Relaxed);
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = store.fetch(&ids);
+            let result = store.fetch_enriched(&ids);
             let _ = tx.send(Event::Rows(epoch, ids, result));
         });
     }
@@ -285,7 +299,7 @@ impl Workspace {
         thread::spawn(move || {
             let _ = tx.send(Event::Selected(
                 epoch,
-                store.fetch(&[id]).map(|mut r| r.pop()),
+                store.fetch_enriched(&[id]).map(|mut r| r.pop()),
             ));
         });
     }
@@ -323,7 +337,7 @@ impl Workspace {
     pub(super) fn show_record(
         &mut self,
         record: StoredRecord,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.reset_hex();
@@ -334,11 +348,24 @@ impl Workspace {
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         self.selected = Some(Arc::new(record));
+        if self.result_group() == Some(ArtifactGroup::Applications) {
+            let row = &self.selected.as_ref().unwrap().record;
+            self.content_encoding = match row.text("Encoding").as_str() {
+                "UTF-16LE" => volgui::extracted_files::ContentEncoding::Utf16Le,
+                "UTF-16BE" => volgui::extracted_files::ContentEncoding::Utf16Be,
+                _ => volgui::extracted_files::ContentEncoding::Utf8,
+            };
+            let pid = row.text("PID");
+            self.application_pid
+                .update(cx, |input, cx| input.set_value(pid, window, cx));
+            self.application_text_scroll.set_offset(Point::default());
+        }
         if self.detail == DetailTab::Handles {
             self.load_handles(0, cx);
         }
         self.hex_scroll.set_offset(Point::default());
-        if self.hex_visible {
+        if self.content_sidebar_visible || self.result_group() == Some(ArtifactGroup::Applications)
+        {
             self.load_hex(cx);
         }
         self.raw_expanded.clear();

@@ -220,6 +220,47 @@ fn main() -> Result<(), String> {
         |_| {},
     );
     case.finish(&browser.id, &outcome)?;
+    // A sparse dump exercises virtual scrolling without writing a GiB of fixture data.
+    let memory = save(
+        &mut case,
+        &evidence_id,
+        "windows.memmap.Memmap",
+        Table::parse(
+            r#"[{"Virtual":4194304,"Physical":4096,"Size":1073741831,"Offset in File":0}]"#,
+        )?
+        .rows,
+    )?;
+    case.document.runs.last_mut().unwrap().arguments =
+        vec!["--pid".into(), "4242".into(), "--dump".into()];
+    fs::create_dir_all(case.run_dir(&memory)).map_err(|e| e.to_string())?;
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut dump = fs::File::create(case.run_dir(&memory).join("pid.4242.dmp"))
+            .map_err(|e| e.to_string())?;
+        dump.set_len(1024 * 1024 * 1024 + 7)
+            .map_err(|e| e.to_string())?;
+        dump.write_all(b"Synthetic process memory for the hex editor.\r\n")
+            .map_err(|e| e.to_string())?;
+        dump.seek(SeekFrom::Start(4093))
+            .map_err(|e| e.to_string())?;
+        dump.write_all(b"Cross-block UTF-8 selection: hello!")
+            .map_err(|e| e.to_string())?;
+        dump.seek(SeekFrom::Start(8191))
+            .map_err(|e| e.to_string())?;
+        let utf16 = "Odd-offset UTF-16 selection"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        dump.write_all(&utf16).map_err(|e| e.to_string())?;
+        dump.seek(SeekFrom::End(-7)).map_err(|e| e.to_string())?;
+        dump.write_all(b"THE END").map_err(|e| e.to_string())?;
+    }
+    save(&mut case, &evidence_id, volgui::analysis::APPLICATION, Table::parse(&json!([
+        {"PID":4242,"Process":"fixture-editor.exe","Source run":memory,"Dump offset":4093,"Byte length":34,"Encoding":"UTF-8","Text":"Cross-block UTF-8 selection: hello!"},
+        {"PID":4242,"Process":"fixture-editor.exe","Source run":memory,"Dump offset":8191,"Byte length":52,"Encoding":"UTF-16LE","Text":"Odd-offset UTF-16 selection"}
+    ]).to_string())?.rows)?;
+    case.document.runs.last_mut().unwrap().arguments = vec!["--pid".into(), "4242".into()];
+    case.save()?;
     println!("Synthetic case: {}", case.directory.display());
     Ok(())
 }

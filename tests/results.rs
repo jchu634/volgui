@@ -1,9 +1,9 @@
 // Checks results behavior.
 use serde_json::json;
-use std::{collections::BTreeMap, fs, sync::atomic::AtomicBool, time::Instant};
+use std::{collections::BTreeMap, sync::atomic::AtomicBool, time::Instant};
 use volgui::{
     artifacts::{ArtifactGroup, OperatingSystem},
-    case::{Case, Evidence, Run, RunStatus, now},
+    case::{Run, RunStatus, now},
     results::{DATABASE, Query, ResultStore},
     volatility::{Record, Table},
 };
@@ -127,11 +127,14 @@ fn process_relationships_use_saved_rows_and_respect_source_priority() {
     let store = ResultStore::open(temp.path()).unwrap();
     let list = run("list", "windows.pslist.PsList");
     let scan = run("scan", "windows.psscan.PsScan");
-    store.insert(&list,&Table::parse(r#"[{"PID":1,"PPID":0,"ImageFileName":"parent"},{"PID":2,"PPID":1,"ImageFileName":"selected"},{"PID":3,"PPID":2,"ImageFileName":"child"},{"PID":4,"PPID":2,"ImageFileName":"second child"}]"#).unwrap()).unwrap();
+    store.insert(&list,&Table::parse(r#"[{"PID":1,"PPID":0,"ImageFileName":"parent","CreateTime":10},{"PID":2,"PPID":1,"ImageFileName":"selected","CreateTime":20},{"PID":3,"PPID":2,"ImageFileName":"child","CreateTime":30},{"PID":4,"PPID":2,"ImageFileName":"second child","CreateTime":40}]"#).unwrap()).unwrap();
     store
         .insert(
             &scan,
-            &Table::parse(r#"[{"PID":3,"PPID":2,"ImageFileName":"duplicate child"}]"#).unwrap(),
+            &Table::parse(
+                r#"[{"PID":3,"PPID":2,"ImageFileName":"duplicate child","CreateTime":30}]"#,
+            )
+            .unwrap(),
         )
         .unwrap();
     let sources = vec!["list".into(), "scan".into()];
@@ -251,7 +254,7 @@ fn failed_import_rolls_back_records_and_search_index() {
     let temp = tempfile::tempdir().unwrap();
     let store = ResultStore::open(temp.path()).unwrap();
     let db = rusqlite::Connection::open(temp.path().join(DATABASE)).unwrap();
-    db.execute_batch("CREATE TRIGGER reject_row BEFORE INSERT ON records WHEN NEW.row_index=1 BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER reject_row BEFORE INSERT ON run_observations WHEN NEW.row_index=1 BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
     let run = run("rollback", "windows.pslist.PsList");
     let table = Table::parse(r#"[{"PID":1},{"PID":2}]"#).unwrap();
     assert!(store.insert(&run, &table).is_err());
@@ -261,6 +264,20 @@ fn failed_import_rolls_back_records_and_search_index() {
             .unwrap(),
         0
     );
+    for table in [
+        "observations",
+        "entities",
+        "observation_facts",
+        "observation_entities",
+        "entity_relations",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
     assert_eq!(
         db.query_row("SELECT COUNT(*) FROM record_search", [], |r| r
             .get::<_, i64>(0))
@@ -281,46 +298,32 @@ fn failed_import_rolls_back_records_and_search_index() {
 }
 
 #[test]
-fn legacy_case_migrates_once_and_reopens_without_json_output() {
+fn legacy_results_database_is_rejected_without_migration() {
     let temp = tempfile::tempdir().unwrap();
-    let mut case = Case::create(&temp.path().join("case"), "Migration").unwrap();
-    let image = temp.path().join("image.raw");
-    fs::write(&image, b"fixture").unwrap();
-    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
-    let mut run = run(&uuid::Uuid::new_v4().to_string(), "windows.info.Info");
-    run.evidence_id = evidence.id.clone();
-    case.add_evidence(evidence).unwrap();
-    case.queue(run.clone()).unwrap();
-    let output = case.run_dir(&run.id);
-    fs::create_dir_all(&output).unwrap();
-    fs::write(
-        output.join("stdout.json"),
-        r#"[{"Variable":"Is64Bit","Value":true}]"#,
+    let db = rusqlite::Connection::open(temp.path().join(DATABASE)).unwrap();
+    db.execute_batch(
+        "CREATE TABLE records(id INTEGER PRIMARY KEY,fields_json TEXT); PRAGMA user_version=1;",
     )
     .unwrap();
-    case.document.runs[0].status = RunStatus::Completed;
-    case.document.runs[0].row_count = 1;
-    case.save().unwrap();
-    drop(case);
-    let case = Case::open(&temp.path().join("case")).unwrap();
-    assert_eq!(
-        case.document.evidence[0].operating_system,
-        OperatingSystem::Windows
+    assert!(
+        ResultStore::open(temp.path())
+            .unwrap_err()
+            .contains("Unsupported case format")
     );
-    case.document
-        .migrate_results(&case.directory, &AtomicBool::new(false))
-        .unwrap();
-    let store = ResultStore::at(&case.directory);
-    let id = store.record(&run.id, 0).unwrap().unwrap().id;
-    case.document
-        .migrate_results(&case.directory, &AtomicBool::new(false))
-        .unwrap();
-    assert_eq!(store.record(&run.id, 0).unwrap().unwrap().id, id);
-    fs::remove_file(output.join("stdout.json")).unwrap();
-    assert_eq!(case.results(&run.id).unwrap().rows[0].text("Value"), "true");
-    drop(case);
-    let reopened = Case::open(&temp.path().join("case")).unwrap();
-    assert_eq!(reopened.results(&run.id).unwrap().rows.len(), 1);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT type FROM sqlite_master WHERE name='records'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "table"
+    );
 }
 
 #[test]

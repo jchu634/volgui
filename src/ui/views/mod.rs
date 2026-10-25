@@ -3,6 +3,7 @@ use super::components::*;
 use super::*;
 
 mod analyses;
+mod application_memory;
 pub(in crate::ui) mod artifacts;
 mod bookmarks;
 mod case_info;

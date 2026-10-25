@@ -3,7 +3,7 @@ use std::{fs, sync::atomic::AtomicBool};
 use volgui::{
     analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries},
     artifacts::OperatingSystem,
-    case::{Case, CaseDocument, Evidence, MANIFEST, QueueClearScope, RunStatus},
+    case::{Case, CaseSnapshot, DATABASE, Evidence, QueueClearScope, RunStatus},
     settings::Settings,
     volatility::{Installation, Outcome, Plugin, Table},
 };
@@ -155,7 +155,7 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     assert!(queue_retries(&mut case, &unavailable, &ids).is_err());
     assert_eq!(case.document.runs.len(), 3);
 
-    let manifest = case.directory.join(MANIFEST);
+    let manifest = case.directory.join(DATABASE);
     let saved = fs::read(&manifest).unwrap();
     fs::remove_file(&manifest).unwrap();
     fs::create_dir(&manifest).unwrap();
@@ -242,8 +242,8 @@ fn clearing_queue_preserves_active_jobs_history_and_results_and_survives_reopeni
         run.status = status;
     }
     case.save().unwrap();
-    let manifest = case.directory.join(MANIFEST);
-    let legacy: CaseDocument = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    let manifest = case.directory.join(DATABASE);
+    let legacy = CaseSnapshot::load(&case.directory).unwrap();
     assert!(legacy.cleared_queue_runs.is_empty());
     assert_eq!(legacy.queue_runs().count(), 6);
 
@@ -357,7 +357,7 @@ fn batch_selection_preserves_individual_options_and_is_saved_atomically() {
     assert!(case.queue_batch(invalid).is_err());
     assert!(case.document.runs.is_empty());
     assert!(case.queue_batch(Vec::new()).is_err());
-    let manifest = case.directory.join(MANIFEST);
+    let manifest = case.directory.join(DATABASE);
     let saved = fs::read(&manifest).unwrap();
     fs::remove_file(&manifest).unwrap();
     fs::create_dir(&manifest).unwrap();
@@ -492,6 +492,16 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
     let catalog = application_plugins(&[]);
     let choices = chooser_plugins(&catalog, OperatingSystem::Windows, false, "");
     assert!(choices.iter().any(|p| p.id == volgui::analysis::BROWSER));
+    assert!(
+        choices
+            .iter()
+            .any(|p| p.id == volgui::analysis::APPLICATION)
+    );
+    assert!(
+        !chooser_plugins(&catalog, OperatingSystem::Linux, false, "")
+            .iter()
+            .any(|p| p.id == volgui::analysis::APPLICATION)
+    );
     assert!(choices.iter().any(|p| p.id == REGISTRY_ALL));
     let temp = tempfile::tempdir().unwrap();
     let image = temp.path().join("image.raw");
@@ -517,7 +527,76 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
 }
 
 #[test]
-fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidence() {
+fn application_choice_collects_prerequisites_and_forms_a_queue_barrier() {
+    use volgui::{
+        analyses::{APPLICATION_RECOVERY_PENDING, next_queued_run},
+        analysis::{APPLICATION, application},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"application queue").unwrap();
+    let mut evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    evidence.operating_system = OperatingSystem::Windows;
+    let mut case = Case::create(&temp.path().join("case"), "Applications").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let mut engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: application::INVENTORY
+            .into_iter()
+            .chain([application::MEMMAP, application::VADINFO])
+            .map(plugin)
+            .collect(),
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.insert(APPLICATION.into());
+    assert!(
+        draft
+            .prepare_in_case(&engine, &evidence, &case)
+            .unwrap_err()
+            .contains("Choose a PID")
+    );
+    draft
+        .arguments
+        .insert(APPLICATION.into(), "--pid 42 --contains customers".into());
+    let mut runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 3);
+    assert_eq!(runs[0].plugin, application::INVENTORY[0]);
+    assert_eq!(runs[1].plugin, application::INVENTORY[1]);
+    assert_eq!(runs[2].message, APPLICATION_RECOVERY_PENDING);
+    runs[0].status = RunStatus::Completed;
+    runs[1].status = RunStatus::Running;
+    assert_eq!(
+        next_queued_run(&runs, Settings::default().max_concurrent_jobs),
+        None
+    );
+    runs[1].status = RunStatus::Completed;
+    assert_eq!(
+        next_queued_run(&runs, Settings::default().max_concurrent_jobs),
+        Some(2)
+    );
+    runs[2].status = RunStatus::Running;
+    runs.push(runs[0].clone());
+    runs[3].status = RunStatus::Queued;
+    assert_eq!(
+        next_queued_run(&runs, Settings::default().max_concurrent_jobs),
+        None
+    );
+    engine.plugins.retain(|p| p.id != application::VADINFO);
+    assert!(
+        draft
+            .prepare_in_case(&engine, &evidence, &case)
+            .unwrap_err()
+            .contains("VadInfo")
+    );
+    draft
+        .arguments
+        .insert(APPLICATION.into(), "--pid nope".into());
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+}
+
+#[test]
+fn browser_recovery_requires_unfiltered_prerequisites_for_same_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let image = temp.path().join("image.raw");
     fs::write(&image, b"browser prerequisites").unwrap();
@@ -550,8 +629,6 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
         case.document.runs.push(run);
     }
     for status in [
-        RunStatus::Queued,
-        RunStatus::Running,
         RunStatus::Failed,
         RunStatus::Cancelled,
         RunStatus::Interrupted,
@@ -564,6 +641,13 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
                 .contains("PsList")
         );
     }
+    for status in [RunStatus::Queued, RunStatus::Running] {
+        case.document.runs[0].status = status;
+        let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].message, volgui::analyses::BROWSER_RECOVERY_PENDING);
+        assert!(volgui::analyses::prepare_browser_recovery(&case, &engine, &runs[0]).is_err());
+    }
     case.document.runs[0].status = RunStatus::Completed;
     case.document.runs[0].evidence_id = "other evidence".into();
     assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
@@ -575,4 +659,46 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].plugin, volgui::analysis::BROWSER);
     assert_eq!(case.document.runs.len(), 3);
+}
+
+#[test]
+fn browser_recovery_can_be_queued_with_its_prerequisites() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"browser batch").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut case = Case::create(&temp.path().join("case"), "Browser").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let ids = [
+        "windows.pslist.PsList",
+        "windows.cmdline.CmdLine",
+        "windows.filescan.FileScan",
+    ];
+    let engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: ids.into_iter().map(plugin).collect(),
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.extend(ids.into_iter().map(str::to_owned));
+    draft.selected.insert(volgui::analysis::BROWSER.into());
+    draft.arguments.insert(ids[0].into(), "--pid 42".into());
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+    draft.arguments.clear();
+    let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 4);
+    assert_eq!(runs[3].plugin, volgui::analysis::BROWSER);
+    assert_eq!(runs[3].message, volgui::analyses::BROWSER_RECOVERY_PENDING);
+    case.document.runs.extend(runs);
+    assert!(
+        volgui::analyses::prepare_browser_recovery(&case, &engine, &case.document.runs[3]).is_err()
+    );
+    for run in &mut case.document.runs[..3] {
+        run.status = RunStatus::Completed;
+    }
+    assert!(
+        volgui::analyses::prepare_browser_recovery(&case, &engine, &case.document.runs[3])
+            .unwrap()
+            .is_empty()
+    );
 }

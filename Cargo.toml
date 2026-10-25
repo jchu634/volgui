@@ -22,7 +22,14 @@ lz4_flex = "0.11"
 memchr = "2"
 
 [features]
+default = ["desktop"]
+desktop = []
 test-engine = []
+
+[[bin]]
+name = "volgui"
+path = "src/main.rs"
+required-features = ["desktop"]
 
 [[bin]]
 name = "volgui-test-engine"

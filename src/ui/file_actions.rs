@@ -3,9 +3,87 @@ use super::*;
 use volgui::extracted_files::{self, HexPage};
 
 impl Workspace {
-    pub(super) fn toggle_hex(&mut self, cx: &mut Context<Self>) {
-        self.hex_visible = !self.hex_visible;
-        if self.hex_visible {
+    pub(super) fn locate_imhex(&self) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Event::ImHexLocated(extracted_files::imhex()));
+        });
+    }
+
+    pub(super) fn file_listing_target(&self) -> Option<(PathBuf, RunStatus)> {
+        let case = self.case.as_ref()?;
+        let run = case
+            .document
+            .runs
+            .iter()
+            .find(|run| Some(&run.id) == self.selected_run.as_ref())?;
+        let run = self
+            .selected
+            .as_ref()
+            .and_then(|record| {
+                extracted_files::completed_dump(case, record, self.file_offset_physical)
+            })
+            .unwrap_or(run);
+        Some((case.run_dir(&run.id), run.status))
+    }
+
+    pub(super) fn reset_file_listing(&mut self) {
+        self.file_listing_epoch += 1;
+        self.file_listing = None;
+    }
+
+    pub(super) fn refresh_file_listing(&mut self, cx: &mut Context<Self>) {
+        let target = (self.detail == DetailTab::Files)
+            .then(|| self.file_listing_target())
+            .flatten();
+        if target.as_ref() == self.file_listing.as_ref().map(|listing| &listing.target) {
+            return;
+        }
+        self.reset_file_listing();
+        if let Some(target) = target {
+            let directory = target.0.clone();
+            self.file_listing = Some(FileListing {
+                target,
+                result: None,
+            });
+            let epoch = self.file_listing_epoch;
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send(Event::FilesListed(
+                    epoch,
+                    extracted_files::listing(&directory),
+                ));
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn open_in_imhex(
+        &mut self,
+        executable: PathBuf,
+        file: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(case) = &self.case else { return };
+        let directory = case.directory.clone();
+        let tx = self.tx.clone();
+        self.message = "Preparing file for ImHex...".into();
+        thread::spawn(move || {
+            let result = extracted_files::open(&executable, &file)
+                .map(|()| "Opened in ImHex".into())
+                .map_err(|error| format!("Could not open ImHex: {error}"));
+            let _ = tx.send(Event::FileActionCompleted(directory, result));
+        });
+        cx.notify();
+    }
+
+    pub(super) fn toggle_content_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.content_sidebar_visible = !self.content_sidebar_visible;
+        if self.result_group() == Some(ArtifactGroup::Applications) {
+            cx.notify();
+            return;
+        }
+        if self.content_sidebar_visible {
             self.load_hex(cx);
         } else {
             self.reset_hex();
@@ -16,6 +94,7 @@ impl Workspace {
     pub(super) fn reset_hex(&mut self) {
         self.hex_epoch += 1;
         self.hex_view = HexView::Idle;
+        self.hex_editor = None;
         self.database_view = None;
         self.database_epoch += 1;
     }
@@ -78,8 +157,16 @@ impl Workspace {
     pub(super) fn load_hex(&mut self, cx: &mut Context<Self>) {
         self.reset_hex();
         let memory = self.case.as_ref().and_then(|case| {
-            let record = &self.selected.as_ref()?.record;
-            if !matches!(record.text("Kind").as_str(), "Memory URL" | "Memory search") {
+            let selected = self.selected.as_ref()?;
+            let record = &selected.record;
+            let application = case
+                .document
+                .runs
+                .iter()
+                .any(|r| r.id == selected.run_id && r.plugin == volgui::analysis::APPLICATION);
+            if !application
+                && !matches!(record.text("Kind").as_str(), "Memory URL" | "Memory search")
+            {
                 return None;
             }
             let source = case.document.runs.iter().find(|r| {
@@ -137,7 +224,9 @@ impl Workspace {
         offset: u64,
         cx: &mut Context<Self>,
     ) {
-        self.hex_visible = true;
+        if self.result_group() != Some(ArtifactGroup::Applications) {
+            self.content_sidebar_visible = true;
+        }
         self.reset_hex();
         self.hex_view = HexView::Loading;
         let epoch = self.hex_epoch;

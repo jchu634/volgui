@@ -2,14 +2,13 @@
 use super::super::{BROWSER, browser, record};
 use crate::{
     artifacts::OperatingSystem,
-    case::{CaseDocument, Evidence, Run, RunStatus},
+    case::{CaseSnapshot, Evidence, Run, RunStatus},
     results::{Query, ResultStore},
     volatility::{Installation, Record, Table},
 };
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -43,7 +42,7 @@ fn number(row: &Record, field: &str) -> Option<u64> {
 
 fn processes(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence: &str,
     cancel: &AtomicBool,
 ) -> Result<BTreeMap<u64, Process>, String> {
@@ -155,7 +154,7 @@ fn processes(
 /// Queue browser processes with page content, then parse all recovered browser data.
 pub fn recovery_runs(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence: &Evidence,
     engine: &Installation,
     cancel: &AtomicBool,
@@ -180,11 +179,12 @@ pub fn recovery_runs(
                 && r.arguments == arguments
                 && (matches!(r.status, RunStatus::Queued | RunStatus::Running)
                     || r.status == RunStatus::Completed
-                        && directory
-                            .join("analyses")
-                            .join(&r.id)
-                            .join(format!("pid.{}.dmp", process.pid))
-                            .is_file())
+                        && crate::object_store::exists(
+                            &directory
+                                .join("analyses")
+                                .join(&r.id)
+                                .join(format!("pid.{}.dmp", process.pid)),
+                        ))
         }) {
             continue;
         }
@@ -205,85 +205,7 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Region {
-    file: u64,
-    virtual_start: u64,
-    length: u64,
-}
-
-fn regions(table: Table, filename: &str, total: u64) -> Result<(Vec<Region>, usize), String> {
-    let user_end = if table
-        .rows
-        .iter()
-        .any(|row| number(row, "Virtual").is_some_and(|v| v > u64::from(u32::MAX)))
-    {
-        1 << 47
-    } else {
-        // Conservatively use the default 2 GiB user range for 32-bit Windows.
-        1 << 31
-    };
-    let mut regions = Vec::new();
-    let mut rejected = 0;
-    for row in table
-        .rows
-        .iter()
-        .filter(|r| r.text("File output") == filename)
-    {
-        let (Some(file), Some(virtual_start), Some(length)) = (
-            number(row, "Offset in File"),
-            number(row, "Virtual"),
-            number(row, "Size"),
-        ) else {
-            rejected += 1;
-            continue;
-        };
-        // Memmap also emits shared kernel mappings. Intel layers can report them
-        // with their upper sign-extension bits removed, so test bit 47 rather
-        // than just looking for a 0xffff prefix. Those bytes cannot identify a
-        // browser's activity. Windows user addresses occupy the lower half.
-        if virtual_start >= user_end {
-            continue;
-        }
-        if length == 0
-            || file.checked_add(length).is_none_or(|end| end > total)
-            || virtual_start
-                .checked_add(length)
-                .is_none_or(|end| end > user_end)
-        {
-            rejected += 1;
-            continue;
-        }
-        regions.push(Region {
-            file,
-            virtual_start,
-            length,
-        });
-    }
-    regions.sort_by_key(|r| r.file);
-    let mut merged: Vec<Region> = Vec::new();
-    for region in regions {
-        if let Some(last) = merged.last_mut() {
-            if last.file + last.length > region.file {
-                rejected += 1;
-                continue;
-            }
-            if last.file + last.length == region.file
-                && last.virtual_start + last.length == region.virtual_start
-            {
-                last.length += region.length;
-                continue;
-            }
-        }
-        merged.push(region);
-    }
-    if merged.is_empty() {
-        return Err(format!(
-            "No readable Memmap ranges for this PID; rejected {rejected} invalid ranges"
-        ));
-    }
-    Ok((merged, rejected))
-}
+use super::super::process_memory::{Region, regions};
 
 struct Hit {
     address: u64,
@@ -295,7 +217,7 @@ struct Hit {
 
 // Keep the exact string as the key: query strings and fragments can be evidence.
 fn scan(
-    file: &mut File,
+    file: &mut (impl Read + Seek),
     regions: &[Region],
     cancel: &AtomicBool,
     progress: &impl Fn(String),
@@ -418,7 +340,7 @@ fn url_at(bytes: &[u8], final_region: bool) -> Option<(String, &'static str, boo
 
 pub(in crate::analysis) fn analyze(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     run: &Run,
     cancel: &AtomicBool,
     progress: &impl Fn(String),
@@ -487,10 +409,8 @@ pub(in crate::analysis) fn analyze(
                 "PID {pid}: stopped at {MAX_PROCESS_URLS} unique URLs"
             ));
         }
+        let mut process_rows = Vec::new();
         for (url, hit) in hits {
-            if rows.len() >= browser::MAX_ROWS {
-                break;
-            }
             let search = hit.complete.then(|| browser::search_terms(&url)).flatten();
             let parsed_url = url::Url::parse(&url).map_err(|e| e.to_string())?;
             let parameters: Vec<_> = if hit.complete {
@@ -521,8 +441,14 @@ pub(in crate::analysis) fn analyze(
                     json!(super::search::query_origin(&parsed_url)),
                 );
             }
-            rows.push(row);
+            process_rows.push(row);
         }
+        super::dedup::memory_searches(&mut process_rows);
+        rows.extend(
+            process_rows
+                .into_iter()
+                .take(browser::MAX_ROWS.saturating_sub(rows.len())),
+        );
     }
     Ok(parsed)
 }

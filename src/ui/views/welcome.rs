@@ -69,7 +69,7 @@ impl Workspace {
                 s.child(
                     Button::new("configure-engine")
                         .small()
-                        .label("Configure Volatility")
+                        .label("Configure analysis engine")
                         .on_click(
                             cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
                         ),

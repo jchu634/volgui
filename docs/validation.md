@@ -5,12 +5,12 @@ The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main` and on p
 ```powershell
 cargo fmt --all --check
 cargo check --locked --all-targets --features test-engine
-cargo test --locked --features test-engine
+cargo test --locked --no-default-features --features test-engine
 cargo test --locked -p accesskit_windows --lib destroyed_window
 cargo clippy --locked --all-targets --features test-engine -- -D warnings
 ```
 
-`test-engine` builds a test-only CLI fixture for exercising process cancellation, nonzero exits, malformed output, literal arguments, large diagnostics and generated artifacts. Normal builds include only the application.
+`desktop` enables the application binary and is on by default. Tests can use `--no-default-features` to avoid replacing a running desktop executable. `test-engine` builds a test-only CLI fixture for exercising process cancellation, nonzero exits, malformed output, literal arguments, large diagnostics and generated artifacts. Normal builds include only the application.
 
 The Windows accessibility dependency has a [local teardown fix](../vendor/accesskit_windows/PATCH.md). Its regression test calls a retained COM provider after destroying the native window and checks that it returns an error without aborting.
 
@@ -49,6 +49,36 @@ unaligned UTF-16, cancellation and result limits, all handle types, registry que
 arguments, and read-only SQLite paging. Browser parser unit tests cover timestamps,
 provider host validation, selected session navigation and tab/window closure.
 
+## Application memory validation
+
+Run the chooser's application workflow in a separate output case:
+
+```powershell
+cargo run --locked --no-default-features --example validate_application -- <source-case-directory> <new-case-directory> <vol-executable> --pid PID [--contains text]
+```
+
+The example imports the source case's latest successful unfiltered process and
+command-line inventories through the result store. It retains the original
+evidence fingerprint and checks metadata without repeating the acquisition hash.
+The output case then runs the same deferred recovery expansion as the desktop,
+collects memory mappings and private regions, parses text candidates and exports
+`application.csv`. The source case is not changed.
+Pass the same case directory as both source and output to add a fresh analysis
+to an existing validation case and reuse its completed process dumps.
+
+Open the output case and choose **Application memory**. Search a known edited
+phrase and unsaved text. Move through matches in the hex/text reader, then change
+pages and encoding. Inspect PID, fragment virtual address and dump offset. Bookmark
+and export a fragment, then reopen the case. Competing
+versions must remain separate, and save state and document association must remain
+unknown unless a future parser supplies structural evidence.
+
+Automated tests cover queue prerequisites and barriers, exact source pinning,
+evidence separation, dump reuse, private versus shared and kernel mappings,
+UTF-8 and both UTF-16 byte orders, odd offsets, chunk boundaries, mapping gaps,
+malformed encodings, length limits, cancellation, archived source bytes, CSV export
+and reopening.
+
 ## Browser memory validation
 
 Use a separate output case to validate an existing capture without changing the
@@ -82,3 +112,15 @@ URL decoding, false provider hosts, templates, autocomplete exclusions, UTF-16,
 chunk boundaries, mapping gaps, masked kernel mappings, occurrence counts,
 Tor parent attribution, multiple file handle owners, evidence separation,
 completed dump reuse, persistence and CSV export.
+
+For a synthetic storage and browser-read benchmark, run:
+
+```powershell
+cargo test --locked --no-default-features --features test-engine --test object_store benchmark_shared_dumps_and_browser_range_reads -- --ignored --nocapture
+```
+
+This creates four temporary 64 MiB process dumps sharing kernel pages. It checks
+user-range bytes before and after archival and reports logical output size,
+retained pack and catalog size, archival time, and full-file hashing plus range
+reads compared with verified chunk reads. It does not invoke Volatility or time
+the complete browser parser. Temporary files are removed when the test finishes.

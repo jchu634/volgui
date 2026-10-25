@@ -83,6 +83,11 @@ struct FileDumpRequest {
     show_hex: bool,
 }
 
+struct FileListing {
+    target: (PathBuf, RunStatus),
+    result: Option<std::result::Result<Vec<volgui::extracted_files::ExtractedFile>, String>>,
+}
+
 #[derive(Default)]
 enum HexView {
     #[default]
@@ -101,6 +106,12 @@ enum Event {
     Verified(String, std::result::Result<Evidence, String>),
     Progress(String),
     Finished(String, Outcome),
+    FilesListed(
+        u64,
+        std::result::Result<Vec<volgui::extracted_files::ExtractedFile>, String>,
+    ),
+    FileActionCompleted(PathBuf, std::result::Result<String, String>),
+    ImHexLocated(Option<PathBuf>),
     Indexed(
         u64,
         std::result::Result<(ResultIndex, Vec<StoredRecord>, ResultTree), String>,
@@ -186,9 +197,13 @@ pub struct Workspace {
     queue_open: bool,
     popup_panels: RefCell<HashMap<popups::PanelKind, Entity<popups::PopupPanel>>>,
     file_dumps: HashMap<String, FileDumpRequest>,
+    file_listing: Option<FileListing>,
+    file_listing_epoch: u64,
+    imhex_path: Option<PathBuf>,
     file_offset_physical: bool,
     hex_view: HexView,
-    hex_visible: bool,
+    hex_editor: Option<Entity<components::hex_editor::HexEditor>>,
+    content_sidebar_visible: bool,
     hex_scroll: ScrollHandle,
     hex_epoch: u64,
     content_encoding: volgui::extracted_files::ContentEncoding,
@@ -198,6 +213,10 @@ pub struct Workspace {
     handles_loading: bool,
     handle_epoch: u64,
     string_needle: Entity<InputState>,
+    application_pid: Entity<InputState>,
+    analysis_application_pid: Entity<InputState>,
+    analysis_application_contains: Entity<InputState>,
+    application_text_scroll: ScrollHandle,
     string_ignore_case: bool,
     registry_key: Entity<InputState>,
     artifact_open: Option<ArtifactGroup>,
@@ -301,6 +320,8 @@ impl Workspace {
         let query = field("", "Search artifact fields...", window, cx);
         let plugin_query = field("", "Find a plugin...", window, cx);
         let arguments = field("", "e.g. --pid 3488", window, cx);
+        let analysis_application_pid = field("", "Process ID", window, cx);
+        let analysis_application_contains = field("", "Optional literal text", window, cx);
         let workspace = cx.entity().downgrade();
         let result_table = cx.new(|cx| {
             TableState::new(
@@ -364,6 +385,22 @@ impl Workspace {
                 }
             }),
             cx.subscribe(&plugin_query, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe(
+                &analysis_application_pid,
+                |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.save_application_options(cx);
+                    }
+                },
+            ),
+            cx.subscribe(
+                &analysis_application_contains,
+                |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.save_application_options(cx);
+                    }
+                },
+            ),
             cx.subscribe(&arguments, |this, input, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change)
                     && let Some(id) = this.plugin.clone()
@@ -378,7 +415,7 @@ impl Workspace {
         let mut this = Self {
             engine_path: field(
                 settings.executable.display().to_string(),
-                "Path to vol.exe or its installation directory",
+                "Path to vol.exe, vol-rs.exe or its installation directory",
                 window,
                 cx,
             ),
@@ -433,9 +470,13 @@ impl Workspace {
             queue_open: false,
             popup_panels: RefCell::new(HashMap::new()),
             file_dumps: HashMap::new(),
+            file_listing: None,
+            file_listing_epoch: 0,
+            imhex_path: None,
             file_offset_physical: false,
             hex_view: HexView::Idle,
-            hex_visible: false,
+            hex_editor: None,
+            content_sidebar_visible: false,
             hex_scroll: ScrollHandle::default(),
             hex_epoch: 0,
             content_encoding: volgui::extracted_files::ContentEncoding::Hex,
@@ -445,6 +486,10 @@ impl Workspace {
             handles_loading: false,
             handle_epoch: 0,
             string_needle: field("", "Literal string in evidence...", window, cx),
+            application_pid: field("", "PID to scan", window, cx),
+            analysis_application_pid,
+            analysis_application_contains,
+            application_text_scroll: ScrollHandle::default(),
             string_ignore_case: false,
             registry_key: field(
                 "",
@@ -480,9 +525,10 @@ impl Workspace {
             plugin_query,
             arguments,
             case_name: field("", "Case name", window, cx),
-            case_directory: field("", "Case directory", window, cx),
+            case_directory: field("", "Folder to create the case in", window, cx),
             _subscriptions: subscriptions,
         };
+        this.locate_imhex();
         if let Some(path) = case_path {
             this.open_case(path, window, cx);
         } else if !this.settings.executable.as_os_str().is_empty() {
@@ -518,7 +564,9 @@ impl Workspace {
         self.busy.is_some() || !self.running.is_empty()
     }
     fn can_switch(&self) -> bool {
-        !self.is_working() && !self.has_queued()
+        !self.is_working()
+            && !self.has_queued()
+            && !self.case.as_ref().is_some_and(Case::has_unsaved_changes)
     }
     fn has_queued(&self) -> bool {
         self.case.as_ref().is_some_and(|c| {
@@ -579,9 +627,41 @@ impl Workspace {
     }
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut changed = false;
+        if let Some(case) = &mut self.case {
+            while let Some(result) = case.poll_save() {
+                changed = true;
+                if let Err(error) = result {
+                    self.error = Some(format!("Could not save case: {error}"));
+                    self.queue_paused = true;
+                }
+            }
+        }
         while let Ok(event) = self.rx.try_recv() {
             changed = true;
             match event {
+                Event::FilesListed(epoch, result) => {
+                    if epoch == self.file_listing_epoch
+                        && self.detail == DetailTab::Files
+                        && self.file_listing_target().as_ref()
+                            == self.file_listing.as_ref().map(|listing| &listing.target)
+                        && let Some(listing) = &mut self.file_listing
+                    {
+                        listing.result = Some(result);
+                    }
+                }
+                Event::FileActionCompleted(directory, result) => {
+                    if self
+                        .case
+                        .as_ref()
+                        .is_some_and(|case| case.directory == directory)
+                    {
+                        match result {
+                            Ok(message) => self.message = message,
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
+                }
+                Event::ImHexLocated(path) => self.imhex_path = path,
                 Event::Opened(result) => {
                     self.busy = None;
                     match result {
@@ -700,7 +780,7 @@ impl Workspace {
                 Event::Finished(id, outcome) => {
                     self.running.remove(&id);
                     self.batch_finished += 1;
-                    let saved = match self.case.as_mut().map(|c| c.finish(&id, &outcome)) {
+                    let saved = match self.case.as_mut().map(|c| c.finish_recorded(&id, &outcome)) {
                         Some(Ok(())) => true,
                         Some(Err(error)) => {
                             self.error = Some(error);
@@ -728,7 +808,7 @@ impl Workspace {
                                 if !request.show_hex {
                                     self.detail = DetailTab::Files;
                                 }
-                                if self.hex_visible {
+                                if self.content_sidebar_visible {
                                     self.load_hex(cx);
                                 }
                             }
@@ -779,7 +859,19 @@ impl Workspace {
                             }) {
                                 self.selected = None;
                                 self.selected_row = None;
-                                self.reset_hex();
+                                if self.result_group() == Some(ArtifactGroup::Applications) {
+                                    if let Some(row) = self
+                                        .index
+                                        .ids
+                                        .first()
+                                        .and_then(|id| self.row_cache.get(id))
+                                        .cloned()
+                                    {
+                                        self.show_record((*row).clone(), window, cx);
+                                    }
+                                } else {
+                                    self.reset_hex();
+                                }
                             }
                             if let Some((position, (node, _))) = self
                                 .result_tree
@@ -898,6 +990,32 @@ impl Workspace {
                     }
                     self.hex_view = match result {
                         Ok((files, page)) => {
+                            let offset = if self.result_group() == Some(ArtifactGroup::Applications)
+                            {
+                                self.selected
+                                    .as_ref()
+                                    .and_then(|row| row.record.fields.get("Dump offset")?.as_u64())
+                                    .unwrap_or(page.offset)
+                            } else {
+                                page.offset
+                            };
+                            let editor = cx.new(|cx| {
+                                components::hex_editor::HexEditor::new(
+                                    page.path.clone(),
+                                    page.total,
+                                    offset,
+                                    window,
+                                    cx,
+                                )
+                            });
+                            cx.subscribe(
+                                &editor,
+                                |_, _, _: &components::hex_editor::SelectionChanged, cx| {
+                                    cx.notify()
+                                },
+                            )
+                            .detach();
+                            self.hex_editor = Some(editor);
                             self.hex_offset.update(cx, |input, cx| {
                                 input.set_value(format!("{:#x}", page.offset), window, cx)
                             });
@@ -911,6 +1029,7 @@ impl Workspace {
                 }
             }
         }
+        self.refresh_file_listing(cx);
         if self.query_due.is_some_and(|t| Instant::now() >= t) {
             self.query_due = None;
             self.start_query(cx);

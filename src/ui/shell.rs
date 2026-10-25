@@ -180,19 +180,19 @@ impl Render for Workspace {
                     .child(self.message.clone()),
             )
             .child(
-                Button::new("toggle-hex-view")
+                Button::new("toggle-content-sidebar")
                     .xsmall()
                     .ghost()
-                    .label("Contents")
-                    .accessibility_label("Toggle file contents")
-                    .selected(self.hex_visible)
+                    .label("Sidebar")
+                    .accessibility_label("Toggle supplemental sidebar")
+                    .selected(self.content_sidebar_visible)
                     .disabled(!case_open || self.view != View::Workspace)
-                    .tooltip(if self.hex_visible {
-                        "Hide hex view"
+                    .tooltip(if self.content_sidebar_visible {
+                        "Hide sidebar"
                     } else {
-                        "Show hex view"
+                        "Show sidebar"
                     })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_hex(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_content_sidebar(cx))),
             )
             .when(self.busy.is_some(), |s| {
                 s.child(

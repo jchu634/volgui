@@ -3,7 +3,7 @@ use serde_json::json;
 use std::fs;
 use std::sync::atomic::AtomicBool;
 use volgui::{
-    case::{Case, Evidence, MANIFEST, RunStatus},
+    case::{Case, DATABASE, Evidence, RunStatus},
     extracted_files::{DUMP_FILES, FileDumpTarget, queue_file_dump},
     results::StoredRecord,
     settings::Settings,
@@ -140,6 +140,63 @@ fn dump_case() -> (tempfile::TempDir, Case, Installation, StoredRecord) {
 }
 
 #[test]
+fn file_listing_snapshot_includes_archived_missing_and_blocked_outputs() {
+    let (_temp, mut case, engine, stored) = dump_case();
+    let id = queue_file_dump(&mut case, &engine, &stored, false).unwrap();
+    let directory = case.run_dir(&id);
+    fs::create_dir_all(&directory).unwrap();
+    let available = directory.join("file.available.dat");
+    let blocked = directory.join("file.blocked.dat");
+    let missing = directory.join("file.missing.dat");
+    fs::write(&available, b"recovered file").unwrap();
+    fs::write(
+        directory.join("file.blocked.dat.volgui-blocked"),
+        "removed by antivirus",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("stdout.json"),
+        json!([
+            {"File output":"file.available.dat"},
+            {"File output":"file.blocked.dat"},
+            {"File output":"file.missing.dat"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    volgui::object_store::ObjectStore::at(&case.directory)
+        .capture_run(&id, &AtomicBool::new(false))
+        .unwrap();
+    let snapshot = volgui::extracted_files::listing(&directory).unwrap();
+    assert_eq!(snapshot.len(), 3);
+    let entry = |path: &std::path::Path| snapshot.iter().find(|entry| entry.path == path).unwrap();
+    assert!(entry(&available).available);
+    assert!(entry(&available).sha256.is_some());
+    assert!(!entry(&blocked).available);
+    assert!(!entry(&missing).available);
+    // A later worker-side integrity failure is reflected by a refreshed snapshot.
+    let db = volgui::database::connect(&case.directory).unwrap();
+    let blob_id: String = db
+        .query_row(
+            "SELECT blob_id FROM analysis_outputs WHERE run_id=?1 AND name='file.available.dat'",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    fs::remove_file(case.directory.join("objects/blobs").join(blob_id)).unwrap();
+    assert!(volgui::extracted_files::open_artifact(&available).is_err());
+    assert!(
+        !volgui::extracted_files::listing(&directory)
+            .unwrap()
+            .iter()
+            .find(|entry| entry.path == available)
+            .unwrap()
+            .available
+    );
+    assert!(entry(&available).available);
+}
+
+#[test]
 fn queues_one_file_without_a_previous_dump_and_preserves_source_evidence() {
     let (_temp, mut case, engine, stored) = dump_case();
     let id = queue_file_dump(&mut case, &engine, &stored, false).unwrap();
@@ -167,7 +224,7 @@ fn unavailable_engine_stale_evidence_or_save_failure_does_not_queue_a_dump() {
     let mut missing = stored.clone();
     missing.run_id = "missing".into();
     assert!(queue_file_dump(&mut case, &engine, &missing, false).is_err());
-    let manifest = case.directory.join(MANIFEST);
+    let manifest = case.directory.join(DATABASE);
     let saved = fs::read(&manifest).unwrap();
     fs::remove_file(&manifest).unwrap();
     fs::create_dir(&manifest).unwrap();
@@ -209,7 +266,7 @@ fn individual_dump_executes_and_retains_all_cache_files_and_empty_results() {
         assert_eq!(files.len(), expected_files);
         for file in files {
             assert_eq!(
-                fs::read_to_string(file).unwrap(),
+                volgui::volatility::read_text(&file, 4096).unwrap(),
                 format!("{flag} {offset:#x}")
             );
         }

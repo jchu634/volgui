@@ -20,6 +20,14 @@ The application is written to `target/release/volgui.exe`. To build and run a de
 cargo run --bin volgui -- --volatility C:\Tools\Volatility\vol.exe
 ```
 
+Volatility 3 and [vol-rs](https://github.com/daffainfo/vol-rs) are supported. To use vol-rs:
+
+```powershell
+cargo run --bin volgui -- --volatility D:\vol-rs-v1.0.2-windows-x86_64
+```
+
+Select either executable or its installation directory in Settings. If a directory contains both engines, `vol` takes precedence; select `vol-rs.exe` explicitly to use vol-rs. The existing `--volatility` option accepts either engine.
+
 The executable path can also be supplied by an installer using the `VOLGUI_VOLATILITY` environment variable, or selected in **Settings**. Validated settings persist in `%APPDATA%\VolGUI\settings.json`. `VOLGUI_CONFIG_DIR` overrides that directory for portable installations or testing. No development-specific engine path is compiled into the application.
 
 Analysis jobs run in separate CLI instances, with up to two jobs active by default.
@@ -44,3 +52,17 @@ The extraction runs as a normal cancellable job against the result's source evid
 **Hex content** displays those bytes inside VolGUI in both the process and file views. Use **Extract and view hex** to extract the selected file without changing views, or **View hex** beside an existing extracted file. The viewer reads 256 bytes per page and shows offsets, hex bytes and ASCII. Multiple cache outputs have separate selection buttons. Completed per-file dumps are reused only for the same source evidence, object address and address space.
 
 For an unlabelled FileScan **Offset**, the address-space button defaults to **Virtual offset**, as used on Windows 10 and later. Click it to select **Physical offset** for older Windows captures. Explicit **Offset(V)** and **Offset(P)** columns select the address space automatically. This follows Volatility's [pool scanner](https://volatility3.readthedocs.io/en/stable/_modules/volatility3/plugins/windows/poolscanner.html) and [DumpFiles address options](https://volatility3.readthedocs.io/en/stable/_modules/volatility3/plugins/windows/dumpfiles.html).
+
+## Missing kernel symbols
+
+If an analysis reports `Symbols are not available offline`, open Settings, switch
+from **Offline mode enabled** to **Online symbol lookup enabled**, and click
+**Validate and save**. Retry the failed analyses. Offline use requires a symbols
+directory containing symbols for the exact kernel in the capture. Volatility and
+vol-rs use separate default symbol locations, so switching engines may require
+setting the symbols directory or downloading symbols again.
+
+VolGUI supplies vol-rs with explicit cache and default symbols directories under
+`%APPDATA%\VolGUI\cache\vol-rs` because vol-rs 1.0.2 cannot find its defaults on
+Windows without Unix environment variables. `VOLGUI_CONFIG_DIR` relocates this
+cache too. A symbols directory selected in Settings takes precedence.

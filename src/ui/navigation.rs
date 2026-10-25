@@ -99,6 +99,7 @@ impl Workspace {
         self.relation_epoch += 1;
         self.query_due = None;
         self.case = None;
+        self.reset_file_listing();
         self.handles = None;
         self.handles_loading = false;
         self.handle_epoch += 1;
@@ -108,7 +109,7 @@ impl Workspace {
         self.selected_run = None;
         self.selected_row = None;
         self.selected = None;
-        self.hex_visible = false;
+        self.content_sidebar_visible = false;
         self.reset_hex();
         self.scope.clear();
         self.scope_label.clear();

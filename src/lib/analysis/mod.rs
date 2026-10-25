@@ -1,11 +1,13 @@
 //! Application analyses use the case queue and record store, just like engine jobs.
+pub mod application;
 mod browser;
+mod process_memory;
 pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod registry;
 pub mod strings;
 
 use crate::{
-    case::{CaseDocument, Evidence, Run, RunStatus, now},
+    case::{CaseSnapshot, Evidence, Run, RunStatus, now},
     volatility::{Outcome, Record, Table},
 };
 use std::{
@@ -16,10 +18,11 @@ use std::{
 };
 
 pub const BROWSER: &str = "volgui.browser.Activity";
+pub const APPLICATION: &str = "volgui.application.Memory";
 pub const STRINGS: &str = "volgui.strings.Search";
 
 pub fn is_native(plugin: &str) -> bool {
-    matches!(plugin, BROWSER | STRINGS)
+    matches!(plugin, BROWSER | APPLICATION | STRINGS)
 }
 
 pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Result<Run, String> {
@@ -29,6 +32,9 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
     evidence.check_metadata()?;
     if plugin == STRINGS {
         strings::validate(&arguments)?;
+    }
+    if plugin == APPLICATION {
+        application::validate(&arguments)?;
     }
     Ok(Run {
         id: uuid::Uuid::new_v4().to_string(),
@@ -52,7 +58,7 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
 
 pub fn execute(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     run: &Run,
     cancel: &AtomicBool,
     progress: impl Fn(String),
@@ -66,6 +72,7 @@ pub fn execute(
         evidence.check_metadata()?;
         match run.plugin.as_str() {
             BROWSER => browser::analyze(directory, document, run, cancel, &progress),
+            APPLICATION => application::analyze(directory, document, run, cancel, &progress),
             STRINGS => strings::search(&evidence.path, &run.arguments, cancel, &progress),
             _ => Err("Unknown application analysis".into()),
         }
@@ -76,7 +83,7 @@ pub fn execute(
         }
         let output = directory.join("analyses").join(&run.id);
         fs::create_dir_all(&output).map_err(|e| e.to_string())?;
-        // Keep raw records for database migration and the existing diagnostics/export workflow.
+        // Preserve the native analysis payload as a hashed provenance object.
         let rows: Vec<_> = table.rows.iter().map(|r| &r.fields).collect();
         let file = fs::File::create(output.join("stdout.json")).map_err(|e| e.to_string())?;
         serde_json::to_writer(file, &rows).map_err(|e| e.to_string())?;
@@ -147,7 +154,7 @@ pub fn browser_file(path: &str) -> bool {
 
 pub fn browser_candidates(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence_id: &str,
     cancel: &AtomicBool,
 ) -> Result<Vec<crate::results::StoredRecord>, String> {
@@ -194,7 +201,7 @@ pub fn browser_candidates(
 
 pub fn browser_recovery_runs(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence: &Evidence,
     engine: &crate::volatility::Installation,
     physical: bool,

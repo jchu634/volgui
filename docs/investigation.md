@@ -52,6 +52,17 @@ byte delimiter was found; adjacent text can still be present in memory strings.
 Query origin flags known automated Edge annotation URLs. Other query URLs retain
 an unknown origin, so decoded terms are not presented as proof of typed input.
 
+Memory searches with the same decoded terms or a shorter query prefix are grouped
+under the longest query for the same PID, source dump, search endpoint and query
+origin. Different query extensions remain separate. Tracking parameters and URL
+encoding differences do not create extra rows. This grouping is case-sensitive
+and does not establish which queries were submitted. Search variants in the
+details retain every grouped URL, address, offset, encoding and occurrence count.
+Occurrences counts the displayed URL; Grouped occurrences totals all variants.
+History visits, saved tabs and non-search URLs retain their existing records.
+Run Start analysis again to apply grouping to previously saved findings; completed
+process dumps are reused.
+
 Session tabs describe a saved session snapshot. A historical session file, stale
 cache variant or closed browser can still contain these records. They do not prove
 which tabs were open at capture time, and arbitrary URL strings are not classified
@@ -75,6 +86,71 @@ On 32-bit Windows mappings, the scanner conservatively uses the default 2 GiB
 user range. Captures configured with a 3 GiB user split may omit URLs above that
 boundary. The 64-bit user/kernel boundary is bit 47, including masked mappings.
 
+## Application memory
+
+Enter a PID in **Application memory** and click **Scan process memory**. To choose
+from the process inventory, click **Choose from Processes**, select a process and
+click **Scan memory for PID**. In **New analysis**, the basic **Application memory
+recovery and analysis** choice exposes PID and optional text-filter fields directly.
+A PID is required; there is no application-name default.
+
+VolGUI automatically queues unfiltered PsList and CmdLine when needed. After they
+finish, it queues per-PID VadInfo and Memmap dumps, then the native text analysis.
+These engine plugins are already basic choices. The installed engine must supply
+all four plugins. Completed dumps are reused; exact inventory and dump run IDs
+are saved with the parser job. Each extraction retains its own case history.
+
+The memory reader continuously scrolls through the dump, loading only visible
+byte blocks. Its fixed header labels ten-digit addresses, sixteen hex columns
+and UTF-8 byte cells. Drag in either byte column, Shift-click, or use Shift with
+arrow keys to select a range. The right sidebar decodes that range as UTF-8,
+UTF-16LE or UTF-16BE and shows numeric values in both byte orders. Text decoding
+starts at the first selected byte, including odd offsets. Decode and copy are
+limited to the first 64 KiB of large selections. Ctrl+C copies hex or UTF-8 text
+according to the column where selection began. Go to offset accepts decimal and
+0x hexadecimal offsets. Ctrl+Home and Ctrl+End navigate to the dump boundaries.
+The **Sidebar** toggle hides the decoder while preserving hex selection and scroll.
+The entire dump is accessible, including bytes that produced no recovered strings.
+Dump offsets refer to the logical process-dump file, rather than the acquisition file. Packed pages need not
+be contiguous in virtual memory.
+
+Search for a name, phrase or flag, then use **Previous match** and **Next match**
+to move through recovered fragments and their original bytes. The full recovered
+fragment appears below the selection decoder, preserving text spanning several pages.
+Old or deleted copies remain separate fragments. **Bookmark fragment** and CSV
+export use the existing case tools. A failed search leaves the dump readable.
+
+CLI options support `--pid 5700` and `--contains "customer"` to filter by a literal
+substring with ASCII case ignored. Every application uses the same text-carving
+rules; no application document format is assumed.
+
+The parser scans private writable user mappings and excludes mapped images,
+read-only regions, shared pages and kernel addresses. Only contiguous mapped
+ranges are joined. It carves UTF-8, UTF-16LE and UTF-16BE strings, including odd
+offsets. Windows UTF-16 strings can also have a shifted interpretation in the
+opposite byte order. Matching interpretations at adjacent byte offsets share one
+candidate, with the other encoding and offset retained under Alternate interpretation.
+Little-endian is the primary display convention on Windows. This does not prove
+the original encoding; genuinely big-endian text retains its byte span in details.
+Text must contain at least eight characters, four ASCII letters or digits, and
+at least half ASCII characters. Text entirely in other scripts may be omitted.
+
+These are text candidates. They may include old edits, undo data, resource text,
+copied buffers or only part of a document. Nearby paths and process command lines
+do not establish which file or tab owns a string. The parser does not reconstruct
+Notepad's live tab objects, gap buffers or save state. It keeps competing versions
+separate and labels document association and save state as unknown.
+This distinction follows Microsoft's documentation that
+[RichEdit does not store text as a simple character array](https://learn.microsoft.com/en-us/windows/win32/controls/em-gethandle).
+
+Recovery is limited to 64 processes, 50,000 distinct candidates and 32 MiB of
+retained text per analysis. Each fragment holds at most 64 KiB plus one Unicode
+character; longer strings are split and marked as partial. Exact repeated strings
+within a process and encoding share one row with an occurrence count and the first
+source address. Mapping boundaries and limits remain in the finding details.
+Missing, damaged or blocked artifacts appear in Run details. Use PID and substring
+filters to narrow recovery if a result limit is reached.
+
 ## Process handles
 
 Select a process and open its **Handles** details tab. This lists all collected
@@ -84,10 +160,10 @@ retain the normal extraction actions. Non-file handles do not enter the file tre
 
 ## File contents
 
-Select a file and enable **Contents** in the bottom bar. Use the extraction action
+Select a file and enable **Sidebar** in the bottom bar. Use the extraction action
 when its bytes have not been recovered. The pane offers:
 
-- Hex bytes, offsets and ASCII.
+- Virtualized hex bytes, ten-digit offsets and UTF-8 byte cells.
 - UTF-8, UTF-16LE and UTF-16BE text. Decoding is per page; malformed characters or
   characters split across pages can appear as replacement characters.
 - Read-only SQLite tables, 100 rows per page, with bounded cell previews. The

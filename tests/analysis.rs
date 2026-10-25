@@ -362,6 +362,14 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
         let mut bytes = format!("{address}\0{address}\0").into_bytes();
         if pid == 42 {
             bytes.extend_from_slice(b"https://www.search.com/api/clk_ad?q=what%20is%20gluten\0");
+            for terms in ["w", "what", "what+is", "what+is+glu"] {
+                bytes.extend_from_slice(
+                    format!("https://www.search.com/web?q={terms}\0").as_bytes(),
+                );
+            }
+            bytes.extend_from_slice(
+                b"https://www.search.com/web?q=what+is+gluten&tracking=variant\0",
+            );
         }
         let filename = format!("pid.{pid}.dmp");
         let dump = save(
@@ -391,6 +399,12 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
         )
         .unwrap();
     }
+    // Exercise the real managed-object read path, not retained staging files.
+    for source in &case.document.runs {
+        volgui::object_store::ObjectStore::at(&case.directory)
+            .capture_run(&source.id, &AtomicBool::new(false))
+            .unwrap();
+    }
     save(
         &mut case,
         1,
@@ -416,6 +430,8 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
     assert_eq!(edge.text("Process role"), "Renderer");
     assert_eq!(edge.text("Virtual address"), "0x10000");
     assert_eq!(edge.fields["Occurrences"], 2);
+    assert_eq!(edge.fields["Grouped occurrences"], 7);
+    assert_eq!(edge.fields["Search variants"].as_array().unwrap().len(), 6);
     assert!(!edge.fields.contains_key("Time (UTC)"));
     let contextual = rows
         .iter()
@@ -460,6 +476,7 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
         })
         .unwrap();
     assert!(csv.contains("what is gluten") && csv.contains("Tor Browser"));
+    assert!(csv.contains("Search variants") && csv.contains("tracking=variant"));
     assert_eq!(reopened.document.evidence.len(), 2);
 }
 
@@ -754,4 +771,310 @@ fn missing_browser_memory_dump_is_retained_as_a_blocked_finding() {
             .unwrap_err()
             .contains("Opening is blocked")
     );
+}
+
+#[test]
+fn application_recovery_pins_sources_preserves_edits_and_exports_after_reopening() {
+    use volgui::{
+        analyses::{APPLICATION_RECOVERY_PENDING, AnalysisDraft, prepare_application_recovery},
+        analysis::{APPLICATION, application},
+    };
+    let (_temp, mut case, mut engine) = setup();
+    engine.plugins.push(Plugin {
+        id: application::VADINFO.into(),
+        description: String::new(),
+    });
+    let inventory = save(
+        &mut case,
+        0,
+        application::INVENTORY[0],
+        vec![],
+        json!([
+            {"PID":42,"ImageFileName":"editor.exe"}, {"PID":43,"ImageFileName":"other.exe"}
+        ]),
+    );
+    save(
+        &mut case,
+        0,
+        application::INVENTORY[1],
+        vec![],
+        json!([
+            {"PID":42,"Args":"Notepad.exe C:\\Users\\Alice\\customers.txt"}
+        ]),
+    );
+    let mut bytes = Vec::new();
+    for text in [
+        "Alice Example\rBob Customer\r",
+        "Alice Example\rCarol Edited\r",
+        "unsaved{example_flag}",
+        "unsaved{example_flag}",
+    ] {
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes.extend([0, 0]);
+    }
+    let user_length = bytes.len();
+    bytes.extend_from_slice(b"shared image string must be excluded\0");
+    let kernel_start = bytes.len();
+    bytes.extend_from_slice(b"kernel string must never belong to application\0");
+    let dump = save(
+        &mut case,
+        0,
+        application::MEMMAP,
+        vec!["--pid".into(), "42".into(), "--dump".into()],
+        json!([
+            {"File output":"pid.42.dmp","Offset in File":0,"Virtual":65536,"Size":kernel_start},
+            {"File output":"pid.42.dmp","Offset in File":kernel_start,"Virtual":0x800000000000u64,"Size":bytes.len()-kernel_start}
+        ]),
+    );
+    fs::create_dir_all(case.run_dir(&dump.id)).unwrap();
+    fs::write(case.run_dir(&dump.id).join("pid.42.dmp"), bytes).unwrap();
+    volgui::object_store::ObjectStore::at(&case.directory)
+        .capture_run(&dump.id, &AtomicBool::new(false))
+        .unwrap();
+    let vad = save(
+        &mut case,
+        0,
+        application::VADINFO,
+        vec!["--pid".into(), "42".into()],
+        json!([
+            {"PID":42,"PrivateMemory":1,"Protection":"PAGE_READWRITE","Start VPN":65536,"End VPN":65536+user_length-1},
+            {"PID":42,"PrivateMemory":0,"Protection":"PAGE_READWRITE","Start VPN":65536+user_length,"End VPN":65536+kernel_start-1}
+        ]),
+    );
+    // Another evidence capture and a filtered inventory cannot override these sources.
+    save(
+        &mut case,
+        1,
+        application::INVENTORY[0],
+        vec![],
+        json!([{"PID":99,"ImageFileName":"Notepad.exe"}]),
+    );
+    save(
+        &mut case,
+        0,
+        application::INVENTORY[0],
+        vec!["--pid".into(), "43".into()],
+        json!([{"PID":43,"ImageFileName":"other.exe"}]),
+    );
+    let mut draft = AnalysisDraft::new(&case.document.evidence[0]);
+    draft.selected.insert(APPLICATION.into());
+    draft
+        .arguments
+        .insert(APPLICATION.into(), "--pid 42".into());
+    let pending = draft
+        .prepare_in_case(&engine, &case.document.evidence[0], &case)
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message, APPLICATION_RECOVERY_PENDING);
+    case.queue_batch(pending).unwrap();
+    let placeholder = case.document.runs.last().unwrap().clone();
+    let resolved = prepare_application_recovery(&case, &engine, &placeholder).unwrap();
+    assert_eq!(
+        resolved.len(),
+        1,
+        "completed dump and VAD results are reused"
+    );
+    let run = resolved[0].clone();
+    assert_eq!(run.id, placeholder.id);
+    assert!(run.arguments.contains(&inventory.id));
+    assert!(run.arguments.contains(&dump.id));
+    assert!(run.arguments.contains(&vad.id));
+    *case.document.runs.last_mut().unwrap() = run.clone();
+    case.save().unwrap();
+    // A newer inventory queued after planning is not silently substituted.
+    save(
+        &mut case,
+        0,
+        application::INVENTORY[0],
+        vec![],
+        json!([{"PID":100,"ImageFileName":"Notepad.exe"}]),
+    );
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    let rows = &outcome.table.as_ref().unwrap().rows;
+    assert!(
+        rows.iter()
+            .any(|r| r.text("Text") == "Alice Example\rBob Customer\r")
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.text("Text") == "Alice Example\rCarol Edited\r")
+    );
+    let flag = rows
+        .iter()
+        .find(|r| r.text("Text") == "unsaved{example_flag}" && r.text("Encoding") == "UTF-16LE")
+        .unwrap();
+    assert_eq!(flag.text("Source run"), dump.id);
+    assert_eq!(flag.text("Document association"), "Unknown");
+    assert_eq!(flag.text("Save state"), "Unknown");
+    assert_eq!(flag.text("Process"), "editor.exe");
+    assert_eq!(flag.fields["Occurrences"], 2);
+    assert!(flag.fields.contains_key("Alternate interpretation"));
+    assert!(
+        rows.iter()
+            .all(|r| r.text("PID") == "42" && !r.text("Text").contains("must"))
+    );
+    let mut artifact =
+        volgui::extracted_files::open_artifact(&case.run_dir(&dump.id).join("pid.42.dmp")).unwrap();
+    use std::io::{Read, Seek, SeekFrom};
+    artifact
+        .seek(SeekFrom::Start(
+            flag.fields["Dump offset"].as_u64().unwrap(),
+        ))
+        .unwrap();
+    let mut original = vec![0; flag.fields["Byte length"].as_u64().unwrap() as usize];
+    artifact.read_exact(&mut original).unwrap();
+    assert_eq!(
+        original,
+        "unsaved{example_flag}"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    drop(artifact);
+    let mut filtered_args = run.arguments.clone();
+    filtered_args.extend(["--contains".into(), "EXAMPLE_FLAG".into()]);
+    let filtered =
+        analysis::prepare(&case.document.evidence[0], APPLICATION, filtered_args).unwrap();
+    let filtered = analysis::execute(
+        &case.directory,
+        &case.document,
+        &filtered,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(filtered.status, RunStatus::Completed);
+    assert!(
+        filtered
+            .table
+            .unwrap()
+            .rows
+            .iter()
+            .all(|r| r.text("Text").contains("example_flag"))
+    );
+    case.finish(&run.id, &outcome).unwrap();
+    let stored = case
+        .document
+        .runs
+        .iter_mut()
+        .find(|r| r.id == run.id)
+        .unwrap();
+    stored.arguments = vec!["changed after completion".into()];
+    stored.command = vec!["changed after completion".into()];
+    case.save().unwrap();
+    let directory = case.directory.clone();
+    drop(case);
+    let reopened = Case::open(&directory).unwrap();
+    assert_eq!(
+        reopened
+            .document
+            .runs
+            .iter()
+            .find(|r| r.id == run.id)
+            .unwrap()
+            .arguments,
+        run.arguments
+    );
+    assert_eq!(
+        reopened
+            .document
+            .runs
+            .iter()
+            .find(|r| r.id == run.id)
+            .unwrap()
+            .command,
+        run.command
+    );
+    let csv = ResultStore::at(&directory)
+        .export_csv(&Query {
+            runs: vec![run.id.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(csv.contains("Carol Edited") && csv.contains("unsaved{example_flag}"));
+    let mut changed = run;
+    changed.evidence_id = reopened.document.evidence[1].id.clone();
+    let outcome = analysis::execute(
+        &directory,
+        &reopened.document,
+        &changed,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Failed);
+}
+
+#[test]
+fn deferred_application_sources_and_queue_order_survive_a_restart_before_execution() {
+    use volgui::{
+        analyses::{AnalysisDraft, prepare_application_recovery},
+        analysis::{APPLICATION, application},
+    };
+    let (_temp, mut case, mut engine) = setup();
+    engine.plugins.push(Plugin {
+        id: application::VADINFO.into(),
+        description: String::new(),
+    });
+    save(
+        &mut case,
+        0,
+        application::INVENTORY[0],
+        vec![],
+        json!([{"PID":42,"ImageFileName":"Notepad.exe"}]),
+    );
+    save(&mut case, 0, application::INVENTORY[1], vec![], json!([]));
+    let mut draft = AnalysisDraft::new(&case.document.evidence[0]);
+    draft.selected.insert(APPLICATION.into());
+    draft
+        .arguments
+        .insert(APPLICATION.into(), "--pid 42".into());
+    let pending = draft
+        .prepare_in_case(&engine, &case.document.evidence[0], &case)
+        .unwrap();
+    let placeholder = pending.last().unwrap().clone();
+    case.queue_batch(pending).unwrap();
+    let later =
+        analysis::prepare(&case.document.evidence[0], STRINGS, vec!["later".into()]).unwrap();
+    case.queue(later.clone()).unwrap();
+    let expanded = prepare_application_recovery(&case, &engine, &placeholder).unwrap();
+    assert_eq!(expanded.len(), 3);
+    let index = case
+        .document
+        .runs
+        .iter()
+        .position(|r| r.id == placeholder.id)
+        .unwrap();
+    case.document.runs.splice(index..=index, expanded);
+    case.save().unwrap();
+    let expected: Vec<_> = case.document.runs.iter().map(|r| r.id.clone()).collect();
+    let stored = volgui::case::CaseSnapshot::load(&case.directory).unwrap();
+    assert_eq!(
+        volgui::analyses::next_queued_run(&stored.runs, std::num::NonZeroUsize::new(2).unwrap()),
+        Some(index)
+    );
+    let directory = case.directory.clone();
+    drop(case);
+    let reopened = Case::open(&directory).unwrap();
+    assert_eq!(
+        reopened
+            .document
+            .runs
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let tail = &reopened.document.runs[index..];
+    assert_eq!(tail[0].plugin, application::VADINFO);
+    assert_eq!(tail[1].plugin, application::MEMMAP);
+    assert_eq!(tail[2].id, placeholder.id);
+    assert_eq!(tail[3].id, later.id);
+    assert!(tail[2].arguments.contains(&tail[0].id) && tail[2].arguments.contains(&tail[1].id));
+    assert!(tail.iter().all(|r| r.status == RunStatus::Interrupted));
 }

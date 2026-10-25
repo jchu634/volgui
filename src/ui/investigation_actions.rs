@@ -2,6 +2,83 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn open_application_dump(&mut self, cx: &mut Context<Self>) {
+        let pid = self.application_pid.read(cx).value().trim().to_string();
+        let source = self.case.as_ref().and_then(|case| {
+            case.document
+                .runs
+                .iter()
+                .rev()
+                .find(|run| {
+                    Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                        && run.plugin == analysis::application::MEMMAP
+                        && run.status == RunStatus::Completed
+                        && run.arguments == ["--pid".to_string(), pid.clone(), "--dump".to_string()]
+                })
+                .map(|run| case.run_dir(&run.id).join(format!("pid.{pid}.dmp")))
+        });
+        if let Some(path) = source {
+            self.open_hex_file(vec![path.clone()], path, 0, cx);
+        } else {
+            self.error =
+                Some("No completed memory dump for this PID. Scan the process first.".into());
+            cx.notify();
+        }
+    }
+    pub(super) fn scan_application_memory(
+        &mut self,
+        pid: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pid = pid.unwrap_or_else(|| self.application_pid.read(cx).value().trim().to_string());
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure analysis engine in settings")?;
+            let case = self.case.as_ref().ok_or("Open a case first")?;
+            let mut draft = AnalysisDraft::new(evidence);
+            draft.selected.insert(analysis::APPLICATION.into());
+            draft.arguments.insert(
+                analysis::APPLICATION.into(),
+                volgui::volatility::format_arguments(&["--pid".into(), pid.clone()]),
+            );
+            draft.prepare_in_case(engine, evidence, case)
+        })();
+        match result {
+            Ok(runs) => {
+                let id = runs.last().map(|r| r.id.clone());
+                self.application_pid
+                    .update(cx, |input, cx| input.set_value(pid, window, cx));
+                self.queue_investigation(runs, window, cx);
+                if let Some(id) = id {
+                    self.select_run(id, window, cx);
+                }
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn step_application_match(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|record| self.index.ids.iter().position(|id| *id == record.id));
+        let index = match (current, forward) {
+            (Some(index), true) => index.saturating_add(1),
+            (Some(index), false) => index.saturating_sub(1),
+            _ => 0,
+        };
+        if let Some(id) = self.index.ids.get(index).copied() {
+            self.load_record(id, cx);
+        }
+    }
+
     pub(super) fn recover_and_analyze_browser(
         &mut self,
         window: &mut Window,
@@ -12,7 +89,7 @@ impl Workspace {
             let engine = self
                 .installation
                 .as_ref()
-                .ok_or("Configure Volatility in settings")?;
+                .ok_or("Configure analysis engine in settings")?;
             let output = self
                 .case
                 .as_ref()
@@ -91,7 +168,7 @@ impl Workspace {
             let engine = self
                 .installation
                 .as_ref()
-                .ok_or("Configure Volatility in settings")?;
+                .ok_or("Configure analysis engine in settings")?;
             let case = self.case.as_ref().ok_or("Open a case first")?;
             engine.prepare(evidence, plugin, vec![], &case.directory.join("analyses"))
         })();
@@ -186,10 +263,9 @@ impl Workspace {
             if let Some(cached) = analysis::registry::cached(case, source, &arguments) {
                 return Ok((cached.id.clone(), None));
             }
-            let engine = self
-                .installation
-                .as_ref()
-                .ok_or("Configure Volatility to read registry keys that have not been collected")?;
+            let engine = self.installation.as_ref().ok_or(
+                "Configure analysis engine to read registry keys that have not been collected",
+            )?;
             let requested =
                 analysis::registry::prepare(case, engine, source, &record.record, &key, recurse)?;
             Ok::<_, String>((requested.id.clone(), Some(requested)))
@@ -247,6 +323,19 @@ impl Workspace {
     }
 
     pub(super) fn collect_process_handles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.collect_process_artifacts(false, window, cx);
+    }
+
+    pub(super) fn collect_process_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.collect_process_artifacts(true, window, cx);
+    }
+
+    fn collect_process_artifacts(
+        &mut self,
+        dump_files: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let result = (|| {
             let record = self.selected.as_ref().ok_or("Select a process")?;
             let case = self.case.as_ref().ok_or("Open a case")?;
@@ -267,8 +356,13 @@ impl Workspace {
                 .map(|key| record.record.text(key))
                 .find(|p| p.parse::<u64>().is_ok())
                 .ok_or("Selected record has no PID")?;
-            let engine = self.installation.as_ref().ok_or("Configure Volatility")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure analysis engine")?;
             let plugin = match evidence.operating_system {
+                OperatingSystem::Windows if dump_files => "windows.dumpfiles.DumpFiles",
+                _ if dump_files => return Err("Dump Files requires Windows evidence".into()),
                 OperatingSystem::Linux => "linux.lsof.Lsof",
                 OperatingSystem::Macos => "mac.lsof.Lsof",
                 _ => "windows.handles.Handles",

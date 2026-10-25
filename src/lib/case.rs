@@ -1,6 +1,6 @@
 // Persists case metadata, evidence, runs, and bookmarks.
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -14,13 +14,14 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::volatility::{Outcome, Table};
-use crate::{
-    artifacts::OperatingSystem,
-    results::{DATABASE, ResultStore},
-};
+use crate::{artifacts::OperatingSystem, results::ResultStore};
+
+#[path = "case/persistence.rs"]
+mod persistence;
+pub use persistence::SaveCheckpoint;
 
 pub type Result<T> = std::result::Result<T, String>;
-pub const MANIFEST: &str = "case.volgui.json";
+pub use crate::database::DATABASE;
 
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
@@ -198,8 +199,7 @@ pub struct Annotation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CaseDocument {
-    pub schema_version: u32,
+pub struct CaseSnapshot {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
@@ -227,8 +227,9 @@ impl QueueClearScope {
 
 pub struct Case {
     pub directory: PathBuf,
-    pub document: CaseDocument,
+    pub document: CaseSnapshot,
     _lock: File,
+    saves: Option<persistence::BackgroundSaves>,
 }
 
 fn lock_case(directory: &Path) -> Result<File> {
@@ -246,20 +247,26 @@ fn lock_case(directory: &Path) -> Result<File> {
 }
 
 impl Case {
+    /// Create a case at an explicit path. The UI uses create_named instead.
     pub fn create(directory: &Path, name: &str) -> Result<Self> {
         if name.trim().is_empty() {
             return Err("Enter a case name".into());
         }
+        if directory.exists()
+            && fs::read_dir(directory)
+                .map_err(|e| e.to_string())?
+                .next()
+                .is_some()
+        {
+            return Err("Choose an empty directory for a new case".into());
+        }
         fs::create_dir_all(directory).map_err(|e| e.to_string())?;
         let lock = lock_case(directory)?;
-        if directory.join(MANIFEST).exists() {
-            return Err("This directory already contains a case. Open it instead.".into());
-        }
         let mut case = Self {
             directory: directory.canonicalize().map_err(|e| e.to_string())?,
             _lock: lock,
-            document: CaseDocument {
-                schema_version: 1,
+            saves: None,
+            document: CaseSnapshot {
                 name: name.trim().into(),
                 created_at: now(),
                 updated_at: now(),
@@ -274,67 +281,73 @@ impl Case {
         Ok(case)
     }
 
+    pub fn create_named(parent: &Path, name: &str) -> Result<Self> {
+        let name = Self::validate_name(name)?;
+        fs::create_dir_all(parent).map_err(|e| format!("Cannot create case location: {e}"))?;
+        let parent = parent
+            .canonicalize()
+            .map_err(|e| format!("Choose an existing case directory: {e}"))?;
+        if !parent.is_dir() {
+            return Err("Choose a directory for the case location".into());
+        }
+        let directory = parent.join(&name);
+        fs::create_dir(&directory)
+            .map_err(|e| format!("Cannot create case folder {}: {e}", directory.display()))?;
+        Self::create(&directory, &name)
+    }
+
+    pub fn validate_name(name: &str) -> Result<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Enter a case name".into());
+        }
+        let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+        if name == "."
+            || name == ".."
+            || name.ends_with(['.', ' '])
+            || name
+                .chars()
+                .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+            || [
+                "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+                "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+                "LPT9",
+            ]
+            .contains(&stem.as_str())
+        {
+            return Err("Use a case name that is a valid folder name".into());
+        }
+        Ok(name.into())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
-        let manifest = if path.is_dir() {
-            path.join(MANIFEST)
+        let database = if path.is_dir() {
+            path.join(DATABASE)
         } else {
             path.to_owned()
         };
-        let manifest = manifest
+        if database.file_name().is_none_or(|n| n != DATABASE) {
+            return Err(
+                "Open case.sqlite from a new-format case. Legacy cases are not supported.".into(),
+            );
+        }
+        let database = database
             .canonicalize()
-            .map_err(|e| format!("Cannot open case: {e}"))?;
-        let lock = lock_case(manifest.parent().unwrap())?;
-        let document: CaseDocument =
-            serde_json::from_reader(File::open(&manifest).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("Invalid case file: {e}"))?;
-        if document.schema_version != 1 {
-            return Err("Unsupported case format version".into());
-        }
-        let mut ids = HashSet::new();
-        for id in document
-            .evidence
-            .iter()
-            .map(|e| &e.id)
-            .chain(document.runs.iter().map(|r| &r.id))
-        {
-            if Uuid::parse_str(id).is_err() || !ids.insert(id.clone()) {
-                return Err("Invalid or duplicate case identifier".into());
-            }
-        }
-        if document
-            .runs
-            .iter()
-            .any(|r| !document.evidence.iter().any(|e| e.id == r.evidence_id))
-        {
-            return Err("Analysis references missing evidence".into());
-        }
-        if document.annotations.iter().any(|a| {
-            !document
-                .runs
-                .iter()
-                .any(|r| r.id == a.run_id && a.row < r.row_count)
-        }) {
-            return Err("Annotation references a missing artifact".into());
-        }
+            .map_err(|e| format!("Cannot open case database: {e}"))?;
+        let directory = database
+            .parent()
+            .ok_or("Case database has no parent")?
+            .to_owned();
+        // Validate the format before touching a legacy case directory.
+        crate::database::connect(&directory)?;
+        let lock = lock_case(&directory)?;
+        ResultStore::open(&directory)?;
         let mut case = Self {
-            directory: manifest.parent().unwrap().to_owned(),
-            document,
+            document: CaseSnapshot::load(&directory)?,
+            directory,
             _lock: lock,
+            saves: None,
         };
-        ResultStore::open(&case.directory)?;
-        for evidence in &mut case.document.evidence {
-            if evidence.operating_system == OperatingSystem::Unknown {
-                evidence.operating_system = case
-                    .document
-                    .runs
-                    .iter()
-                    .rev()
-                    .filter(|r| r.evidence_id == evidence.id)
-                    .map(|r| OperatingSystem::for_plugin(&r.plugin))
-                    .find(|os| *os != OperatingSystem::Unknown)
-                    .unwrap_or_default();
-            }
-        }
         let mut changed = false;
         for run in &mut case.document.runs {
             if matches!(run.status, RunStatus::Running | RunStatus::Queued) {
@@ -350,9 +363,51 @@ impl Case {
         Ok(case)
     }
 
+    /// Persist the snapshot in one SQLite transaction, or enqueue it after
+    /// enable_background_saves. Poll asynchronous failures with poll_save and
+    /// use save_checkpoint before work that requires durable metadata.
+    /// Binary and finding rows belong to ingestion and are never replaced here.
     pub fn save(&mut self) -> Result<()> {
+        let previous = self.document.updated_at.clone();
         self.document.updated_at = now();
-        atomic_json(&self.directory.join(MANIFEST), &self.document)
+        let result = match &mut self.saves {
+            Some(saves) => saves.save(&self.document),
+            None => (|| {
+                let db = crate::database::connect(&self.directory)?;
+                let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+                self.document.persist(tx)
+            })(),
+        };
+        if result.is_err() {
+            self.document.updated_at = previous;
+        }
+        result
+    }
+
+    /// Desktop callers enqueue snapshots instead of waiting for SQLite's writer.
+    /// Check poll_save for failures; CLI callers keep synchronous save semantics.
+    pub fn enable_background_saves(&mut self) -> Result<()> {
+        if self.saves.is_none() {
+            self.saves = Some(persistence::BackgroundSaves::start(self.directory.clone())?);
+        }
+        Ok(())
+    }
+
+    pub fn poll_save(&mut self) -> Option<Result<()>> {
+        self.saves.as_mut()?.poll()
+    }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.saves
+            .as_ref()
+            .is_some_and(|saves| saves.has_unsaved_changes())
+    }
+
+    pub fn save_checkpoint(&self) -> Result<SaveCheckpoint> {
+        match &self.saves {
+            Some(saves) => saves.checkpoint(),
+            None => Ok(SaveCheckpoint::completed()),
+        }
     }
 
     pub fn add_evidence(&mut self, evidence: Evidence) -> Result<()> {
@@ -468,6 +523,17 @@ impl Case {
     }
 
     pub fn finish(&mut self, id: &str, outcome: &Outcome) -> Result<()> {
+        if !self.document.runs.iter().any(|run| run.id == id) {
+            return Err("Unknown analysis".into());
+        }
+        crate::object_store::ObjectStore::at(&self.directory)
+            .capture_run(id, &AtomicBool::new(false))?;
+        self.finish_recorded(id, outcome)
+    }
+
+    /// Complete metadata after the worker has archived outputs and imported
+    /// findings. This path performs no binary IO on the UI thread.
+    pub fn finish_recorded(&mut self, id: &str, outcome: &Outcome) -> Result<()> {
         let store = ResultStore::at(&self.directory);
         if let Some(table) = &outcome.table {
             let run = self
@@ -502,10 +568,6 @@ impl Case {
             return Err("Unknown analysis".into());
         }
         let store = ResultStore::at(&self.directory);
-        if !store.contains(id)? {
-            self.document
-                .migrate_results(&self.directory, &AtomicBool::new(false))?;
-        }
         store.table(id)
     }
 
@@ -555,7 +617,90 @@ impl Case {
     }
 }
 
-impl CaseDocument {
+impl CaseSnapshot {
+    /// Read the authoritative database. This value is a UI/query snapshot only.
+    pub fn load(directory: &Path) -> Result<Self> {
+        let db = crate::database::connect(directory)?;
+        let (name, created_at, updated_at) = db
+            .query_row(
+                "SELECT name,created_at,updated_at FROM case_meta WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| format!("Cannot read case metadata: {e}"))?;
+        let mut evidence = Vec::new();
+        let mut statement = db.prepare("SELECT id,path,size,modified_ns,sha256,added_at,verification_json,operating_system FROM evidence ORDER BY rowid").map_err(|e|e.to_string())?;
+        let mut rows = statement.query([]).map_err(|e| e.to_string())?;
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            let get = |i| r.get::<_, String>(i).map_err(|e| e.to_string());
+            evidence.push(Evidence {
+                id: get(0)?,
+                path: get(1)?.into(),
+                size: r.get::<_, i64>(2).map_err(|e| e.to_string())? as u64,
+                modified_ns: r
+                    .get::<_, Option<String>>(3)
+                    .map_err(|e| e.to_string())?
+                    .map(|s| s.parse::<u128>().map_err(|e| e.to_string()))
+                    .transpose()?,
+                sha256: get(4)?,
+                added_at: get(5)?,
+                verification: r
+                    .get::<_, Option<String>>(6)
+                    .map_err(|e| e.to_string())?
+                    .map(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+                    .transpose()?,
+                operating_system: serde_json::from_str(&get(7)?).map_err(|e| e.to_string())?,
+            });
+        }
+        let mut runs = Vec::new();
+        let mut cleared_queue_runs = BTreeSet::new();
+        let mut statement = db.prepare("SELECT r.id,evidence_id,plugin,arguments_json,command_json,engine_version,created_at,started_at,finished_at,status,exit_code,message,queue_hidden,COALESCE((SELECT row_count FROM scans WHERE run_id=r.id),0) FROM analysis_runs r ORDER BY r.rowid").map_err(|e|e.to_string())?;
+        let mut rows = statement.query([]).map_err(|e| e.to_string())?;
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            let get = |i| r.get::<_, String>(i).map_err(|e| e.to_string());
+            let id = get(0)?;
+            if r.get::<_, bool>(12).map_err(|e| e.to_string())? {
+                cleared_queue_runs.insert(id.clone());
+            }
+            runs.push(Run {
+                id,
+                evidence_id: get(1)?,
+                plugin: get(2)?,
+                arguments: serde_json::from_str(&get(3)?).map_err(|e| e.to_string())?,
+                command: serde_json::from_str(&get(4)?).map_err(|e| e.to_string())?,
+                engine_version: get(5)?,
+                created_at: get(6)?,
+                started_at: r.get(7).map_err(|e| e.to_string())?,
+                finished_at: r.get(8).map_err(|e| e.to_string())?,
+                status: serde_json::from_str(&get(9)?).map_err(|e| e.to_string())?,
+                exit_code: r.get(10).map_err(|e| e.to_string())?,
+                message: get(11)?,
+                row_count: r.get::<_, i64>(13).map_err(|e| e.to_string())? as usize,
+            });
+        }
+        let mut statement = db.prepare("SELECT run_id,row_index,bookmarked,note FROM annotations ORDER BY run_id,row_index").map_err(|e|e.to_string())?;
+        let annotations = statement
+            .query_map([], |r| {
+                Ok(Annotation {
+                    run_id: r.get(0)?,
+                    row: r.get::<_, i64>(1)? as usize,
+                    bookmarked: r.get(2)?,
+                    note: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            name,
+            created_at,
+            updated_at,
+            evidence,
+            runs,
+            annotations,
+            cleared_queue_runs,
+        })
+    }
     pub fn queue_runs(&self) -> impl DoubleEndedIterator<Item = &Run> {
         self.runs.iter().filter(|run| {
             matches!(run.status, RunStatus::Queued | RunStatus::Running)
@@ -563,24 +708,6 @@ impl CaseDocument {
         })
     }
 
-    pub fn migrate_results(&self, directory: &Path, cancel: &AtomicBool) -> Result<()> {
-        let store = ResultStore::open(directory)?;
-        for run in self
-            .runs
-            .iter()
-            .filter(|r| r.status == RunStatus::Completed)
-        {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Case loading cancelled".into());
-            }
-            if !store.contains(&run.id)? {
-                let table =
-                    Table::read(&directory.join("analyses").join(&run.id).join("stdout.json"))?;
-                store.insert_cancellable(run, &table, cancel)?;
-            }
-        }
-        Ok(())
-    }
     pub fn export(&self, directory: &Path, path: &Path, content: &[u8]) -> Result<()> {
         self.export_reader(directory, path, &mut &content[..])
     }
@@ -604,11 +731,12 @@ impl CaseDocument {
             .any(|e| e.path == canonical || e.path == target)
             || target.file_name().is_some_and(|n| {
                 let name = n.to_string_lossy();
-                name.eq_ignore_ascii_case(MANIFEST)
+                name.eq_ignore_ascii_case(DATABASE)
                     || name.eq_ignore_ascii_case(".volgui.lock")
                     || name.to_ascii_lowercase().starts_with(DATABASE)
             })
             || canonical.starts_with(directory.join("analyses"))
+            || canonical.starts_with(directory.join("objects"))
         {
             return Err(
                 "Choose an export path outside original evidence and saved analysis files".into(),
@@ -646,6 +774,29 @@ impl CaseDocument {
         for r in &self.runs {
             html.push_str(&format!("<tr><td>{}<br>{}</td><td>{}<br>{}</td><td>{} · {} rows<br>Queued {}<br>Started {}<br>Finished {}<br>Exit {:?}</td><td><pre>{}</pre>{}</td></tr>", escape_html(&r.plugin), escape_html(&r.engine_version), escape_html(&r.evidence_id), r.id, r.status.label(), r.row_count, escape_html(&r.created_at), escape_html(r.started_at.as_deref().unwrap_or("Not started")), escape_html(r.finished_at.as_deref().unwrap_or("Not finished")), r.exit_code, escape_html(&serde_json::to_string(&r.command).unwrap_or_default()), escape_html(&r.message)));
         }
+        html.push_str("</table><h2>Managed binary outputs</h2><table><tr><th>Analysis / logical name</th><th>Bytes</th><th>SHA-256</th><th>Availability</th></tr>");
+        let db = crate::database::connect(directory)?;
+        let mut statement = db.prepare("SELECT run_id,name,size,sha256,blocked_reason FROM analysis_outputs ORDER BY run_id,name").map_err(|e|e.to_string())?;
+        let mut outputs = statement.query([]).map_err(|e| e.to_string())?;
+        while let Some(output) = outputs.next().map_err(|e| e.to_string())? {
+            let run: String = output.get(0).map_err(|e| e.to_string())?;
+            let name: String = output.get(1).map_err(|e| e.to_string())?;
+            let size: Option<i64> = output.get(2).map_err(|e| e.to_string())?;
+            let sha: Option<String> = output.get(3).map_err(|e| e.to_string())?;
+            let blocked: Option<String> = output.get(4).map_err(|e| e.to_string())?;
+            html.push_str(&format!(
+                "<tr><td>{}<br>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                escape_html(&run),
+                escape_html(&name),
+                size.map(|n| n.to_string()).unwrap_or_default(),
+                escape_html(sha.as_deref().unwrap_or("No stored content")),
+                escape_html(
+                    blocked
+                        .as_deref()
+                        .unwrap_or("Stored; integrity checked when read")
+                )
+            ));
+        }
         html.push_str("</table><h2>Bookmarked and annotated artifacts</h2>");
         let store = ResultStore::at(directory);
         for a in &self.annotations {
@@ -678,4 +829,67 @@ pub fn escape_html(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+// Drain accepted saves before releasing the exclusive case lock on shutdown.
+impl Drop for Case {
+    fn drop(&mut self) {
+        self.saves.take();
+    }
+}
+
+impl CaseSnapshot {
+    fn persist(&self, tx: rusqlite::Transaction<'_>) -> Result<()> {
+        tx.execute("INSERT INTO case_meta VALUES(1,?1,?2,?3) ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at",
+            rusqlite::params![self.name,self.created_at,self.updated_at]).map_err(|e|e.to_string())?;
+        for e in &self.evidence {
+            tx.execute("INSERT INTO evidence VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET verification_json=excluded.verification_json,modified_ns=excluded.modified_ns,operating_system=excluded.operating_system",
+                rusqlite::params![e.id,e.path.to_str().ok_or("Evidence path is not UTF-8")?,e.size as i64,e.modified_ns.map(|n|n.to_string()),e.sha256,e.added_at,e.verification.as_ref().map(serde_json::to_string).transpose().map_err(|e|e.to_string())?,serde_json::to_string(&e.operating_system).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+        }
+        for r in &self.runs {
+            // Only an unstarted application placeholder can resolve its arguments
+            // in place. Executed commands and source IDs remain immutable.
+            tx.execute("INSERT INTO analysis_runs VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(id) DO UPDATE SET arguments_json=CASE WHEN analysis_runs.plugin=?14 AND analysis_runs.message=?15 AND analysis_runs.started_at IS NULL THEN excluded.arguments_json ELSE analysis_runs.arguments_json END,command_json=CASE WHEN analysis_runs.plugin=?14 AND analysis_runs.message=?15 AND analysis_runs.started_at IS NULL THEN excluded.command_json ELSE analysis_runs.command_json END,started_at=excluded.started_at,finished_at=excluded.finished_at,status=excluded.status,exit_code=excluded.exit_code,message=excluded.message,queue_hidden=excluded.queue_hidden",
+                rusqlite::params![r.id,r.evidence_id,r.plugin,serde_json::to_string(&r.arguments).map_err(|e|e.to_string())?,serde_json::to_string(&r.command).map_err(|e|e.to_string())?,r.engine_version,r.created_at,r.started_at,r.finished_at,serde_json::to_string(&r.status).map_err(|e|e.to_string())?,r.exit_code,r.message,self.cleared_queue_runs.contains(&r.id),crate::analysis::APPLICATION,crate::analyses::APPLICATION_RECOVERY_PENDING]).map_err(|e|e.to_string())?;
+        }
+        // Deferred recovery inserts prerequisite jobs before an existing parser.
+        // Run IDs are stable foreign keys; rowid is only the persisted queue order.
+        let stored_order = tx
+            .prepare("SELECT id FROM analysis_runs ORDER BY rowid")
+            .map_err(|e| e.to_string())?
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        if !stored_order.iter().eq(self.runs.iter().map(|run| &run.id)) {
+            let mut position: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(rowid),0) FROM analysis_runs",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            for run in &self.runs {
+                position = position
+                    .checked_add(1)
+                    .ok_or("Analysis queue order exceeds SQLite limits")?;
+                tx.execute(
+                    "UPDATE analysis_runs SET rowid=?1 WHERE id=?2",
+                    rusqlite::params![position, run.id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        tx.execute("DELETE FROM annotations", [])
+            .map_err(|e| e.to_string())?;
+        for a in &self.annotations {
+            tx.execute(
+                "INSERT INTO annotations VALUES(?1,?2,?3,?4)",
+                rusqlite::params![a.run_id, a.row as i64, a.bookmarked, a.note],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }

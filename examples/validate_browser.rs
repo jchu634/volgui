@@ -2,7 +2,7 @@
 use std::{collections::BTreeSet, path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{
     analysis,
-    case::{Case, CaseDocument, RunStatus, now},
+    case::{Case, CaseSnapshot, RunStatus, now},
     settings::Settings,
     volatility::{Installation, Table},
 };
@@ -16,10 +16,7 @@ fn main() -> Result<(), String> {
     let output = PathBuf::from(args.next().ok_or("Specify a new case directory")?);
     let executable = PathBuf::from(args.next().ok_or("Specify the external engine")?);
     let selected: BTreeSet<_> = args.map(|a| a.to_string_lossy().into_owned()).collect();
-    let document: CaseDocument = serde_json::from_reader(
-        std::fs::File::open(source.join("case.volgui.json")).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    let document = CaseSnapshot::load(&source)?;
     let cancel = AtomicBool::new(false);
     let evidence = document
         .evidence

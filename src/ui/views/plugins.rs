@@ -47,6 +47,7 @@ impl Workspace {
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.arguments
             .update(cx, |s, cx| s.set_value("", window, cx));
+        self.sync_application_options(window, cx);
         let workspace = cx.entity().downgrade();
         let panel = cx.new(|cx| AnalysisPanel {
             _subscription: cx.observe(&workspace.upgrade().unwrap(), |_, _, cx| cx.notify()),
@@ -123,8 +124,8 @@ impl Workspace {
             .child(evidence)
             .child(os);
         let Some(engine) = &self.installation else {
-            return page.child(div().text_sm().child("Configure Volatility to choose analyses. The evidence has already been added to the case."))
-                .child(Button::new("analysis-settings").label("Configure Volatility").on_click(cx.listener(|this,_,window,cx| this.open_settings(window,cx))))
+            return page.child(div().text_sm().child("Configure analysis engine to choose analyses. The evidence has already been added to the case."))
+                .child(Button::new("analysis-settings").label("Configure analysis engine").on_click(cx.listener(|this,_,window,cx| this.open_settings(window,cx))))
                 .child(Button::new("analysis-later").label("Choose later").on_click(|_,window,cx| window.close_dialog(cx))).into_any_element();
         };
         let mut plugins = chooser_plugins(
@@ -327,8 +328,42 @@ impl Workspace {
                     .small()
                     .header_row_height(px(32.)),
             );
+        if draft.selected.contains(volgui::analysis::APPLICATION)
+            || self.analysis_group_filter == Some(ArtifactGroup::Applications)
+            || self.plugin.as_deref() == Some(volgui::analysis::APPLICATION)
+        {
+            page =
+                page.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child("Process memory PID")
+                        .child(
+                            Input::new(&self.analysis_application_pid)
+                                .id("analysis-memory-pid")
+                                .aria_label("Process ID to scan")
+                                .small()
+                                .w(px(150.)),
+                        )
+                        .child("Containing text")
+                        .child(
+                            Input::new(&self.analysis_application_contains)
+                                .id("analysis-memory-contains")
+                                .aria_label("Optional text filter for process memory")
+                                .small()
+                                .w(px(250.)),
+                        )
+                        .child(div().text_xs().child(
+                            "Choose any process. Its memory opens as hex beside decoded text.",
+                        )),
+                );
+        }
         let mut body = div().flex().flex_1().min_h_0().gap_3().child(table);
-        if let Some(id) = &self.plugin {
+        if let Some(id) = &self.plugin
+            && id != volgui::analysis::APPLICATION
+        {
             body=body.child(div().flex().flex_col().gap_3().w(px(255.)).flex_shrink_0()
                 .child(heading("PLUGIN OPTIONS",cx))
                 .child(div().text_sm().child(id.clone()))

@@ -1,9 +1,10 @@
+mod dedup;
 pub(super) mod memory;
 mod search;
 
 use super::{record, table};
 use crate::{
-    case::{CaseDocument, Run, RunStatus},
+    case::{CaseSnapshot, Run, RunStatus},
     extracted_files,
     volatility::{Record, Table},
 };
@@ -11,7 +12,6 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
-    fs::File,
     io::Read,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -22,7 +22,7 @@ const SESSION_LIMIT: u64 = 32 * 1024 * 1024;
 
 pub(super) fn analyze(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     run: &Run,
     cancel: &AtomicBool,
     progress: &impl Fn(String),
@@ -190,7 +190,7 @@ pub(super) fn analyze(
         ));
     }
     let message = format!(
-        "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
+        "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Matching memory searches and query prefixes are grouped under the longest query within each process, source, endpoint and query origin. Search variants retain the original URLs, addresses and counts; Grouped occurrences totals those counts. Prefix grouping does not establish which queries were submitted. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
         rows.len(),
         warnings.join("\n")
     );
@@ -199,10 +199,11 @@ pub(super) fn analyze(
 
 pub(super) fn blocked_artifact(directory: &Path, source: &str, path: &Path, error: &str) -> Record {
     let persisted = extracted_files::block_artifact(path, error);
+    let blocked = extracted_files::ensure_openable(path).is_err();
     record(json!({
         "Kind": "Unavailable artifact",
-        "Status": "Potential malware / unavailable",
-        "Opening blocked": true,
+        "Status": if blocked { "Potential malware / unavailable" } else { "Temporarily unavailable" },
+        "Opening blocked": blocked,
         "Source run": source,
         "Source file": path.strip_prefix(directory).unwrap_or(path).display().to_string(),
         "Observation": format!("{error}. The artifact may have been quarantined, deleted or denied access. Malware is not confirmed by this error."),
@@ -361,7 +362,7 @@ fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(
 
 fn read_session(path: &Path) -> Result<Vec<u8>, String> {
     let mut data = Vec::new();
-    File::open(path)
+    extracted_files::open_artifact(path)
         .map_err(|e| e.to_string())?
         .take(SESSION_LIMIT + 1)
         .read_to_end(&mut data)

@@ -17,6 +17,9 @@ pub struct Column {
 impl Column {
     pub fn text(&self, record: &Record) -> String {
         let value = field_text(record, &self.fields);
+        if self.key == "Text" {
+            return value.split_whitespace().collect::<Vec<_>>().join(" ");
+        }
         if self.ports.is_empty() {
             cell_text(&value)
         } else {
@@ -41,6 +44,7 @@ impl Column {
             "createtime" | "exittime" | "created" | "modified" | "accesstime" => 240.,
             "process" | "target" | "source" => 220.,
             "path" => 300.,
+            "text" => 320.,
             _ => 180.,
         }
     }
@@ -112,6 +116,15 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
             ("URL", &["URL"]),
             ("Virtual address", &["Virtual address"]),
             ("Source file", &["Source file"]),
+        ],
+        Some(ArtifactGroup::Applications) => &[
+            ("PID", &["PID"]),
+            ("Application", &["Application"]),
+            ("Type", &["Kind"]),
+            ("Text", &["Text"]),
+            ("Encoding", &["Encoding"]),
+            ("Virtual address", &["Virtual address"]),
+            ("Occurrences", &["Occurrences"]),
         ],
         Some(ArtifactGroup::Strings) => &[
             ("Offset", &["Offset"]),
@@ -257,6 +270,21 @@ pub fn cell_text(value: &str) -> String {
     match timestamp {
         Ok(time) => time.format("%H:%M:%S (%d-%m-%Y)(%:z)").to_string(),
         Err(_) => value.into(),
+    }
+}
+
+/// Recover the host for profile artifacts and older saved browser results.
+pub fn populate_domain(record: &mut Record) {
+    if record
+        .fields
+        .get("Domain")
+        .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
+        && let Ok(url) = url::Url::parse(&record.text("URL"))
+        && let Some(host) = url.host_str()
+    {
+        record
+            .fields
+            .insert("Domain".into(), serde_json::json!(host));
     }
 }
 
@@ -472,23 +500,6 @@ mod tests {
             "CommandLine",
         ] {
             assert!(visible_column(column), "{column}");
-        }
-    }
-}
-
-/// Recover the host for profile artifacts and older saved browser results.
-pub fn populate_domain(record: &mut Record) {
-    if record
-        .fields
-        .get("Domain")
-        .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
-    {
-        if let Ok(url) = url::Url::parse(&record.text("URL")) {
-            if let Some(host) = url.host_str() {
-                record
-                    .fields
-                    .insert("Domain".into(), serde_json::json!(host));
-            }
         }
     }
 }

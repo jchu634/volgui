@@ -7,10 +7,16 @@ pub mod analysis;
 pub mod artifacts;
 #[path = "lib/case.rs"]
 pub mod case;
+#[path = "lib/database.rs"]
+pub mod database;
 #[path = "lib/extracted_files.rs"]
 pub mod extracted_files;
 #[path = "lib/file_content.rs"]
 pub mod file_content;
+#[path = "lib/hex_editor.rs"]
+pub mod hex_editor;
+#[path = "lib/object_store.rs"]
+pub mod object_store;
 #[path = "lib/result_table.rs"]
 pub mod result_table;
 #[path = "lib/result_tree.rs"]
