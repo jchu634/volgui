@@ -28,6 +28,7 @@ pub struct StoredRecord {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Query {
+    pub filters: std::collections::BTreeMap<String, BTreeSet<String>>,
     pub runs: Vec<String>,
     pub text: String,
     pub sort: Option<(String, bool)>,
@@ -90,6 +91,20 @@ impl ResultStore {
             .map_err(|e| e.to_string())?;
         db.pragma_update(None, "foreign_keys", true)
             .map_err(|e| e.to_string())?;
+        db.create_scalar_function(
+            "browser_domain",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                let value: Option<String> = ctx.get(0)?;
+                Ok(value
+                    .and_then(|value| url::Url::parse(&value).ok())
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .unwrap_or_default())
+            },
+        )
+        .map_err(|e| e.to_string())?;
         Ok(db)
     }
     pub fn contains(&self, run: &str) -> Result<bool> {
@@ -117,8 +132,25 @@ impl ResultStore {
         if cancel.load(Ordering::Relaxed) {
             return Err("Saving scan cancelled".into());
         }
-        let mut db = self.connect()?;
-        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let db = self.connect()?;
+        // Acquire the writer before reading, so simultaneous imports cannot try to
+        // upgrade stale WAL snapshots. Keep lock waits cancellable for large scans.
+        db.busy_timeout(Duration::from_millis(50))
+            .map_err(|e| e.to_string())?;
+        let tx = loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Saving scan cancelled".into());
+            }
+            match rusqlite::Transaction::new_unchecked(
+                &db,
+                rusqlite::TransactionBehavior::Immediate,
+            ) {
+                Ok(tx) => break tx,
+                Err(rusqlite::Error::SqliteFailure(error, _))
+                    if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        };
         // A run is immutable once imported. Repeating migration cannot change bookmark identities.
         if tx
             .query_row(
@@ -203,6 +235,21 @@ impl ResultStore {
         }
         tx.commit().map_err(|e| e.to_string())
     }
+    pub fn filter_values(&self, runs: &[String], column: &str) -> Result<Vec<String>> {
+        if runs.is_empty() {
+            return Ok(vec![]);
+        }
+        let expression = filter_expression(column)?;
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = db.prepare(&format!("SELECT DISTINCT {expression} AS value FROM records r WHERE r.run_id IN ({marks}) ORDER BY value COLLATE NOCASE")).map_err(|e| e.to_string())?;
+        stmt.query_map(params_from_iter(runs), |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(|e| e.to_string())
+    }
     pub fn query(&self, query: &Query) -> Result<ResultIndex> {
         self.query_filtered(query, None, false)
     }
@@ -233,6 +280,9 @@ impl ResultStore {
                 groups.insert(ArtifactGroup::for_plugin(&plugin));
             }
         }
+        if groups.len() == 1 && groups.contains(&ArtifactGroup::Web) && columns.contains("URL") {
+            columns.insert("Domain".into());
+        }
         let mut columns: Vec<_> = columns.into_iter().collect();
         let preferred = [
             "ImageFileName",
@@ -261,6 +311,18 @@ impl ResultStore {
         if let Some(pid) = pid {
             sql.push_str(" AND r.pid=?");
             values.push(SqlValue::Text(pid.into()));
+        }
+        for (column, selected) in &query.filters {
+            let expression = filter_expression(column)?;
+            if selected.is_empty() {
+                sql.push_str(" AND 0");
+            } else {
+                let marks = std::iter::repeat_n("?", selected.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                sql.push_str(&format!(" AND {expression} IN ({marks})"));
+                values.extend(selected.iter().cloned().map(SqlValue::Text));
+            }
         }
         let text = query.text.to_lowercase();
         if !text.is_empty() {
@@ -298,6 +360,10 @@ impl ResultStore {
                 for (j, field) in fields.iter().enumerate() {
                     if j > 0 {
                         sql.push(',');
+                    }
+                    if field == "Domain" && group == Some(ArtifactGroup::Web) {
+                        sql.push_str(&filter_expression("Domain")?);
+                        continue;
                     }
                     sql.push_str(if fields.len() > 1 {
                         "NULLIF(json_extract(r.fields_json,?),'')"
@@ -376,11 +442,13 @@ impl ResultStore {
         rows.map(|row| {
             let (id, run_id, row, depth, json) = row.map_err(|e| e.to_string())?;
             let fields = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+            let mut record = Record { fields, depth };
+            crate::result_table::populate_domain(&mut record);
             Ok(StoredRecord {
                 id,
                 run_id,
                 row,
-                record: Record { fields, depth },
+                record,
             })
         })
         .collect()
@@ -412,6 +480,52 @@ impl ResultStore {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())
     }
+    pub fn registry_entries(
+        &self,
+        runs: &[String],
+    ) -> Result<Vec<crate::result_tree::RegistryEntry>> {
+        if runs.is_empty() {
+            return Ok(vec![]);
+        }
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = db
+            .prepare(&format!(
+                "SELECT id, fields_json FROM records WHERE run_id IN ({marks}) ORDER BY id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(runs), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.map(|row| {
+            let (id, json) = row.map_err(|e| e.to_string())?;
+            let record = Record {
+                fields: serde_json::from_str(&json).map_err(|e| e.to_string())?,
+                depth: 0,
+            };
+            let offset = crate::analysis::registry::hive_offset(&record);
+            let value_type = record.text("Type");
+            Ok(crate::result_tree::RegistryEntry {
+                id,
+                hive: offset
+                    .map(|offset| format!("Hive {offset:#x}"))
+                    .unwrap_or_else(|| "Registry artifacts".into()),
+                path: record.text("Key"),
+                name: record.text("Name"),
+                value_type: if value_type.is_empty() {
+                    "Hive".into()
+                } else {
+                    value_type
+                },
+            })
+        })
+        .collect()
+    }
+
     pub fn record(&self, run: &str, row: usize) -> Result<Option<StoredRecord>> {
         let id = self
             .connect()?
@@ -530,5 +644,13 @@ impl ResultStore {
             }
         }
         Ok(output)
+    }
+}
+
+fn filter_expression(column: &str) -> Result<String> {
+    match column {
+        "Domain" => Ok("COALESCE(NULLIF(json_extract(r.fields_json,'$.Domain'),''),browser_domain(json_extract(r.fields_json,'$.URL')))".into()),
+        "PID" | "Browser" | "Kind" => Ok(format!("COALESCE(CAST(json_extract(r.fields_json,'$.{column}') AS TEXT),'')")),
+        _ => Err("Unknown filter column".into()),
     }
 }

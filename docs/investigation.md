@@ -6,17 +6,19 @@ history as Volatility jobs, and their findings support bookmarks and CSV export.
 
 ## Browser activity
 
-1. Choose **Browser activity**, then **Scan for files**, or run **Process handles**
-   from New analysis. Wait for the scan to finish and return to Browser activity.
-2. Choose **Recover browser activity**. VolGUI queues per-file extractions for
-   recognized browser history and session paths, then analyzes the recovered bytes.
-3. Filter the results by `Web history`, `Web search` or `Session tab`, or search
-   for a URL, title, search term or profile path.
+1. Choose **Browser activity**, then **Start analysis**. VolGUI
+   collects processes, command lines and file candidates, recovers browser memory
+   and profile files, then analyzes URLs, searches, history and saved tabs.
+   GPU and utility processes are skipped. Completed dumps are reused.
+2. Search for a phrase, domain or PID. Select a blue PID to open the process.
+3. Select a finding to inspect its process, URL and decoded search terms or URL
+   parameters. **View URL bytes** opens memory at the recorded offset.
+   **Open source extraction** opens the dump job.
 
-**Analyze recovered files** reparses existing extractions without requiring a
-configured engine. It also works with browser files produced by other dump jobs.
-**Open source extraction** on a finding opens its source job. Its Extracted files
-tab lets you inspect or save the recovered database or session file.
+Memory findings can include stale strings, resources and suggestions and do not
+alone prove a visit. Process dumps can occupy several GB and remain in the case.
+File handle owners identify profile file owners, rather than which process
+performed a search. Multiple owners appear in Related PIDs in the details.
 
 Supported sources:
 
@@ -29,10 +31,26 @@ Supported sources:
 - Firefox session JSON and Mozilla LZ4 session files, using the selected history
   entry of each tab and excluding closed tabs.
 
-Search URLs for Google, Bing, DuckDuckGo, Yahoo and Brave produce decoded search
-terms. Chromium keyword records can also identify searches from custom providers.
-Each finding retains its source job and cache file. Original profile paths and
-owning PIDs are included when the source file scan or handle supplies them.
+Search URL parsing supports Brave, Search, DuckDuckGo, WebCrawler, Ecosia,
+Excite, Rumble, YouTube, Yandex, Bing, Info, Ask and Google. Yahoo support remains
+available for existing cases. Parsing uses provider hostnames, result-page paths
+and query parameters, including YouTube's `search_query` and Yandex's `text`.
+Spaces and percent-encoded text are decoded. Search templates, blank queries,
+autocomplete endpoints and lookalike hosts are excluded. Recognized DuckDuckGo
+onion result URLs are supported. Historical provider URLs remain useful even if
+the service has changed since the capture.
+
+Memory findings establish that URL bytes occur in a process's user address space.
+They can include stale data, embedded resources, suggestions or prefetches. They
+alone do not prove a visit, a user action or a tab open at capture time, and have
+no inferred timestamp. Shared kernel mappings are excluded because they can
+contain other processes' data. Only contiguous mapped user pages are joined;
+unreadable gaps never become invented strings. Invalid or truncated mapping
+ranges are skipped with diagnostics while other readable ranges are retained. Truncated candidates are flagged
+and do not produce decoded search terms. String boundary describes whether a
+byte delimiter was found; adjacent text can still be present in memory strings.
+Query origin flags known automated Edge annotation URLs. Other query URLs retain
+an unknown origin, so decoded terms are not presented as proof of typed input.
 
 Session tabs describe a saved session snapshot. A historical session file, stale
 cache variant or closed browser can still contain these records. They do not prove
@@ -48,8 +66,14 @@ columns and Windows handle offsets take precedence.
 
 Browser analysis retains at most 100,000 findings, reported in diagnostics if
 reached. Session parsing is limited to 32 MiB per file or decompressed session.
-Automatic recovery refuses batches exceeding 512 new file objects. Extract a
+Process scanning uses bounded buffers, an 8 KiB URL limit and at most 10,000
+unique URLs per PID. Memory recovery refuses batches exceeding 128 new process
+dumps. Automatic profile recovery refuses batches exceeding 512 new file objects. Extract a
 specific profile's files through Files to narrow large investigations.
+
+On 32-bit Windows mappings, the scanner conservatively uses the default 2 GiB
+user range. Captures configured with a 3 GiB user split may omit URLs above that
+boundary. The 64-bit user/kernel boundary is bit 47, including masked mappings.
 
 ## Process handles
 

@@ -161,6 +161,7 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     fs::create_dir(&manifest).unwrap();
     assert!(queue_retries(&mut case, &engine, &ids).is_err());
     assert_eq!(case.document.runs.len(), 3);
+    assert!(case.document.cleared_queue_runs.is_empty());
     fs::remove_dir(&manifest).unwrap();
     fs::write(&manifest, saved).unwrap();
 
@@ -169,6 +170,8 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     assert_eq!(case.document.runs[0].status, RunStatus::Failed);
     assert_eq!(case.document.runs[1].status, RunStatus::Interrupted);
     assert_eq!(case.document.runs[2].status, RunStatus::Completed);
+    assert!(case.document.queue_runs().all(|run| !ids.contains(&run.id)));
+    assert_eq!(case.document.queue_runs().count(), 3);
     for run in &case.document.runs[3..] {
         assert!(!ids.contains(&run.id));
         assert_eq!(run.status, RunStatus::Queued);
@@ -181,6 +184,13 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     drop(case);
     let reopened = Case::open(&directory).unwrap();
     assert_eq!(reopened.document.runs.len(), 5);
+    assert!(
+        reopened
+            .document
+            .queue_runs()
+            .all(|run| !ids.contains(&run.id))
+    );
+    assert_eq!(reopened.document.queue_runs().count(), 3);
 }
 
 #[test]
@@ -275,13 +285,30 @@ fn clearing_queue_preserves_active_jobs_history_and_results_and_survives_reopeni
     assert_eq!(reopened.document.queue_runs().count(), 2);
     assert_eq!(reopened.document.runs.len(), 6);
     assert_eq!(reopened.results(&completed_id).unwrap().rows.len(), 1);
+    // Individual removal preserves pending jobs and persists finished dismissals.
+    let interrupted_id = reopened
+        .document
+        .queue_runs()
+        .find(|run| run.status == RunStatus::Interrupted)
+        .unwrap()
+        .id
+        .clone();
+    reopened.remove_queue_run(&interrupted_id).unwrap();
+    assert_eq!(reopened.document.queue_runs().count(), 1);
+    assert_eq!(reopened.document.runs.len(), 6);
+    drop(reopened);
+    let mut reopened = Case::open(&directory).unwrap();
+    assert_eq!(reopened.document.queue_runs().count(), 1);
     // Retrying a cleared run from History creates a visible new attempt.
     queue_retries(&mut reopened, &engine, &[failed_id]).unwrap();
-    assert_eq!(reopened.document.queue_runs().count(), 3);
+    assert_eq!(reopened.document.queue_runs().count(), 2);
     assert_eq!(
         reopened.document.runs.last().unwrap().status,
         RunStatus::Queued
     );
+    let queued_id = reopened.document.runs.last().unwrap().id.clone();
+    reopened.remove_queue_run(&queued_id).unwrap();
+    assert_eq!(reopened.document.queue_runs().count(), 2);
 }
 
 #[test]
@@ -379,4 +406,173 @@ fn only_completed_or_active_runs_block_plugin_selection() {
     ] {
         assert!(!status.blocks_plugin_selection(), "{status:?}");
     }
+}
+
+#[test]
+fn global_job_limit_defaults_to_two_and_round_trips_with_legacy_settings() {
+    assert_eq!(Settings::default().max_concurrent_jobs.get(), 2);
+    let legacy: Settings =
+        serde_json::from_str(r#"{"offline":true,"recent_cases":["case"]}"#).unwrap();
+    assert_eq!(legacy.max_concurrent_jobs.get(), 2);
+    assert!(legacy.offline);
+    let mut settings = legacy;
+    settings.max_concurrent_jobs = std::num::NonZeroUsize::new(5).unwrap();
+    let saved = serde_json::to_vec(&settings).unwrap();
+    let loaded: Settings = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(loaded.max_concurrent_jobs.get(), 5);
+    assert_eq!(loaded.recent_cases, settings.recent_cases);
+    for invalid in ["0", "-1", "1.5", "null"] {
+        assert!(
+            serde_json::from_str::<Settings>(&format!(r#"{{"max_concurrent_jobs":{invalid}}}"#))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn queue_fills_slots_refills_out_of_order_and_obeys_limit_changes() {
+    use volgui::analyses::next_queued_run;
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"queue fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut runs: Vec<_> = (0..4)
+        .map(|_| {
+            volgui::analysis::prepare(&evidence, volgui::analysis::STRINGS, vec!["search".into()])
+                .unwrap()
+        })
+        .collect();
+    let limit = |n| std::num::NonZeroUsize::new(n).unwrap();
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(0));
+    runs[0].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(1));
+    runs[1].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit(2)), None);
+    assert_eq!(next_queued_run(&runs, limit(3)), Some(2));
+    assert_eq!(next_queued_run(&runs, limit(1)), None);
+    runs[1].status = RunStatus::Cancelled;
+    assert_eq!(next_queued_run(&runs, limit(1)), None);
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(2));
+    runs[2].status = RunStatus::Running;
+    runs[0].status = RunStatus::Failed;
+    assert_eq!(next_queued_run(&runs, limit(2)), Some(3));
+    runs[3].status = RunStatus::Completed;
+    assert_eq!(next_queued_run(&runs, limit(2)), None);
+}
+
+#[test]
+fn browser_analysis_waits_for_prior_jobs_and_keeps_later_jobs_queued() {
+    use volgui::analyses::next_queued_run;
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"queue fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut runs: Vec<_> = [
+        volgui::analysis::STRINGS,
+        volgui::analysis::BROWSER,
+        volgui::analysis::STRINGS,
+    ]
+    .into_iter()
+    .map(|plugin| volgui::analysis::prepare(&evidence, plugin, vec!["search".into()]).unwrap())
+    .collect();
+    let limit = Settings::default().max_concurrent_jobs;
+    runs[0].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit), None);
+    runs[0].status = RunStatus::Completed;
+    assert_eq!(next_queued_run(&runs, limit), Some(1));
+    runs[1].status = RunStatus::Running;
+    assert_eq!(next_queued_run(&runs, limit), None);
+    runs[1].status = RunStatus::Failed;
+    assert_eq!(next_queued_run(&runs, limit), Some(2));
+}
+
+#[test]
+fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
+    use volgui::analyses::{REGISTRY_ALL, application_plugins};
+    let catalog = application_plugins(&[]);
+    let choices = chooser_plugins(&catalog, OperatingSystem::Windows, false, "");
+    assert!(choices.iter().any(|p| p.id == volgui::analysis::BROWSER));
+    assert!(choices.iter().any(|p| p.id == REGISTRY_ALL));
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"registry fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut case = Case::create(&temp.path().join("case"), "Registry").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: vec![plugin(volgui::analysis::registry::PRINT_KEY)],
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.insert(REGISTRY_ALL.into());
+    let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].plugin, volgui::analysis::registry::PRINT_KEY);
+    assert_eq!(runs[0].arguments, ["--recurse"]);
+    draft
+        .arguments
+        .insert(REGISTRY_ALL.into(), "--key ignored".into());
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+}
+
+#[test]
+fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"browser prerequisites").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut case = Case::create(&temp.path().join("case"), "Browser").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let ids = [
+        "windows.pslist.PsList",
+        "windows.cmdline.CmdLine",
+        "windows.filescan.FileScan",
+    ];
+    let engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: ids.into_iter().map(plugin).collect(),
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.insert(volgui::analysis::BROWSER.into());
+    assert!(
+        draft
+            .prepare_in_case(&engine, &evidence, &case)
+            .unwrap_err()
+            .contains("PsList")
+    );
+    for id in ids {
+        let mut run = engine
+            .prepare(&evidence, id, vec![], &case.directory.join("analyses"))
+            .unwrap();
+        run.status = RunStatus::Completed;
+        case.document.runs.push(run);
+    }
+    for status in [
+        RunStatus::Queued,
+        RunStatus::Running,
+        RunStatus::Failed,
+        RunStatus::Cancelled,
+        RunStatus::Interrupted,
+    ] {
+        case.document.runs[0].status = status;
+        assert!(
+            draft
+                .prepare_in_case(&engine, &evidence, &case)
+                .unwrap_err()
+                .contains("PsList")
+        );
+    }
+    case.document.runs[0].status = RunStatus::Completed;
+    case.document.runs[0].evidence_id = "other evidence".into();
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+    case.document.runs[0].evidence_id = evidence.id.clone();
+    case.document.runs[0].arguments = vec!["--pid".into(), "42".into()];
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+    case.document.runs[0].arguments.clear();
+    let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].plugin, volgui::analysis::BROWSER);
+    assert_eq!(case.document.runs.len(), 3);
 }

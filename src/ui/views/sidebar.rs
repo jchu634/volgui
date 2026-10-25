@@ -56,32 +56,41 @@ impl Workspace {
             );
         }
         let mut tabs = div().flex().flex_col().gap_1().flex_shrink_0();
+        let mut browser_registry = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .flex_shrink_0()
+            .child(heading("BROWSER AND REGISTRY", cx));
         for group in ArtifactGroup::BROWSER {
             let label = if group == ArtifactGroup::Files {
                 "Files"
             } else {
                 group.label()
             };
-            tabs = tabs.child(
-                Button::new(key("browser", label))
-                    .small()
-                    .ghost()
-                    .accessibility_label(label)
-                    .w_full()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .w_full()
-                            .child(Icon::new(Self::group_icon(group)).size_4())
-                            .child(label),
-                    )
-                    .selected(self.view == View::Workspace && self.browser_group == group)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.choose_group(group, window, cx);
-                    })),
-            );
+            let button = Button::new(key("browser", label))
+                .small()
+                .ghost()
+                .accessibility_label(label)
+                .w_full()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .w_full()
+                        .child(Icon::new(Self::group_icon(group)).size_4())
+                        .child(label),
+                )
+                .selected(self.view == View::Workspace && self.browser_group == group)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.choose_group(group, window, cx);
+                }));
+            if matches!(group, ArtifactGroup::Web | ArtifactGroup::Registry) {
+                browser_registry = browser_registry.child(button);
+            } else {
+                tabs = tabs.child(button);
+            }
         }
         tabs = tabs.child(
             Button::new("nav-bookmarks")
@@ -136,7 +145,7 @@ impl Workspace {
                             .ghost()
                             .icon(IconName::Plus)
                             .tooltip("Add evidence files")
-                            .disabled(self.busy.is_some())
+                            .disabled(self.is_working())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.choose_path("evidence", window, cx)
                             })),
@@ -145,6 +154,7 @@ impl Workspace {
             .child(evidence)
             .child(tabs)
             .child(div().flex_1().min_h_0())
+            .child(browser_registry)
             .child(shortcuts)
             .into_any_element()
     }

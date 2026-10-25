@@ -22,7 +22,7 @@ impl Workspace {
                 .plugins
                 .iter()
                 .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
-        }) && !self.busy.as_ref().is_some_and(|busy| busy.run_id.is_none());
+        }) && self.busy.is_none();
         let imhex = volgui::extracted_files::imhex().is_some();
         let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
         if target.needs_address_space() {
@@ -127,6 +127,20 @@ impl Workspace {
             }
             DetailTab::Overview => {
                 if let Some(record) = record {
+                    let browser = self.result_group() == Some(ArtifactGroup::Web);
+                    let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+                    if matches!(
+                        record.record.text("Kind").as_str(),
+                        "Memory URL" | "Memory search"
+                    ) {
+                        actions = actions.child(
+                            Button::new("view-browser-url-bytes")
+                                .small()
+                                .ghost()
+                                .label("View URL bytes")
+                                .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
+                        );
+                    }
                     if let Some(source) = record
                         .record
                         .fields
@@ -134,7 +148,7 @@ impl Workspace {
                         .and_then(|v| v.as_str())
                     {
                         let source = source.to_string();
-                        content = content.child(
+                        actions = actions.child(
                             Button::new("open-finding-source")
                                 .small()
                                 .ghost()
@@ -145,7 +159,39 @@ impl Workspace {
                         );
                     }
                     let mut fields = div().flex().flex_wrap().gap_x_4().items_start().w_full();
-                    for (i, (name, value)) in record.record.fields.iter().enumerate() {
+                    content = content.child(actions);
+                    let mut ordered: Vec<_> = record
+                        .record
+                        .fields
+                        .iter()
+                        .filter(|(name, _)| {
+                            !browser
+                                || (!matches!(
+                                    name.as_str(),
+                                    "Source run" | "Observation" | "String boundary"
+                                ) && !(name.as_str() == "URL parameters"
+                                    && !record.record.text("Search terms").is_empty()))
+                        })
+                        .collect();
+                    if browser {
+                        let priority = [
+                            "PID",
+                            "Browser",
+                            "Process",
+                            "Process role",
+                            "URL",
+                            "Search terms",
+                            "URL parameters",
+                            "Domain",
+                        ];
+                        ordered.sort_by_key(|(name, _)| {
+                            priority
+                                .iter()
+                                .position(|key| key == name)
+                                .unwrap_or(priority.len())
+                        });
+                    }
+                    for (i, (name, value)) in ordered.into_iter().enumerate() {
                         let text = display_value(value);
                         let parent = self
                             .relations
@@ -381,6 +427,15 @@ impl Workspace {
                                 content = content.child(div().text_sm().child("ImHex was not found. Install it in its default location or add it to PATH to open files here."));
                             }
                             for (i, file) in files.iter().cloned().enumerate() {
+                                if !file.is_file()
+                                    || volgui::extracted_files::ensure_openable(&file).is_err()
+                                {
+                                    content = content.child(div().py_1().text_sm().child(format!(
+                                        "{} — Potential malware / unavailable. Opening blocked.",
+                                        file.strip_prefix(&directory).unwrap_or(&file).display()
+                                    )));
+                                    continue;
+                                }
                                 let source = file.clone();
                                 let hex_file = file.clone();
                                 let hex_files = files.clone();
@@ -513,7 +568,13 @@ impl Workspace {
                             Button::new("bookmark")
                                 .xsmall()
                                 .ghost()
-                                .icon(IconName::Bookmark)
+                                .icon(if marked {
+                                    Icon::default().data(include_bytes!(
+                                        "../../../assets/icons/bookmark-filled.svg"
+                                    ))
+                                } else {
+                                    Icon::new(IconName::Bookmark)
+                                })
                                 .selected(marked)
                                 .tooltip(if marked {
                                     "Remove bookmark"

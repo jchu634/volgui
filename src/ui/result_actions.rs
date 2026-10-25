@@ -88,7 +88,7 @@ impl Workspace {
             return;
         };
         self.remember_location(cx);
-        if run.plugin == volgui::investigation::registry::PRINT_KEY {
+        if run.plugin == volgui::analysis::registry::PRINT_KEY {
             let path = run
                 .arguments
                 .windows(2)
@@ -112,6 +112,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.column_filters.clear();
         self.scope = runs;
         self.selection_epoch += 1;
         self.relation_epoch += 1;
@@ -133,11 +134,17 @@ impl Workspace {
         self.query.update(cx, |s, cx| s.set_value("", window, cx));
         self.query_due = None;
         self.result_scroll = UniformListScrollHandle::default();
+        self.reset_result_table(cx);
         self.start_query(cx);
         cx.notify();
     }
     pub(super) fn active_query(&self, cx: &App) -> Query {
         Query {
+            filters: if self.result_group() == Some(ArtifactGroup::Web) {
+                self.column_filters.clone()
+            } else {
+                Default::default()
+            },
             runs: self.scope.clone(),
             text: self.query.read(cx).value().to_string(),
             sort: self.sort.clone(),
@@ -185,6 +192,7 @@ impl Workspace {
                             runs: file_runs,
                             text: query.text.clone(),
                             sort: None,
+                            ..Default::default()
                         })?;
                         let mut matches = index.ids.clone();
                         matches.extend(file_matches.ids);
@@ -208,6 +216,9 @@ impl Workspace {
                     }
                     Some(ArtifactGroup::Files) => {
                         ResultTree::files(store.tree_entries(&query.runs)?, &index.ids)
+                    }
+                    Some(ArtifactGroup::Registry) => {
+                        ResultTree::registry(store.registry_entries(&query.runs)?, &index.ids)
                     }
                     _ => ResultTree::default(),
                 };

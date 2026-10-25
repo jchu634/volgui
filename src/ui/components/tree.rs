@@ -22,6 +22,7 @@ impl Workspace {
                     .into_iter()
                     .map(|(i, depth)| match group {
                         ArtifactGroup::Processes => this.render_process_node(i, depth, cx),
+                        ArtifactGroup::Registry => this.render_registry_node(i, depth, cx),
                         _ => this.render_file_node(i, depth, cx),
                     })
                     .collect::<Vec<_>>()
@@ -36,6 +37,9 @@ impl Workspace {
             .min_w_0()
             .min_h_0()
             .child(self.render_results_toolbar(cx))
+            .when(group == ArtifactGroup::Registry, |view| {
+                view.child(self.render_investigation_tools(cx))
+            })
             .child(
                 div()
                     .flex()
@@ -48,6 +52,8 @@ impl Workspace {
                     .child(heading(
                         if group == ArtifactGroup::Processes {
                             "Process hierarchy"
+                        } else if group == ArtifactGroup::Registry {
+                            "Registry hierarchy"
                         } else {
                             "Directory hierarchy"
                         },
@@ -95,6 +101,8 @@ impl Workspace {
                     .role(Role::Tree)
                     .aria_label(if group == ArtifactGroup::Processes {
                         "Process tree"
+                    } else if group == ArtifactGroup::Registry {
+                        "Registry tree"
                     } else {
                         "File tree"
                     })
@@ -118,6 +126,23 @@ impl Workspace {
                     })
                     .child(Scrollbar::vertical(&self.result_scroll).mode(ScrollbarMode::Always)),
             )
+            .into_any_element()
+    }
+
+    fn render_registry_node(&self, i: usize, depth: usize, cx: &mut Context<Self>) -> AnyElement {
+        let node = &self.result_tree.nodes[i];
+        let value = matches!(node.kind, volgui::result_tree::TreeNodeKind::RegistryValue);
+        self.artifact_tree_row(i, depth, cx)
+            .child(
+                Icon::new(if value {
+                    IconName::File
+                } else {
+                    IconName::Folder
+                })
+                .size_4()
+                .flex_shrink_0(),
+            )
+            .child(div().min_w_0().truncate().child(node.label.clone()))
             .into_any_element()
     }
 

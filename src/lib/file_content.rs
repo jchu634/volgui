@@ -14,6 +14,7 @@ pub struct DatabasePage {
 }
 
 pub fn open_database(path: &Path) -> Result<Connection, String> {
+    let _ = crate::extracted_files::open_artifact(path)?;
     let mut uri = url::Url::from_file_path(path).map_err(|_| "File path must be absolute")?;
     uri.set_query(Some("immutable=1"));
     Connection::open_with_flags(

@@ -2,6 +2,7 @@
 mod analysis_actions;
 mod case_actions;
 mod chrome;
+mod components;
 mod exports;
 mod file_actions;
 mod investigation_actions;
@@ -9,12 +10,11 @@ mod navigation;
 mod popups;
 mod result_actions;
 mod shell;
-#[path = "views/mod.rs"]
 mod views;
 
 use gpui_kit::{
     assets::IconName,
-    base::{Button as ActionButton, InteractiveElementExt, Link as TextLink, SelectableText},
+    base::{Button as ActionButton, Link as TextLink, SelectableText},
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt,
         button::{Button, ButtonVariants},
@@ -22,21 +22,24 @@ use gpui_kit::{
         input::{Input, InputEvent, InputState},
         list::ListItem,
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+        notification::Notification,
         popover::Popover,
         progress::ProgressCircle,
-        resizable::{HandleEdge, h_resizable, resizable_panel, resize_handle, v_resizable},
+        resizable::{h_resizable, resizable_panel, v_resizable},
         scroll::{ScrollableElement, Scrollbar, ScrollbarMode},
+        table::{
+            Column as DataColumn, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
+        },
         tooltip::Tooltip,
     },
     prelude::FluentBuilder,
     *,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
     ops::Range,
     path::PathBuf,
-    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -130,7 +133,6 @@ enum Event {
 struct Busy {
     label: String,
     cancel: Arc<AtomicBool>,
-    run_id: Option<String>,
     started: Instant,
     displayed_seconds: u64,
 }
@@ -160,6 +162,7 @@ pub struct Workspace {
     tree_cursor: Option<usize>,
     row_cache: HashMap<i64, Arc<StoredRecord>>,
     inflight: HashSet<i64>,
+    column_filters: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     sort: Option<(String, bool)>,
     query_epoch: Arc<AtomicU64>,
     query_due: Option<Instant>,
@@ -168,12 +171,13 @@ pub struct Workspace {
     browser_group: ArtifactGroup,
     show_file_handles: bool,
     result_scroll: UniformListScrollHandle,
-    table_x_scroll: ScrollHandle,
+    result_table: Entity<TableState<components::result_data_table::ResultTable>>,
+    analysis_table: Entity<TableState<components::analysis_data_table::AnalysisTable>>,
+    database_table: Entity<TableState<components::database_data_table::DatabaseTable>>,
     details_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
     relations_scroll: UniformListScrollHandle,
     column_widths: HashMap<String, Pixels>,
-    column_drag_origin: Rc<Cell<Pixels>>,
     column_fit_epoch: Arc<AtomicU64>,
     relations: ProcessRelations,
     relation_epoch: u64,
@@ -202,7 +206,9 @@ pub struct Workspace {
     analysis_collapsed_groups: std::collections::HashSet<ArtifactGroup>,
     sidebar_visible: bool,
     busy: Option<Busy>,
+    running: HashMap<String, Busy>,
     queue_paused: bool,
+    browser_recovery_pending: bool,
     batch_total: usize,
     batch_finished: usize,
     tx: Sender<Event>,
@@ -226,6 +232,7 @@ pub struct Workspace {
     engine_path: Entity<InputState>,
     symbol_path: Entity<InputState>,
     offline: bool,
+    job_limit: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 fn key(kind: &str, id: &str) -> ElementId {
@@ -294,7 +301,62 @@ impl Workspace {
         let query = field("", "Search artifact fields...", window, cx);
         let plugin_query = field("", "Find a plugin...", window, cx);
         let arguments = field("", "e.g. --pid 3488", window, cx);
+        let workspace = cx.entity().downgrade();
+        let result_table = cx.new(|cx| {
+            TableState::new(
+                components::result_data_table::ResultTable::new(workspace.clone()),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_header(false)
+            .loop_selection(false)
+            .select_on_modifier_click(false)
+        });
+        let analysis_table = cx.new(|cx| {
+            TableState::new(
+                components::analysis_data_table::AnalysisTable::new(workspace.clone()),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_selectable(false)
+            .row_header(false)
+        });
+        let database_table = cx.new(|cx| {
+            TableState::new(
+                components::database_data_table::DatabaseTable::new(workspace),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_selectable(false)
+            .row_header(false)
+        });
         let subscriptions = vec![
+            cx.subscribe(
+                &result_table,
+                |this, _, event: &TableEvent, cx| match event {
+                    TableEvent::SelectRow(row) => {
+                        if let Some(id) = this.index.ids.get(*row).copied()
+                            && this.selected.as_ref().is_none_or(|record| record.id != id)
+                        {
+                            this.load_record(id, cx);
+                        }
+                    }
+                    TableEvent::ColumnWidthsChanged(widths) => {
+                        this.column_fit_epoch.fetch_add(1, Ordering::Relaxed);
+                        for (column, width) in this.result_columns().iter().zip(widths) {
+                            this.column_widths.insert(column.key.clone(), *width);
+                        }
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
             cx.subscribe(&query, |this, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
                     this.query_due = Some(Instant::now() + Duration::from_millis(180));
@@ -326,6 +388,7 @@ impl Workspace {
                 window,
                 cx,
             ),
+            job_limit: field(settings.max_concurrent_jobs.to_string(), "2", window, cx),
             offline: settings.offline,
             settings,
             installation: None,
@@ -346,6 +409,7 @@ impl Workspace {
             tree_cursor: None,
             row_cache: HashMap::new(),
             inflight: HashSet::new(),
+            column_filters: Default::default(),
             sort: None,
             query_epoch: Arc::new(AtomicU64::new(0)),
             query_due: None,
@@ -354,12 +418,13 @@ impl Workspace {
             browser_group: ArtifactGroup::Processes,
             show_file_handles: true,
             result_scroll: UniformListScrollHandle::default(),
-            table_x_scroll: ScrollHandle::default(),
+            result_table,
+            analysis_table,
+            database_table,
             details_scroll: ScrollHandle::default(),
             queue_scroll: ScrollHandle::default(),
             relations_scroll: UniformListScrollHandle::default(),
             column_widths: HashMap::new(),
-            column_drag_origin: Rc::new(Cell::new(px(0.))),
             column_fit_epoch: Arc::new(AtomicU64::new(0)),
             relations: ProcessRelations::default(),
             relation_epoch: 0,
@@ -393,7 +458,9 @@ impl Workspace {
             analysis_collapsed_groups: std::collections::HashSet::new(),
             sidebar_visible: true,
             busy: None,
+            running: HashMap::new(),
             queue_paused: false,
+            browser_recovery_pending: false,
             batch_total: 0,
             batch_finished: 0,
             tx,
@@ -439,13 +506,19 @@ impl Workspace {
             if let Some(b) = &this.busy {
                 b.cancel.store(true, Ordering::Relaxed);
             }
+            for job in this.running.values() {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
             async {}
         })
         .detach();
         this
     }
+    fn is_working(&self) -> bool {
+        self.busy.is_some() || !self.running.is_empty()
+    }
     fn can_switch(&self) -> bool {
-        self.busy.is_none() && !self.has_queued()
+        !self.is_working() && !self.has_queued()
     }
     fn has_queued(&self) -> bool {
         self.case.as_ref().is_some_and(|c| {
@@ -455,12 +528,11 @@ impl Workspace {
                 .any(|r| r.status == RunStatus::Queued)
         })
     }
-    fn start(&mut self, label: &str, run_id: Option<String>) -> Arc<AtomicBool> {
+    fn start(&mut self, label: &str) -> Arc<AtomicBool> {
         let cancel = Arc::new(AtomicBool::new(false));
         self.busy = Some(Busy {
             label: label.into(),
             cancel: cancel.clone(),
-            run_id,
             started: Instant::now(),
             displayed_seconds: 0,
         });
@@ -480,9 +552,8 @@ impl Workspace {
         Some(ResultStore::at(&self.case.as_ref()?.directory))
     }
     fn cancel_run(&mut self, id: String, cx: &mut Context<Self>) {
-        if let Some(b) = &self.busy
-            && b.run_id.as_ref() == Some(&id)
-        {
+        self.browser_recovery_pending = false;
+        if let Some(b) = self.running.get(&id) {
             b.cancel.store(true, Ordering::Relaxed);
             self.message = "Cancelling analysis...".into();
             cx.notify();
@@ -528,7 +599,8 @@ impl Workspace {
                 Event::Validated(result) => {
                     self.busy = None;
                     match result {
-                        Ok(engine) => {
+                        Ok(mut engine) => {
+                            engine.settings.max_concurrent_jobs = self.settings.max_concurrent_jobs;
                             self.settings = engine.settings.clone();
                             if let Err(e) = self.settings.save() {
                                 self.error = Some(e);
@@ -626,7 +698,7 @@ impl Workspace {
                     }
                 }
                 Event::Finished(id, outcome) => {
-                    self.busy = None;
+                    self.running.remove(&id);
                     self.batch_finished += 1;
                     let saved = match self.case.as_mut().map(|c| c.finish(&id, &outcome)) {
                         Some(Ok(())) => true,
@@ -847,7 +919,7 @@ impl Workspace {
         if self.busy.is_none() {
             self.start_next(window, cx);
         }
-        if let Some(b) = &mut self.busy {
+        for b in self.busy.iter_mut().chain(self.running.values_mut()) {
             let seconds = b.started.elapsed().as_secs();
             if seconds != b.displayed_seconds {
                 b.displayed_seconds = seconds;

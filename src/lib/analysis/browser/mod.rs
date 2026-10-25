@@ -1,3 +1,6 @@
+pub(super) mod memory;
+mod search;
+
 use super::{record, table};
 use crate::{
     case::{CaseDocument, Run, RunStatus},
@@ -14,7 +17,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-const MAX_ROWS: usize = 100_000;
+pub(super) const MAX_ROWS: usize = 100_000;
 const SESSION_LIMIT: u64 = 32 * 1024 * 1024;
 
 pub(super) fn analyze(
@@ -37,15 +40,23 @@ pub(super) fn analyze(
         if !output.is_dir() {
             continue;
         }
-        let original = candidates.iter().find(|candidate| {
-            let Some(owner) = document.runs.iter().find(|r| r.id == candidate.run_id) else {
-                return false;
-            };
-            extracted_files::FileDumpTarget::from_record(&owner.plugin, &candidate.record)
-                .is_some_and(|t| {
-                    t.arguments(false) == source.arguments || t.arguments(true) == source.arguments
-                })
-        });
+        if source.plugin != extracted_files::DUMP_FILES {
+            continue;
+        }
+        let originals: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| {
+                let Some(owner) = document.runs.iter().find(|r| r.id == candidate.run_id) else {
+                    return false;
+                };
+                extracted_files::FileDumpTarget::from_record(&owner.plugin, &candidate.record)
+                    .is_some_and(|t| {
+                        t.arguments(false) == source.arguments
+                            || t.arguments(true) == source.arguments
+                    })
+            })
+            .collect();
+        let original = originals.first().copied();
         for path in extracted_files::list(&output)? {
             if cancel.load(Ordering::Relaxed) {
                 return Err("Browser analysis cancelled".into());
@@ -55,9 +66,17 @@ pub(super) fn analyze(
                 path.file_name().unwrap_or_default().to_string_lossy()
             ));
             let mut head = [0; 16];
-            let size = File::open(&path)
-                .and_then(|mut f| f.read(&mut head))
-                .map_err(|e| e.to_string())?;
+            let size = match extracted_files::open_artifact(&path)
+                .and_then(|mut f| f.read(&mut head).map_err(|e| e.to_string()))
+            {
+                Ok(size) => size,
+                Err(error) => {
+                    let warning = blocked_artifact(directory, &source.id, &path, &error);
+                    rows.push(warning);
+                    warnings.push(format!("{}: {error}", path.display()));
+                    continue;
+                }
+            };
             let first = rows.len();
             let result = if head[..size].starts_with(b"SQLite format 3\0") {
                 history(&path, &mut rows, cancel)
@@ -116,8 +135,29 @@ pub(super) fn analyze(
                 if browser != "Unknown" {
                     row.fields.insert("Browser".into(), json!(browser));
                 }
-                if let Some(pid) = original.and_then(|r| r.record.fields.get("PID")) {
-                    row.fields.insert("PID".into(), pid.clone());
+                let pids: std::collections::BTreeSet<_> = originals
+                    .iter()
+                    .map(|r| r.record.text("PID"))
+                    .filter(|pid| pid.parse::<u64>().is_ok())
+                    .collect();
+                row.fields.insert(
+                    "Attribution".into(),
+                    json!(if pids.is_empty() {
+                        "Recovered profile file; no process attribution"
+                    } else {
+                        "File handle owner; does not identify which process performed a search"
+                    }),
+                );
+                if pids.len() == 1 {
+                    row.fields.insert(
+                        "PID".into(),
+                        json!(pids.first().unwrap().parse::<u64>().unwrap()),
+                    );
+                } else if !pids.is_empty() {
+                    row.fields.insert(
+                        "Related PIDs".into(),
+                        json!(pids.into_iter().collect::<Vec<_>>().join(", ")),
+                    );
                 }
             }
             if rows.len() >= MAX_ROWS {
@@ -129,18 +169,52 @@ pub(super) fn analyze(
             break;
         }
     }
+    let memory = memory::analyze(
+        directory,
+        document,
+        run,
+        cancel,
+        progress,
+        &mut rows,
+        &mut warnings,
+    )?;
+    rows.sort_by_key(|row| match row.text("Kind").as_str() {
+        "Memory search" | "Web search" => 0,
+        "Web history" | "Session tab" => 1,
+        _ => 2,
+    });
     rows.truncate(MAX_ROWS);
+    if rows.len() == MAX_ROWS {
+        warnings.push(format!(
+            "Stopped at the {MAX_ROWS} finding limit; some URLs may be omitted."
+        ));
+    }
     let message = format!(
-        "Recovered {} findings from {parsed} files. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
+        "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
         rows.len(),
         warnings.join("\n")
     );
     Ok((table(rows), message))
 }
 
-fn browser_name(path: &str) -> &'static str {
+pub(super) fn blocked_artifact(directory: &Path, source: &str, path: &Path, error: &str) -> Record {
+    let persisted = extracted_files::block_artifact(path, error);
+    record(json!({
+        "Kind": "Unavailable artifact",
+        "Status": "Potential malware / unavailable",
+        "Opening blocked": true,
+        "Source run": source,
+        "Source file": path.strip_prefix(directory).unwrap_or(path).display().to_string(),
+        "Observation": format!("{error}. The artifact may have been quarantined, deleted or denied access. Malware is not confirmed by this error."),
+        "Block record": persisted.err().unwrap_or_default(),
+    }))
+}
+
+pub(super) fn browser_name(path: &str) -> &'static str {
     let path = path.to_lowercase();
-    if path.contains("firefox") {
+    if path.contains("torbrowser") || path.contains("tor-browser") || path.contains("tor browser") {
+        "Tor Browser"
+    } else if path.contains("firefox") {
         "Firefox"
     } else if path.contains("edge") {
         "Edge"
@@ -166,39 +240,7 @@ fn timestamp(microseconds: i64, chrome: bool) -> String {
         .unwrap_or_default()
 }
 
-/// A parsed search URL is a search observation, not evidence of who typed it.
-fn search_terms(address: &str) -> Option<(String, String)> {
-    let url = url::Url::parse(address).ok()?;
-    let host = url.host_str()?.to_ascii_lowercase();
-    let provider = if matches!(
-        host.as_str(),
-        "google.com"
-            | "www.google.com"
-            | "www.google.com.au"
-            | "google.com.au"
-            | "www.google.co.uk"
-            | "google.co.uk"
-    ) && url.path() == "/search"
-    {
-        ("Google", "q")
-    } else if (host == "bing.com" || host.ends_with(".bing.com")) && url.path() == "/search" {
-        ("Bing", "q")
-    } else if host == "duckduckgo.com" || host.ends_with(".duckduckgo.com") {
-        ("DuckDuckGo", "q")
-    } else if host == "search.yahoo.com" || host.ends_with(".search.yahoo.com") {
-        ("Yahoo", "p")
-    } else if host == "search.brave.com" && url.path() == "/search" {
-        ("Brave", "q")
-    } else {
-        return None;
-    };
-    let term = url
-        .query_pairs()
-        .find(|(key, _)| key == provider.1)?
-        .1
-        .into_owned();
-    (!term.trim().is_empty()).then(|| (provider.0.into(), term))
-}
+pub(super) use search::search_terms;
 
 fn push(
     rows: &mut Vec<Record>,
@@ -526,6 +568,19 @@ mod tests {
         );
         assert!(search_terms("https://www.google.com.evil.test/search?q=bad").is_none());
         assert!(search_terms("https://example.org/?q=not+a+search").is_none());
+        assert_eq!(
+            search_terms("https://www.search.com/web?q=what+is+gluten"),
+            Some(("Search".into(), "what is gluten".into()))
+        );
+        assert_eq!(
+            search_terms(
+                "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/?q=making+up+a+story"
+            ),
+            Some(("DuckDuckGo".into(), "making up a story".into()))
+        );
+        assert!(search_terms("https://duckduckgo.com/?q={searchTerms}").is_none());
+        assert!(search_terms("https://duckduckgo.com/?q=%s").is_none());
+        assert!(search_terms("https://duckduckgo.com/t.js?q=suggestion").is_none());
     }
     #[test]
     fn firefox_uses_selected_entry_and_excludes_closed_tabs() {

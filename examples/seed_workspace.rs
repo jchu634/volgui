@@ -206,13 +206,13 @@ fn main() -> Result<(), String> {
     }
     fs::write(case.run_dir(&browser_dump).join("session.json"),br#"{"windows":[{"tabs":[{"index":1,"entries":[{"url":"https://example.test/open-tab","title":"Saved session fixture"}]}]}]}"#).map_err(|e| e.to_string())?;
     case.save()?;
-    let browser = volgui::investigation::prepare(
+    let browser = volgui::analysis::prepare(
         &case.document.evidence[0],
-        volgui::investigation::BROWSER,
+        volgui::analysis::BROWSER,
         vec![],
     )?;
     case.queue(browser.clone())?;
-    let outcome = volgui::investigation::execute(
+    let outcome = volgui::analysis::execute(
         &case.directory,
         &case.document,
         &browser,

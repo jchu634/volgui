@@ -1,5 +1,6 @@
 //! Application analyses use the case queue and record store, just like engine jobs.
 mod browser;
+pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod registry;
 pub mod strings;
 
@@ -102,7 +103,10 @@ pub fn execute(
     }
 }
 
-fn table(rows: Vec<Record>) -> Table {
+fn table(mut rows: Vec<Record>) -> Table {
+    for row in &mut rows {
+        crate::result_table::populate_domain(row);
+    }
     let columns: BTreeSet<_> = rows.iter().flat_map(|r| r.fields.keys().cloned()).collect();
     Table {
         columns: columns.into_iter().collect(),
@@ -148,7 +152,7 @@ pub fn browser_candidates(
     cancel: &AtomicBool,
 ) -> Result<Vec<crate::results::StoredRecord>, String> {
     let mut seen = BTreeSet::new();
-    let runs = document
+    let runs: Vec<_> = document
         .runs
         .iter()
         .rev()
@@ -163,6 +167,9 @@ pub fn browser_candidates(
         .filter(|r| seen.insert(r.plugin.clone()))
         .map(|r| r.id.clone())
         .collect();
+    if runs.is_empty() {
+        return Ok(Vec::new());
+    }
     let store = crate::results::ResultStore::at(directory);
     let index = store.query(&crate::results::Query {
         runs,

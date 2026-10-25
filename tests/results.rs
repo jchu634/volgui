@@ -71,6 +71,7 @@ fn combined_network_endpoint_sort_uses_address_then_numeric_port() {
                 runs: vec![scan.id.clone()],
                 text: String::new(),
                 sort: Some((column.key.clone(), descending)),
+                ..Default::default()
             })
             .unwrap();
         let rows = store.fetch(&index.ids).unwrap();
@@ -106,6 +107,7 @@ fn file_name_column_reads_and_sorts_across_plugins_with_different_field_names() 
         runs: vec![files.id, handles.id],
         text: String::new(),
         sort: Some(("Name".into(), false)),
+        ..Default::default()
     };
     let index = store.query(&query).unwrap();
     let columns = volgui::result_table::columns(Some(ArtifactGroup::Files), &index.columns);
@@ -187,6 +189,7 @@ fn sqlite_preserves_rows_and_supports_literal_search_numeric_sort_and_grouped_so
         runs: vec!["one".into(), "two".into()],
         text: ".EXE".into(),
         sort: Some(("PID".into(), false)),
+        ..Default::default()
     };
     let index = store.query(&query).unwrap();
     let rows = store.fetch(&index.ids).unwrap();
@@ -211,6 +214,7 @@ fn sqlite_preserves_rows_and_supports_literal_search_numeric_sort_and_grouped_so
                 runs: vec!["one".into()],
                 text: text.into(),
                 sort: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(
@@ -224,7 +228,8 @@ fn sqlite_preserves_rows_and_supports_literal_search_numeric_sort_and_grouped_so
             .query(&Query {
                 runs: vec!["one".into()],
                 sort: Some(("not a column; DROP TABLE records".into(), false)),
-                text: String::new()
+                text: String::new(),
+                ..Default::default()
             })
             .is_err()
     );
@@ -233,6 +238,7 @@ fn sqlite_preserves_rows_and_supports_literal_search_numeric_sort_and_grouped_so
             runs: vec!["one".into()],
             text: "child".into(),
             sort: None,
+            ..Default::default()
         })
         .unwrap();
     assert!(csv.contains("'=x,"));
@@ -381,6 +387,7 @@ fn large_scan_query_returns_lightweight_ids_and_bounded_visible_rows() {
             runs: vec![run.id],
             text: "artifact-49999".into(),
             sort: None,
+            ..Default::default()
         })
         .unwrap();
     let search_time = start.elapsed();
@@ -389,4 +396,123 @@ fn large_scan_query_returns_lightweight_ids_and_bounded_visible_rows() {
     println!(
         "50k scan: import {import:?}, ID query {index_time:?}, indexed search {search_time:?}; visible fetch bounded to 128 rows"
     );
+}
+
+#[test]
+fn simultaneous_result_imports_wait_for_the_writer_and_remain_cancellable() {
+    use std::{
+        sync::{Arc, atomic::Ordering, mpsc},
+        time::Duration,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let writer = rusqlite::Connection::open(temp.path().join(DATABASE)).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let table = Table::parse(r#"[{"Name":"fixture"}]"#).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut workers = Vec::new();
+    for id in ["cancelled", "first", "second"] {
+        let store = store.clone();
+        let table = table.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let tx = tx.clone();
+        workers.push((
+            cancel,
+            std::thread::spawn(move || {
+                let result = store.insert_cancellable(
+                    &run(id, "windows.pslist.PsList"),
+                    &table,
+                    &worker_cancel,
+                );
+                tx.send((id, result)).unwrap();
+            }),
+        ));
+    }
+    assert!(
+        rx.recv_timeout(Duration::from_millis(150)).is_err(),
+        "Imports must wait while another writer owns SQLite"
+    );
+    workers[0].0.store(true, Ordering::Relaxed);
+    let (id, result) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(id, "cancelled");
+    assert!(result.unwrap_err().contains("cancelled"));
+    writer.execute_batch("COMMIT").unwrap();
+    for _ in 0..2 {
+        let (_, result) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        result.unwrap();
+    }
+    for (_, worker) in workers {
+        worker.join().unwrap();
+    }
+    assert!(!store.contains("cancelled").unwrap());
+    assert_eq!(store.count("first").unwrap(), 1);
+    assert_eq!(store.count("second").unwrap(), 1);
+}
+
+#[test]
+fn browser_filters_use_derived_domains_and_combine_with_search_and_export() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let scan = run("browser", volgui::analysis::BROWSER);
+    let table = Table::parse(&json!([
+        {"PID":42,"Browser":"Chrome","Kind":"Web search","URL":"https://www.google.com/search?q=cat","Search terms":"cat"},
+        {"PID":43,"Browser":"Firefox","Kind":"Web search","URL":"https://www.google.com/search?q=dog","Search terms":"dog"},
+        {"PID":42,"Browser":"Chrome","Kind":"History","Domain":"example.com","URL":"https://example.com/cat"},
+        {"Browser":"Chrome","Kind":"Web search","URL":"invalid"}
+    ]).to_string()).unwrap();
+    store.insert(&scan, &table).unwrap();
+    let mut query = Query {
+        runs: vec![scan.id],
+        ..Default::default()
+    };
+    assert_eq!(
+        store.filter_values(&query.runs, "Domain").unwrap(),
+        ["", "example.com", "www.google.com"]
+    );
+    assert_eq!(
+        store.filter_values(&query.runs, "PID").unwrap(),
+        ["", "42", "43"]
+    );
+    query.sort = Some(("Domain".into(), false));
+    let sorted = store.query(&query).unwrap();
+    let fetched = store.fetch(&sorted.ids).unwrap();
+    let domains: Vec<_> = sorted
+        .ids
+        .iter()
+        .map(|id| {
+            fetched
+                .iter()
+                .find(|row| row.id == *id)
+                .unwrap()
+                .record
+                .text("Domain")
+        })
+        .collect();
+    assert_eq!(
+        domains,
+        ["", "example.com", "www.google.com", "www.google.com"]
+    );
+    query
+        .filters
+        .insert("Domain".into(), ["www.google.com".into()].into());
+    assert_eq!(store.query(&query).unwrap().ids.len(), 2);
+    query.filters.insert("PID".into(), ["42".into()].into());
+    let index = store.query(&query).unwrap();
+    assert_eq!(index.ids.len(), 1);
+    assert_eq!(
+        store.fetch(&index.ids).unwrap()[0].record.text("Domain"),
+        "www.google.com"
+    );
+    let csv = store.export_csv(&query).unwrap();
+    assert!(csv.contains("cat"));
+    assert!(!csv.contains("dog"));
+    query.text = "dog".into();
+    assert!(store.query(&query).unwrap().ids.is_empty());
+    query.text.clear();
+    query.filters.insert("PID".into(), Default::default());
+    assert!(store.query(&query).unwrap().ids.is_empty());
+    query.filters.clear();
+    query.filters.insert("PID".into(), ["".into()].into());
+    assert_eq!(store.query(&query).unwrap().ids.len(), 1);
 }

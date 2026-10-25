@@ -450,6 +450,23 @@ impl Case {
         Ok(ids.len())
     }
 
+    pub fn remove_queue_run(&mut self, id: &str) -> Result<()> {
+        let removable = self.document.queue_runs().any(|run| {
+            run.id == id && !matches!(run.status, RunStatus::Running | RunStatus::Queued)
+        });
+        if !removable {
+            return Ok(());
+        }
+        let previous_updated_at = self.document.updated_at.clone();
+        self.document.cleared_queue_runs.insert(id.to_string());
+        if let Err(error) = self.save() {
+            self.document.cleared_queue_runs.remove(id);
+            self.document.updated_at = previous_updated_at;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn finish(&mut self, id: &str, outcome: &Outcome) -> Result<()> {
         let store = ResultStore::at(&self.directory);
         if let Some(table) = &outcome.table {

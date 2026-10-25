@@ -9,6 +9,7 @@ pub(super) struct Location {
     selected: Option<Arc<StoredRecord>>,
     selected_run: Option<String>,
     query: String,
+    column_filters: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     sort: Option<(String, bool)>,
     browser: ArtifactGroup,
     detail: DetailTab,
@@ -24,6 +25,7 @@ impl Workspace {
             selected: self.selected.clone(),
             selected_run: self.selected_run.clone(),
             query: self.query.read(cx).value().to_string(),
+            column_filters: self.column_filters.clone(),
             sort: self.sort.clone(),
             browser: self.browser_group,
             detail: self.detail,
@@ -68,12 +70,14 @@ impl Workspace {
         self.selected_row = location.selected.as_ref().map(|r| r.row);
         self.selected = location.selected.clone();
         self.sort = location.sort;
+        self.column_filters = location.column_filters;
         self.browser_group = location.browser;
         self.detail = location.detail;
         self.index = ResultIndex::default();
         self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.result_scroll = UniformListScrollHandle::default();
+        self.reset_result_table(cx);
         self.query
             .update(cx, |s, cx| s.set_value(location.query, window, cx));
         self.query_due = None;

@@ -20,7 +20,7 @@ impl Column {
         if self.ports.is_empty() {
             cell_text(&value)
         } else {
-            endpoint_text(&value, &field_text(record, &self.ports))
+            cell_text(&endpoint_text(&value, &field_text(record, &self.ports)))
         }
     }
 
@@ -36,6 +36,8 @@ impl Column {
             "sessionid" => 96.,
             "threads" => 88.,
             "protocol" => 96.,
+            "browser" => 112.,
+            "type" => 152.,
             "createtime" | "exittime" | "created" | "modified" | "accesstime" => 240.,
             "process" | "target" | "source" => 220.,
             "path" => 300.,
@@ -102,13 +104,13 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         ],
         Some(ArtifactGroup::Files) => &[("Name", &["Name", "FileName", "Path", "FilePath"])],
         Some(ArtifactGroup::Web) => &[
-            ("Kind", &["Kind"]),
+            ("PID", &["PID"]),
             ("Browser", &["Browser"]),
-            ("URL", &["URL"]),
-            ("Title", &["Title"]),
+            ("Type", &["Kind"]),
+            ("Domain", &["Domain"]),
             ("Search terms", &["Search terms"]),
-            ("Time (UTC)", &["Time (UTC)"]),
-            ("Original path", &["Original path"]),
+            ("URL", &["URL"]),
+            ("Virtual address", &["Virtual address"]),
             ("Source file", &["Source file"]),
         ],
         Some(ArtifactGroup::Strings) => &[
@@ -128,6 +130,33 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
                 "Hive offset",
                 &["Hive Offset", "Offset", "Offset(V)", "Offset(P)"],
             ),
+        ],
+        Some(ArtifactGroup::Commands) => &[
+            ("PID", &["PID", "ProcessID"]),
+            ("Process", &["Process", "ImageFileName", "COMM"]),
+            ("Args", &["Args"]),
+            ("Data", &["Data"]),
+            ("Address", &["Address"]),
+            ("ConsoleInfo", &["ConsoleInfo"]),
+            ("Property", &["Property"]),
+        ],
+        Some(ArtifactGroup::Modules) => &[
+            ("PID", &["PID", "ProcessID"]),
+            ("Name", &["Name"]),
+            ("Process", &["Process", "ImageFileName", "COMM"]),
+            ("Path", &["Path"]),
+            ("Base", &["Base"]),
+            ("LoadCount", &["LoadCount"]),
+            ("LoadTime", &["LoadTime"]),
+            ("Size", &["Size"]),
+        ],
+        Some(ArtifactGroup::Sessions) => &[
+            ("Username", &["Username"]),
+            ("PID", &["ProcessID", "PID"]),
+            ("Process", &["Process", "ImageFileName", "COMM"]),
+            ("Session ID", &["Session ID"]),
+            ("Session Type", &["Session Type"]),
+            ("Create Time", &["Create Time"]),
         ],
         _ => {
             return available
@@ -208,6 +237,9 @@ fn visible_column(name: &str) -> bool {
 
 /// Compact table presentation only. The stored value is kept for details and exports.
 pub fn cell_text(value: &str) -> String {
+    if value.is_empty() || value == "N/A" {
+        return "N.A.".into();
+    }
     let bytes = value.as_bytes();
     if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' {
         return value.into();
@@ -233,6 +265,33 @@ mod tests {
     use super::*;
     use crate::volatility::Table;
     use serde_json::json;
+
+    #[test]
+    fn browser_columns_follow_significance_and_keep_metadata_in_details() {
+        let names = [
+            "PID",
+            "Browser",
+            "Kind",
+            "Domain",
+            "Search terms",
+            "URL",
+            "Virtual address",
+            "Source file",
+        ];
+        let available = names
+            .iter()
+            .chain(["Process role", "Observation", "Attribution"].iter())
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let actual = columns(Some(ArtifactGroup::Web), &available);
+        assert_eq!(
+            actual
+                .iter()
+                .map(|column| column.key.as_str())
+                .collect::<Vec<_>>(),
+            names
+        );
+    }
 
     #[test]
     fn process_columns_follow_investigation_order_and_keep_original_keys() {
@@ -366,16 +425,23 @@ mod tests {
             cell_text("2026-10-24T07:03:09-03:30"),
             "07:03:09 (24-10-2026)(-03:30)"
         );
-        for value in [
-            "N/A",
-            "Disabled",
-            "624",
-            "csrss.exe",
-            "2026-10-24",
-            "invalid time",
-        ] {
+        for value in ["Disabled", "624", "csrss.exe", "2026-10-24", "invalid time"] {
             assert_eq!(cell_text(value), value);
         }
+    }
+
+    #[test]
+    fn empty_cells_display_na_without_changing_records() {
+        let table =
+            Table::parse(r#"[{"PID":null,"Browser":"","URL":"https://example.com"}]"#).unwrap();
+        let columns = columns(Some(ArtifactGroup::Web), &table.columns);
+        assert_eq!(columns[0].text(&table.rows[0]), "N.A.");
+        assert_eq!(columns[1].text(&table.rows[0]), "N.A.");
+        assert_eq!(cell_text(""), "N.A.");
+        assert_eq!(cell_text("N/A"), "N.A.");
+        assert_eq!(cell_text("0"), "0");
+        assert!(table.rows[0].fields["PID"].is_null());
+        assert_eq!(table.rows[0].text("Browser"), "");
     }
 
     #[test]
@@ -406,6 +472,23 @@ mod tests {
             "CommandLine",
         ] {
             assert!(visible_column(column), "{column}");
+        }
+    }
+}
+
+/// Recover the host for profile artifacts and older saved browser results.
+pub fn populate_domain(record: &mut Record) {
+    if record
+        .fields
+        .get("Domain")
+        .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
+    {
+        if let Ok(url) = url::Url::parse(&record.text("URL")) {
+            if let Some(host) = url.host_str() {
+                record
+                    .fields
+                    .insert("Domain".into(), serde_json::json!(host));
+            }
         }
     }
 }

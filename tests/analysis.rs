@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 use std::{fs, sync::atomic::AtomicBool};
 use volgui::{
+    analysis::{self, BROWSER, STRINGS, registry, strings},
     artifacts::OperatingSystem,
     case::{Case, Evidence, Run, RunStatus, now},
     extracted_files::{ContentEncoding, DUMP_FILES, HexPage},
     file_content::database_page,
-    investigation::{self, BROWSER, STRINGS, registry, strings},
     results::{Query, ResultStore},
     settings::Settings,
     volatility::{Installation, Outcome, Plugin, Table},
@@ -29,6 +29,7 @@ fn setup() -> (tempfile::TempDir, Case, Installation) {
             registry::PRINT_KEY,
             "windows.filescan.FileScan",
             "windows.handles.Handles",
+            "windows.memmap.Memmap",
         ]
         .into_iter()
         .map(|id| Plugin {
@@ -197,9 +198,9 @@ fn browser_analysis_parses_history_searches_and_provenance_and_excludes_other_ev
     )
     .unwrap();
     let before = fs::read(&path).unwrap();
-    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
-    let outcome = investigation::execute(
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,
@@ -208,6 +209,10 @@ fn browser_analysis_parses_history_searches_and_provenance_and_excludes_other_ev
     );
     assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
     let rows = &outcome.table.as_ref().unwrap().rows;
+    for row in rows.iter().filter(|row| row.text("Kind") == "Web search") {
+        let url = url::Url::parse(&row.text("URL")).unwrap();
+        assert_eq!(row.text("Domain"), url.host_str().unwrap());
+    }
     assert_eq!(
         rows.iter()
             .filter(|r| r.text("Kind") == "Web history")
@@ -283,7 +288,7 @@ fn recovery_queues_targeted_unique_files_then_native_analysis_and_reuses_complet
         vec![],
         json!([{ "Offset":65536,"Name":"C:\\Other\\History" }]),
     );
-    let runs = investigation::browser_recovery_runs(
+    let runs = analysis::browser_recovery_runs(
         &case.directory,
         &case.document,
         &case.document.evidence[0],
@@ -300,6 +305,250 @@ fn recovery_queues_targeted_unique_files_then_native_analysis_and_reuses_complet
         runs.iter()
             .all(|r| r.evidence_id == case.document.evidence[0].id)
     );
+}
+
+#[test]
+fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reopening() {
+    let (_temp, mut case, engine) = setup();
+    save(
+        &mut case,
+        0,
+        "windows.pslist.PsList",
+        vec![],
+        json!([
+            {"PID":42,"ImageFileName":"msedge.exe"},
+            {"PID":50,"ImageFileName":"firefox.exe"},
+            {"PID":51,"PPID":50,"ImageFileName":"firefox.exe"},
+            {"PID":60,"ImageFileName":"firefox.exe"},
+            {"PID":70,"ImageFileName":"msedge.exe"},
+            {"PID":80,"ImageFileName":"msedgewebview2.exe"}
+        ]),
+    );
+    save(
+        &mut case,
+        0,
+        "windows.cmdline.CmdLine",
+        vec![],
+        json!([
+            {"PID":42,"Process":"msedge.exe","Args":"msedge.exe --type=renderer"},
+            {"PID":50,"Process":"firefox.exe","Args":"C:\\Tor Browser\\Browser\\firefox.exe"},
+            {"PID":60,"Process":"firefox.exe","Args":"C:\\Firefox\\firefox.exe"},
+            {"PID":70,"Process":"msedge.exe","Args":"msedge.exe --type=gpu-process"}
+        ]),
+    );
+    let runs = analysis::browser_memory_runs(
+        &case.directory,
+        &case.document,
+        &case.document.evidence[0],
+        &engine,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        runs.len(),
+        5,
+        "renderer, Tor parent/child, Firefox, native parser"
+    );
+    assert!(
+        runs.iter()
+            .filter(|r| r.plugin != BROWSER)
+            .all(|r| r.arguments.contains(&"--dump".into()))
+    );
+    for (pid, address) in [
+        (42, "https://www.search.com/web?q=what+is+gluten"),
+        (51, "https://duckduckgo.com/?q=making+up+a+story"),
+        (60, "https://separate.test/"),
+    ] {
+        let mut bytes = format!("{address}\0{address}\0").into_bytes();
+        if pid == 42 {
+            bytes.extend_from_slice(b"https://www.search.com/api/clk_ad?q=what%20is%20gluten\0");
+        }
+        let filename = format!("pid.{pid}.dmp");
+        let dump = save(
+            &mut case,
+            0,
+            "windows.memmap.Memmap",
+            vec!["--pid".into(), pid.to_string(), "--dump".into()],
+            json!([
+                {"File output":filename,"Offset in File":0,"Virtual":65536,"Size":bytes.len()}
+            ]),
+        );
+        let directory = case.run_dir(&dump.id);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&filename), bytes).unwrap();
+        fs::write(
+            directory.join("stdout.json"),
+            serde_json::to_vec(
+                &case
+                    .results(&dump.id)
+                    .unwrap()
+                    .rows
+                    .iter()
+                    .map(|r| &r.fields)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    save(
+        &mut case,
+        1,
+        "windows.pslist.PsList",
+        vec![],
+        json!([{"PID":999,"ImageFileName":"msedge.exe"}]),
+    );
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    case.queue(run.clone()).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    let rows = &outcome.table.as_ref().unwrap().rows;
+    assert_eq!(rows.len(), 4);
+    let edge = rows.iter().find(|r| r.text("PID") == "42").unwrap();
+    assert_eq!(edge.text("Search terms"), "what is gluten");
+    assert_eq!(edge.text("Kind"), "Memory search");
+    assert_eq!(edge.text("Process role"), "Renderer");
+    assert_eq!(edge.text("Virtual address"), "0x10000");
+    assert_eq!(edge.fields["Occurrences"], 2);
+    assert!(!edge.fields.contains_key("Time (UTC)"));
+    let contextual = rows
+        .iter()
+        .find(|r| r.text("URL").contains("clk_ad"))
+        .unwrap();
+    assert_eq!(contextual.text("Kind"), "Memory URL");
+    assert_eq!(
+        contextual.fields["URL parameters"][0]["Value"],
+        "what is gluten"
+    );
+    let tor = rows.iter().find(|r| r.text("PID") == "51").unwrap();
+    assert_eq!(tor.text("Browser"), "Tor Browser");
+    assert_eq!(tor.text("Search terms"), "making up a story");
+    assert_eq!(
+        rows.iter()
+            .find(|r| r.text("PID") == "60")
+            .unwrap()
+            .text("Browser"),
+        "Firefox"
+    );
+    let reused = analysis::browser_memory_runs(
+        &case.directory,
+        &case.document,
+        &case.document.evidence[0],
+        &engine,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        reused.len(),
+        2,
+        "only missing Tor parent dump and parser remain"
+    );
+    case.finish(&run.id, &outcome).unwrap();
+    let directory = case.directory.clone();
+    drop(case);
+    let reopened = Case::open(&directory).unwrap();
+    let csv = ResultStore::at(&directory)
+        .export_csv(&Query {
+            runs: vec![run.id],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(csv.contains("what is gluten") && csv.contains("Tor Browser"));
+    assert_eq!(reopened.document.evidence.len(), 2);
+}
+
+#[test]
+fn browser_recovery_requires_inventory_from_the_selected_capture() {
+    let (_temp, mut case, engine) = setup();
+    save(
+        &mut case,
+        0,
+        "windows.pslist.PsList",
+        vec![],
+        json!([{"PID":42,"ImageFileName":"msedge.exe"}]),
+    );
+    save(
+        &mut case,
+        0,
+        "windows.filescan.FileScan",
+        vec![],
+        json!([{"Offset":4096,"Name":"C:\\Edge\\History"}]),
+    );
+    let cancel = AtomicBool::new(false);
+    assert!(
+        analysis::browser_candidates(
+            &case.directory,
+            &case.document,
+            &case.document.evidence[1].id,
+            &cancel
+        )
+        .unwrap()
+        .is_empty()
+    );
+    assert!(
+        analysis::browser_memory_runs(
+            &case.directory,
+            &case.document,
+            &case.document.evidence[1],
+            &engine,
+            &cancel
+        )
+        .unwrap_err()
+        .contains("Collect browser processes")
+    );
+}
+
+#[test]
+fn browser_profile_handle_owners_are_preserved_without_choosing_one_arbitrarily() {
+    let (_temp, mut case, _) = setup();
+    let path = "C:\\Users\\Alice\\Microsoft\\Edge\\User Data\\Default\\History";
+    save(
+        &mut case,
+        0,
+        "windows.filescan.FileScan",
+        vec![],
+        json!([{"Offset":4096,"Name":path}]),
+    );
+    save(
+        &mut case,
+        0,
+        "windows.handles.Handles",
+        vec![],
+        json!([
+            {"Offset":4096,"Name":path,"Type":"File","PID":42},
+            {"Offset":4096,"Name":path,"Type":"File","PID":43}
+        ]),
+    );
+    let dump = save(
+        &mut case,
+        0,
+        DUMP_FILES,
+        vec!["--virtaddr".into(), "0x1000".into()],
+        json!([]),
+    );
+    fs::create_dir_all(case.run_dir(&dump.id)).unwrap();
+    chrome_database(&case.run_dir(&dump.id).join("cache.dat"));
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed);
+    for row in outcome.table.unwrap().rows {
+        assert_eq!(row.text("Browser"), "Edge");
+        assert_eq!(row.text("Related PIDs"), "42, 43");
+        assert!(!row.fields.contains_key("PID"));
+        assert!(row.text("Attribution").contains("File handle owner"));
+    }
 }
 
 #[test]
@@ -378,14 +627,14 @@ fn sqlite_preview_quotes_names_pages_rows_and_never_changes_database() {
 #[test]
 fn native_search_runs_without_engine_and_remains_exportable() {
     let (_temp, mut case, _) = setup();
-    let run = investigation::prepare(
+    let run = analysis::prepare(
         &case.document.evidence[0],
         STRINGS,
         vec!["memory forensics".into()],
     )
     .unwrap();
     case.queue(run.clone()).unwrap();
-    let outcome = investigation::execute(
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,
@@ -406,5 +655,103 @@ fn native_search_runs_without_engine_and_remains_exportable() {
     assert!(
         page.decoded(ContentEncoding::Utf8)
             .contains("memory forensics")
+    );
+}
+
+#[test]
+fn quarantined_profile_keeps_an_entry_blocks_opening_and_other_files_are_parsed() {
+    let (_temp, mut case, _engine) = setup();
+    let dump = save(&mut case, 0, DUMP_FILES, vec![], json!([]));
+    let directory = case.run_dir(&dump.id);
+    fs::create_dir_all(&directory).unwrap();
+    let missing = directory.join("file.quarantined.dat");
+    fs::write(
+        directory.join("stdout.json"),
+        br#"[{"File output":"file.quarantined.dat"}]"#,
+    )
+    .unwrap();
+    fs::write(
+        directory.join("session.json"),
+        br#"{"windows":[{"tabs":[{"index":1,"entries":[{"url":"https://example.org/healthy"}]}]}]}"#,
+    )
+    .unwrap();
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    let rows = outcome.table.unwrap().rows;
+    assert!(
+        rows.iter()
+            .any(|r| r.text("URL") == "https://example.org/healthy")
+    );
+    let blocked = rows
+        .iter()
+        .find(|r| r.text("Kind") == "Unavailable artifact")
+        .unwrap();
+    assert_eq!(blocked.text("Status"), "Potential malware / unavailable");
+    assert_eq!(blocked.fields["Opening blocked"], true);
+    assert!(
+        volgui::extracted_files::list(&directory)
+            .unwrap()
+            .contains(&missing)
+    );
+    fs::write(&missing, b"restored bytes").unwrap();
+    assert!(HexPage::read(&missing, 0).is_err());
+    assert!(database_page(&missing, None, 0).is_err());
+    assert!(volgui::extracted_files::open_artifact(&missing).is_err());
+    assert!(
+        volgui::extracted_files::open(std::path::Path::new("must-not-launch"), &missing)
+            .unwrap_err()
+            .contains("Opening is blocked")
+    );
+    fs::remove_file(directory.join("stdout.json")).unwrap();
+    fs::remove_file(&missing).unwrap();
+    assert!(
+        volgui::extracted_files::list(&directory)
+            .unwrap()
+            .contains(&missing)
+    );
+}
+
+#[test]
+fn missing_browser_memory_dump_is_retained_as_a_blocked_finding() {
+    let (_temp, mut case, _engine) = setup();
+    save(
+        &mut case,
+        0,
+        "windows.pslist.PsList",
+        vec![],
+        json!([{"PID":42,"ImageFileName":"chrome.exe"}]),
+    );
+    let dump = save(
+        &mut case,
+        0,
+        "windows.memmap.Memmap",
+        vec!["--pid".into(), "42".into(), "--dump".into()],
+        json!([]),
+    );
+    fs::create_dir_all(case.run_dir(&dump.id)).unwrap();
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed);
+    let rows = outcome.table.unwrap().rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text("Kind"), "Unavailable artifact");
+    assert_eq!(rows[0].text("Source run"), dump.id);
+    assert!(
+        HexPage::read(&case.run_dir(&dump.id).join("pid.42.dmp"), 0)
+            .unwrap_err()
+            .contains("Opening is blocked")
     );
 }

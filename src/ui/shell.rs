@@ -6,6 +6,16 @@ impl Render for Workspace {
         if self.case.is_none() && !self.welcome_open {
             self.open_welcome(window, cx);
         }
+        // Defer notification updates until after the workspace finishes rendering.
+        // Taking the errors prevents unrelated redraws from repeating a toast.
+        for error in [self.error.take(), self.analysis_error.take()]
+            .into_iter()
+            .flatten()
+        {
+            window.defer(cx, move |window, cx| {
+                window.push_notification(Notification::error(error), cx);
+            });
+        }
         let file_weak = cx.entity().downgrade();
         let view_weak = cx.entity().downgrade();
         let case_open = self.case.is_some();
@@ -108,28 +118,36 @@ impl Render for Workspace {
                 s.child(self.render_sidebar(cx))
             })
             .child(content);
-        let queued = self.case.as_ref().map_or(0, |c| {
-            c.document
-                .runs
-                .iter()
-                .filter(|r| r.status == RunStatus::Queued)
-                .count()
-        });
-        let running = self.busy.as_ref().is_some_and(|b| b.run_id.is_some());
-        let label = if running || queued > 0 {
-            format!("{} running · {queued} queued", usize::from(running))
-        } else {
-            format!(
-                "{} analyses · Ready",
-                self.case
-                    .as_ref()
-                    .map_or(0, |c| c.document.queue_runs().count())
+        let runs: Vec<_> = self
+            .case
+            .as_ref()
+            .map(|case| case.document.queue_runs().collect())
+            .unwrap_or_default();
+        let total = runs.len();
+        let finished = runs
+            .iter()
+            .filter(|run| !matches!(run.status, RunStatus::Running | RunStatus::Queued))
+            .count();
+        let failed = runs.iter().any(|run| {
+            matches!(
+                run.status,
+                RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled
             )
-        };
-        let progress = if self.batch_total == 0 {
+        });
+        let label = format!("{finished}/{total}");
+        let progress = if total == 0 {
             0.
         } else {
-            self.batch_finished as f32 / self.batch_total as f32 * 100.
+            finished as f32 / total as f32 * 100.
+        };
+        let progress_color = if total > 0 && finished == total {
+            if failed {
+                cx.theme().danger
+            } else {
+                cx.theme().success
+            }
+        } else {
+            rgb(0xffffff).into()
         };
         let queue_panel = self.popup_panel(popups::PanelKind::Queue, cx);
         let status = div()
@@ -176,58 +194,58 @@ impl Render for Workspace {
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_hex(cx))),
             )
-            .when(
-                self.busy.as_ref().is_some_and(|b| b.run_id.is_none()),
-                |s| {
-                    s.child(
-                        Button::new("cancel-work")
-                            .xsmall()
-                            .ghost()
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(b) = &this.busy {
-                                    b.cancel.store(true, Ordering::Relaxed);
-                                }
-                                cx.notify();
-                            })),
-                    )
-                },
-            )
+            .when(self.busy.is_some(), |s| {
+                s.child(
+                    Button::new("cancel-work")
+                        .xsmall()
+                        .ghost()
+                        .label("Cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(b) = &this.busy {
+                                b.cancel.store(true, Ordering::Relaxed);
+                            }
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        ProgressCircle::new("queue-progress")
-                            .xsmall()
-                            .value(progress)
-                            .loading(running && self.batch_finished == 0)
-                            .accessibility_label("Finished analyses in current batch"),
-                    )
-                    .child(
-                        Popover::new("queue-popover")
-                            .anchor(Anchor::BottomRight)
-                            .open(self.queue_open)
-                            .on_open_change(cx.listener(|this, open, _, cx| {
-                                this.queue_open = *open;
-                                cx.notify();
-                            }))
-                            .trigger(
-                                Button::new("queue-indicator")
-                                    .xsmall()
-                                    .ghost()
-                                    .label(label)
-                                    .tooltip(
-                                        self.busy
-                                            .as_ref()
-                                            .map(|b| b.label.clone())
-                                            .unwrap_or_else(|| "Recent analyses and queue".into()),
-                                    )
-                                    .dropdown_caret(true),
-                            )
-                            .content(move |_, _, _| queue_panel.clone()),
-                    ),
+                div().flex().items_center().gap_2().child(
+                    Popover::new("queue-popover")
+                        .anchor(Anchor::BottomRight)
+                        .open(self.queue_open)
+                        .on_open_change(cx.listener(|this, open, _, cx| {
+                            this.queue_open = *open;
+                            cx.notify();
+                        }))
+                        .trigger(
+                            Button::new("queue-indicator")
+                                .xsmall()
+                                .ghost()
+                                .child(
+                                    ProgressCircle::new("queue-progress")
+                                        .xsmall()
+                                        .value(progress)
+                                        .color(progress_color)
+                                        .accessibility_label(
+                                            "Finished analyses out of total analyses",
+                                        ),
+                                )
+                                .child(label)
+                                .tooltip(
+                                    self.busy.as_ref().map(|b| b.label.clone()).unwrap_or_else(
+                                        || {
+                                            format!(
+                                                "{} running / {} maximum",
+                                                self.running.len(),
+                                                self.settings.max_concurrent_jobs
+                                            )
+                                        },
+                                    ),
+                                )
+                                .dropdown_caret(true),
+                        )
+                        .content(move |_, _, _| queue_panel.clone()),
+                ),
             );
         div()
             .id("workspace-root")
@@ -237,7 +255,11 @@ impl Render for Workspace {
                     && this.view == View::Workspace
                     && matches!(
                         this.result_group(),
-                        Some(ArtifactGroup::Processes | ArtifactGroup::Files)
+                        Some(
+                            ArtifactGroup::Processes
+                                | ArtifactGroup::Files
+                                | ArtifactGroup::Registry
+                        )
                     )
                 {
                     this.tree_key_down(event, cx);
@@ -253,9 +275,6 @@ impl Render for Workspace {
                     }
                 }),
             )
-            .on_drag_move::<views::artifacts::ColumnResize>(
-                cx.listener(|this, event, _, cx| this.resize_column(event, cx)),
-            )
             .flex()
             .flex_col()
             .size_full()
@@ -264,36 +283,6 @@ impl Render for Workspace {
             .child(title)
             .when(self.welcome_open && cfg!(target_os = "windows"), |s| {
                 s.child(self.render_modal_window_controls(window, cx))
-            })
-            .when_some(self.error.clone(), |s, e| {
-                s.child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .px_4()
-                        .py_2()
-                        .gap_3()
-                        .bg(rgb(0x321d25))
-                        .child(
-                            div()
-                                .id("error-message")
-                                .flex_1()
-                                .max_h(px(70.))
-                                .overflow_y_scroll()
-                                .text_xs()
-                                .child(e),
-                        )
-                        .child(
-                            Button::new("dismiss-error")
-                                .xsmall()
-                                .ghost()
-                                .label("Dismiss")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.error = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
             })
             .child(body)
             .child(status)

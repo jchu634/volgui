@@ -3,16 +3,17 @@ use super::*;
 
 impl Workspace {
     pub(super) fn validate_engine(&mut self, cx: &mut Context<Self>) {
-        if self.busy.is_some() || self.has_queued() {
+        if self.is_working() || self.has_queued() {
             return;
         }
         let settings = Settings {
             executable: PathBuf::from(self.engine_path.read(cx).value().trim()),
             symbols: PathBuf::from(self.symbol_path.read(cx).value().trim()),
             offline: self.offline,
+            max_concurrent_jobs: self.settings.max_concurrent_jobs,
             recent_cases: self.settings.recent_cases.clone(),
         };
-        let cancel = self.start("Checking Volatility", None);
+        let cancel = self.start("Checking Volatility");
         let tx = self.tx.clone();
         thread::spawn(move || {
             let _ = tx.send(Event::Validated(Installation::discover(settings, &cancel)));
@@ -37,7 +38,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let cancel = self.start("Opening case and indexing saved scans", None);
+        let cancel = self.start("Opening case and indexing saved scans");
         let tx = self.tx.clone();
         thread::spawn(move || {
             let result = Case::open(&path).and_then(|case| {
@@ -181,10 +182,10 @@ impl Workspace {
         .detach();
     }
     pub(super) fn import(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if self.case.is_none() || self.busy.is_some() {
+        if self.case.is_none() || self.is_working() {
             return;
         }
-        let cancel = self.start("Hashing evidence", None);
+        let cancel = self.start("Hashing evidence");
         let tx = self.tx.clone();
         thread::spawn(move || {
             let mut results = vec![];
@@ -209,13 +210,13 @@ impl Workspace {
         cx.notify();
     }
     pub(super) fn verify(&mut self, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.is_working() {
             return;
         }
         let Some(e) = self.evidence().cloned() else {
             return;
         };
-        let cancel = self.start("Verifying evidence", None);
+        let cancel = self.start("Verifying evidence");
         let tx = self.tx.clone();
         thread::spawn(move || {
             let result = Evidence::inspect(&e.path, &cancel, |_, _| {});

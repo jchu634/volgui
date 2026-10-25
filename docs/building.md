@@ -22,6 +22,11 @@ cargo run --bin volgui -- --volatility C:\Tools\Volatility\vol.exe
 
 The executable path can also be supplied by an installer using the `VOLGUI_VOLATILITY` environment variable, or selected in **Settings**. Validated settings persist in `%APPDATA%\VolGUI\settings.json`. `VOLGUI_CONFIG_DIR` overrides that directory for portable installations or testing. No development-specific engine path is compiled into the application.
 
+Analysis jobs run in separate CLI instances, with up to two jobs active by default.
+Change **Settings > Maximum simultaneous jobs > Save job limit** to set the global
+limit. Changes apply immediately; lowering the limit lets active jobs finish before
+starting more. Browser parsing waits for the extraction jobs ahead of it.
+
 Keep the external build's executable, DLLs, plugins and supporting files together. VolGUI neither bundles nor copies Volatility. Engine installation, distribution and licensing remain separate. Volatility's own CLI behavior is documented in its [official manual](https://volatility3.readthedocs.io/en/stable/vol-cli.html).
 
 Open directly into a case:

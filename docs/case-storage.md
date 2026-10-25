@@ -17,4 +17,4 @@ The manifest is replaced atomically. Completed records are committed to SQLite i
 
 The UI supports bookmarks. Notes from older cases remain in the manifest and reports for compatibility, but cannot be edited. CSV/report generation runs in a background worker. Exports cannot replace a case manifest, its saved analysis output, or a registered evidence file.
 
-Queue cleanup is saved in the manifest and preserves analysis history, results, notes and output files. **Clear completed** dismisses completed and cancelled jobs. **Clear finished** also dismisses failed and interrupted jobs. Running and queued jobs remain visible. Cleared jobs can still be inspected or retried from History.
+Queue cleanup is saved in the manifest and preserves analysis history, results, notes and output files. **Clear** dismisses completed, cancelled, failed and interrupted jobs. Each finished job can also be removed individually. Running and queued jobs remain visible. Cleared jobs can still be inspected or retried from History.

@@ -5,24 +5,19 @@ impl Workspace {
         let mut tools = div().flex().flex_col().gap_2().px_3().py_2();
         match self.result_group() {
             Some(ArtifactGroup::Web) => {
-                tools = tools.child(div().text_xs().child("Recover browser history, search terms and saved session tabs from cached Chromium and Firefox files. Run File scan or Process handles first. Session snapshots do not prove which tabs were open at capture time."))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(Button::new("collect-browser-file-scan").small().ghost().label("Scan for files").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_source("windows.filescan.FileScan",window,cx))))
-                        .child(Button::new("recover-browser").small().label("Recover browser activity").disabled(self.busy.is_some() || self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.analyze_browser(true,window,cx))))
-                        .child(Button::new("analyze-browser-files").small().ghost().label("Analyze recovered files").disabled(self.busy.as_ref().is_some_and(|b| b.run_id.is_none())).on_click(cx.listener(|this,_,window,cx| this.analyze_browser(false,window,cx))))
-                        .child(Button::new("browser-offset-space").small().ghost().label(if self.file_offset_physical { "FileScan: physical offsets" } else { "FileScan: virtual offsets" }).tooltip("Unlabelled FileScan offsets use virtual memory on Windows 10+, physical memory on older captures.").on_click(cx.listener(|this,_,_,cx| { this.file_offset_physical = !this.file_offset_physical; cx.notify(); }))));
+                tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches. Memory findings may include stale strings and do not alone prove a visit. Process dumps can use several GB."))
+                    .child(div().flex().items_center().child(Button::new("recover-analyze-browser").small().label("Start analysis")
+                        .disabled(self.is_working() || self.browser_recovery_pending || self.installation.is_none())
+                        .on_click(cx.listener(|this, _, window, cx| this.recover_and_analyze_browser(window, cx)))));
             }
             Some(ArtifactGroup::Strings) => {
                 tools = tools.child(div().text_xs().child("Search the selected evidence file for a literal string in UTF-8, UTF-16LE and UTF-16BE. Results include byte offsets and context. Maximum 10,000 matches per analysis."))
                     .child(div().flex().items_center().gap_2()
                         .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w(px(360.)))
                         .child(Checkbox::new("string-ignore-case").label("Ignore ASCII case").checked(self.string_ignore_case).on_click(cx.listener(|this,checked,_,cx| { this.string_ignore_case = *checked; cx.notify(); })))
-                        .child(Button::new("run-global-search").small().label("Search evidence").disabled(self.evidence().is_none() || self.busy.as_ref().is_some_and(|b| b.run_id.is_none())).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
+                        .child(Button::new("run-global-search").small().label("Search evidence").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
             }
             Some(ArtifactGroup::Registry) => {
-                let readable = self.selected.as_ref().is_some_and(|r| {
-                    volgui::investigation::registry::hive_offset(&r.record).is_some()
-                });
                 let child = self
                     .selected
                     .as_ref()
@@ -34,17 +29,14 @@ impl Workspace {
                             .runs
                             .iter()
                             .find(|run| run.id == r.run_id)?;
-                        volgui::investigation::registry::child_key(run, &r.record)
+                        volgui::analysis::registry::child_key(run, &r.record)
                     })
                     .is_some();
-                tools = tools.child(div().text_xs().child("Select a hive, then read its keys and values. Select a Key record and choose Open subkey to descend. Key paths are relative to the hive root."))
+                tools = tools.child(div().text_xs().child("Expand branches to inspect collected registry keys and values. Select a key and choose Open subkey to collect its contents."))
                     .child(div().flex().flex_wrap().items_center().gap_2()
                         .child(Button::new("find-registry-hives").small().ghost().label("Find hives").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_source("windows.registry.hivelist.HiveList",window,cx))))
                         .child(Input::new(&self.registry_key).id("registry-key-path").aria_label("Registry key relative to hive root").small().w(px(350.)))
-                        .child(Button::new("browse-hive").small().label("Read key").disabled(!readable).on_click(cx.listener(|this,_,window,cx| this.browse_registry(false,false,window,cx))))
-                        .child(Button::new("registry-parent").small().ghost().label("Up").disabled(!readable).on_click(cx.listener(|this,_,window,cx| this.registry_parent(window,cx))))
-                        .child(Button::new("read-registry-subtree").small().ghost().label("Read subtree").disabled(!readable).on_click(cx.listener(|this,_,window,cx| this.browse_registry(false,true,window,cx))))
-                        .child(Button::new("registry-open-subkey").small().ghost().label("Open subkey").tooltip("Open an immediate child from Read key results. For recursive results, enter a relative path and choose Read key.").disabled(!child).on_click(cx.listener(|this,_,window,cx| this.browse_registry(true,false,window,cx)))));
+                        .child(Button::new("registry-open-subkey").small().ghost().label("Open subkey").tooltip("Collect the contents of the selected immediate subkey.").disabled(!child).on_click(cx.listener(|this,_,window,cx| this.browse_registry(true,false,window,cx)))));
             }
             _ => return div(),
         }

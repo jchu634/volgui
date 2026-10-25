@@ -77,6 +77,25 @@ impl Workspace {
 
     pub(super) fn load_hex(&mut self, cx: &mut Context<Self>) {
         self.reset_hex();
+        let memory = self.case.as_ref().and_then(|case| {
+            let record = &self.selected.as_ref()?.record;
+            if !matches!(record.text("Kind").as_str(), "Memory URL" | "Memory search") {
+                return None;
+            }
+            let source = case.document.runs.iter().find(|r| {
+                r.id == record.text("Source run") && r.plugin == "windows.memmap.Memmap"
+            })?;
+            let pid = record.fields.get("PID")?.as_u64()?;
+            let offset = record.fields.get("Dump offset")?.as_u64()?;
+            Some((
+                case.run_dir(&source.id).join(format!("pid.{pid}.dmp")),
+                offset,
+            ))
+        });
+        if let Some((path, offset)) = memory {
+            self.open_hex_file(vec![path.clone()], path, offset, cx);
+            return;
+        }
         let directory = self.case.as_ref().and_then(|case| {
             let record = self.selected.as_ref()?;
             let run = extracted_files::completed_dump(case, record, self.file_offset_physical)?;

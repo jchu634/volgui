@@ -11,9 +11,31 @@ use crate::{
     volatility::{Installation, Plugin, parse_arguments},
 };
 
+/// Select the next job in queue order without exceeding the global limit.
+/// Browser parsing waits for preceding dumps and blocks later jobs until complete.
+pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<usize> {
+    let running = runs.iter().filter(|run| run.status == RunStatus::Running);
+    if running.clone().count() >= limit.get()
+        || running
+            .clone()
+            .any(|run| run.plugin == crate::analysis::BROWSER)
+    {
+        return None;
+    }
+    let index = runs
+        .iter()
+        .position(|run| run.status == RunStatus::Queued)?;
+    if runs[index].plugin == crate::analysis::BROWSER && running.count() > 0 {
+        return None;
+    }
+    Some(index)
+}
+
 /// The common investigation tasks shown before the full plugin catalog.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
+        crate::analysis::BROWSER => "Browser recovery and analysis",
+        REGISTRY_ALL => "All registry subkeys",
         "windows.info.Info" => "System information",
         "windows.pslist.PsList" | "linux.pslist.PsList" | "mac.pslist.PsList" => "Processes",
         "windows.pstree.PsTree" | "linux.pstree.PsTree" | "mac.pstree.PsTree" => "Process tree",
@@ -42,7 +64,25 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
     })
 }
 
-/// Queue fresh attempts together, preserving the original runs and their options.
+/// Composite choices expand into ordinary jobs so each recovery has its own history.
+pub const REGISTRY_ALL: &str = "windows.registry.AllSubkeys";
+
+pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
+    let mut catalog = plugins.to_vec();
+    catalog.extend([
+        Plugin {
+            id: crate::analysis::BROWSER.into(),
+            description: "Recover and parse browser memory, history and saved tabs. Requires completed PsList, CmdLine and FileScan jobs. Does not collect prerequisites.".into(),
+        },
+        Plugin {
+            id: REGISTRY_ALL.into(),
+            description: "Read all registry subkeys and values recursively across all hives using PrintKey --recurse.".into(),
+        },
+    ]);
+    catalog
+}
+
+/// Queue fresh attempts and dismiss the originals from the queue, preserving history.
 pub fn queue_retries(case: &mut Case, engine: &Installation, ids: &[String]) -> Result<usize> {
     queue_retries_with_engine(case, Some(engine), ids)
 }
@@ -70,8 +110,8 @@ pub fn queue_retries_with_engine(
                 .iter()
                 .find(|e| e.id == previous.evidence_id)
                 .ok_or("Evidence is no longer available")?;
-            if crate::investigation::is_native(&previous.plugin) {
-                return crate::investigation::prepare(
+            if crate::analysis::is_native(&previous.plugin) {
+                return crate::analysis::prepare(
                     evidence,
                     &previous.plugin,
                     previous.arguments.clone(),
@@ -86,7 +126,12 @@ pub fn queue_retries_with_engine(
         })
         .collect::<Result<Vec<_>>>()?;
     let count = runs.len();
-    case.queue_batch(runs)?;
+    let previous_cleared = case.document.cleared_queue_runs.clone();
+    case.document.cleared_queue_runs.extend(ids.iter().cloned());
+    if let Err(error) = case.queue_batch(runs) {
+        case.document.cleared_queue_runs = previous_cleared;
+        return Err(error);
+    }
     Ok(count)
 }
 
@@ -100,7 +145,9 @@ pub fn chooser_plugins(
     let mut plugins: Vec<_> = plugins
         .iter()
         .filter(|plugin| {
-            os.accepts(&plugin.id)
+            (os.accepts(&plugin.id)
+                && (plugin.id != crate::analysis::BROWSER
+                    || matches!(os, OperatingSystem::Windows | OperatingSystem::Unknown)))
                 && (extended || basic_label(&plugin.id).is_some())
                 && format!(
                     "{} {} {}",
@@ -169,6 +216,95 @@ impl AnalysisDraft {
             }
         }
     }
+    pub fn prepare_in_case(
+        &self,
+        engine: &Installation,
+        evidence: &Evidence,
+        case: &Case,
+    ) -> Result<Vec<Run>> {
+        let mut ordinary = self.clone();
+        let browser = ordinary.selected.remove(crate::analysis::BROWSER);
+        let registry = ordinary.selected.remove(REGISTRY_ALL);
+        for id in [crate::analysis::BROWSER, REGISTRY_ALL] {
+            if self.selected.contains(id)
+                && self
+                    .arguments
+                    .get(id)
+                    .is_some_and(|args| !args.trim().is_empty())
+            {
+                return Err(format!("{id} does not accept custom arguments"));
+            }
+        }
+        let mut runs = ordinary.prepare(engine, evidence, &case.directory.join("analyses"))?;
+        if registry {
+            if self.os != OperatingSystem::Windows {
+                return Err("Recursive registry analysis requires Windows evidence".into());
+            }
+            runs.push(engine.prepare(
+                evidence,
+                crate::analysis::registry::PRINT_KEY,
+                vec!["--recurse".into()],
+                &case.directory.join("analyses"),
+            )?);
+        }
+        if browser {
+            if self.os != OperatingSystem::Windows {
+                return Err("Browser recovery requires Windows evidence".into());
+            }
+            let missing: Vec<_> = [
+                "windows.pslist.PsList",
+                "windows.cmdline.CmdLine",
+                "windows.filescan.FileScan",
+            ]
+            .into_iter()
+            .filter(|plugin| {
+                !case.document.runs.iter().any(|run| {
+                    run.evidence_id == evidence.id
+                        && run.plugin == *plugin
+                        && run.arguments.is_empty()
+                        && run.status == RunStatus::Completed
+                })
+            })
+            .collect();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "Browser recovery requires completed prerequisite jobs for this evidence with no filters: {}",
+                    missing.join(", ")
+                ));
+            }
+            let mut browser_evidence = evidence.clone();
+            browser_evidence.operating_system = self.os;
+            let evidence = &browser_evidence;
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let mut memory = match crate::analysis::browser_memory_runs(
+                &case.directory,
+                &case.document,
+                evidence,
+                engine,
+                &cancel,
+            ) {
+                Ok(runs) => runs,
+                Err(error)
+                    if error == "Collect browser processes first, then recover browser memory" =>
+                {
+                    Vec::new()
+                }
+                Err(error) => return Err(error),
+            };
+            memory.retain(|run| run.plugin != crate::analysis::BROWSER);
+            runs.extend(memory);
+            runs.extend(crate::analysis::browser_recovery_runs(
+                &case.directory,
+                &case.document,
+                evidence,
+                engine,
+                false,
+                &cancel,
+            )?);
+        }
+        Ok(runs)
+    }
+
     pub fn prepare(
         &self,
         engine: &Installation,

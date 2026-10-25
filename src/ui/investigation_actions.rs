@@ -1,7 +1,85 @@
 use super::*;
-use volgui::{case::Run, investigation};
+use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn recover_and_analyze_browser(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure Volatility in settings")?;
+            let output = self
+                .case
+                .as_ref()
+                .ok_or("Open a case first")?
+                .directory
+                .join("analyses");
+            [
+                "windows.pslist.PsList",
+                "windows.cmdline.CmdLine",
+                "windows.filescan.FileScan",
+            ]
+            .into_iter()
+            .map(|plugin| engine.prepare(evidence, plugin, vec![], &output))
+            .collect::<Result<Vec<_>, _>>()
+        })();
+        match result {
+            Ok(runs) => {
+                self.browser_recovery_pending = true;
+                self.queue_investigation(runs, window, cx);
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn prepare_browser_recovery(&mut self, cx: &mut Context<Self>) {
+        if self.is_working() {
+            return;
+        }
+        let (Some(evidence), Some(engine), Some(case)) = (
+            self.evidence().cloned(),
+            self.installation.clone(),
+            self.case.as_ref(),
+        ) else {
+            return;
+        };
+        let directory = case.directory.clone();
+        let document = case.document.clone();
+        let cancel = self.start("Finding browser processes to recover");
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| {
+                let mut runs = match analysis::browser_memory_runs(
+                    &directory, &document, &evidence, &engine, &cancel,
+                ) {
+                    Ok(runs) => runs,
+                    Err(error)
+                        if error
+                            == "Collect browser processes first, then recover browser memory" =>
+                    {
+                        Vec::new()
+                    }
+                    Err(error) => return Err(error),
+                };
+                runs.retain(|run| run.plugin != analysis::BROWSER);
+                runs.extend(analysis::browser_recovery_runs(
+                    &directory, &document, &evidence, &engine, false, &cancel,
+                )?);
+                Ok(runs)
+            })();
+            let _ = tx.send(Event::BrowserPrepared(result));
+        });
+        cx.notify();
+    }
+
     pub(super) fn collect_source(
         &mut self,
         plugin: &str,
@@ -30,17 +108,6 @@ impl Workspace {
         }
     }
 
-    pub(super) fn registry_parent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let path = self.registry_key.read(cx).value();
-        let parent = path
-            .trim_matches('\\')
-            .rsplit_once('\\')
-            .map(|(p, _)| p.to_string())
-            .unwrap_or_default();
-        self.registry_key
-            .update(cx, |input, cx| input.set_value(parent, window, cx));
-        self.browse_registry(false, false, window, cx);
-    }
     pub(super) fn queue_investigation(
         &mut self,
         runs: Vec<Run>,
@@ -75,7 +142,7 @@ impl Workspace {
             if self.string_ignore_case {
                 arguments.push("--ignore-ascii-case".into());
             }
-            investigation::prepare(evidence, investigation::STRINGS, arguments)
+            analysis::prepare(evidence, analysis::STRINGS, arguments)
         })();
         match result {
             Ok(run) => {
@@ -88,56 +155,6 @@ impl Workspace {
                 cx.notify();
             }
         }
-    }
-
-    pub(super) fn analyze_browser(
-        &mut self,
-        recover: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.busy.as_ref().is_some_and(|b| b.run_id.is_none()) {
-            return;
-        }
-        let Some(evidence) = self.evidence().cloned() else {
-            return;
-        };
-        if !recover {
-            match investigation::prepare(&evidence, investigation::BROWSER, vec![]) {
-                Ok(run) => {
-                    let id = run.id.clone();
-                    self.queue_investigation(vec![run], window, cx);
-                    self.select_run(id, window, cx);
-                }
-                Err(error) => {
-                    self.error = Some(error);
-                    cx.notify();
-                }
-            }
-            return;
-        }
-        // Preparation reads the file index, so it also belongs on the background worker.
-        if self.busy.is_some() {
-            return;
-        }
-        let Some(engine) = self.installation.clone() else {
-            self.error = Some("Configure Volatility to recover browser files. Existing extractions can be analyzed without an engine.".into());
-            cx.notify();
-            return;
-        };
-        let Some(case) = &self.case else { return };
-        let directory = case.directory.clone();
-        let document = case.document.clone();
-        let physical = self.file_offset_physical;
-        let cancel = self.start("Finding browser files to recover", None);
-        let tx = self.tx.clone();
-        thread::spawn(move || {
-            let result = investigation::browser_recovery_runs(
-                &directory, &document, &evidence, &engine, physical, &cancel,
-            );
-            let _ = tx.send(Event::BrowserPrepared(result));
-        });
-        cx.notify();
     }
 
     pub(super) fn browse_registry(
@@ -160,27 +177,21 @@ impl Workspace {
                 .find(|r| r.id == record.run_id)
                 .ok_or("Missing source analysis")?;
             let key = if child {
-                investigation::registry::child_key(source, &record.record)
+                analysis::registry::child_key(source, &record.record)
                     .ok_or("Select a registry subkey")?
             } else {
                 self.registry_key.read(cx).value().to_string()
             };
-            let arguments = investigation::registry::arguments(&record.record, &key, recurse)?;
-            if let Some(cached) = investigation::registry::cached(case, source, &arguments) {
+            let arguments = analysis::registry::arguments(&record.record, &key, recurse)?;
+            if let Some(cached) = analysis::registry::cached(case, source, &arguments) {
                 return Ok((cached.id.clone(), None));
             }
             let engine = self
                 .installation
                 .as_ref()
                 .ok_or("Configure Volatility to read registry keys that have not been collected")?;
-            let requested = investigation::registry::prepare(
-                case,
-                engine,
-                source,
-                &record.record,
-                &key,
-                recurse,
-            )?;
+            let requested =
+                analysis::registry::prepare(case, engine, source, &record.record, &key, recurse)?;
             Ok::<_, String>((requested.id.clone(), Some(requested)))
         })();
         match result {

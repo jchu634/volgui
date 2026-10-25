@@ -56,7 +56,7 @@ impl Workspace {
             Ok(Ok(Some(path))) => {
                 thread::spawn(move || {
                     let result = (|| {
-                        let mut file = std::fs::File::open(&source).map_err(|e| e.to_string())?;
+                        let mut file = volgui::extracted_files::open_artifact(&source)?;
                         document.export_reader(&directory, &path, &mut file)?;
                         Ok(path)
                     })();

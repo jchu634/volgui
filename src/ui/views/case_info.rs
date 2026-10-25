@@ -50,7 +50,7 @@ impl Workspace {
                                 .small()
                                 .w(px(140.))
                                 .label("Verify integrity")
-                                .disabled(self.busy.is_some())
+                                .disabled(self.is_working())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.selected_evidence = Some(id.clone());
                                     this.verify(cx);
