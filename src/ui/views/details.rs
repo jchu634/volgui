@@ -422,16 +422,24 @@ impl Workspace {
                             content = content.child("No extracted files. Select a file-scan result and choose Dump file, or run a dump plugin.");
                         }
                         Ok(files) => {
+                            let metadata = volgui::object_store::output_metadata(&directory)
+                                .unwrap_or_default();
                             let imhex = volgui::extracted_files::imhex();
                             if imhex.is_none() {
                                 content = content.child(div().text_sm().child("ImHex was not found. Install it in its default location or add it to PATH to open files here."));
                             }
                             for (i, file) in files.iter().cloned().enumerate() {
-                                if !file.is_file()
-                                    || volgui::extracted_files::ensure_openable(&file).is_err()
-                                {
+                                let available = metadata.get(&file).map_or_else(
+                                    || {
+                                        file.is_file()
+                                            && volgui::extracted_files::ensure_openable(&file)
+                                                .is_ok()
+                                    },
+                                    |info| info.sha256.is_some() && info.blocked_reason.is_none(),
+                                );
+                                if !available {
                                     content = content.child(div().py_1().text_sm().child(format!(
-                                        "{} — Potential malware / unavailable. Opening blocked.",
+                                        "{} — Unavailable artifact. Opening is blocked.",
                                         file.strip_prefix(&directory).unwrap_or(&file).display()
                                     )));
                                     continue;
@@ -473,6 +481,12 @@ impl Workspace {
                                                 this.export_file(source.clone(), window, cx)
                                             })),
                                     );
+                                if let Some(sha256) =
+                                    metadata.get(&file).and_then(|info| info.sha256.as_ref())
+                                {
+                                    row = row
+                                        .child(div().text_xs().child(format!("SHA-256 {sha256}")));
+                                }
                                 if let Some(executable) = imhex.clone() {
                                     row = row.child(
                                         Button::new(("imhex-extracted", i))

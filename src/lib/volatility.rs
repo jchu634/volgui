@@ -693,7 +693,8 @@ impl Table {
 }
 
 pub fn read_text(path: &Path, limit: u64) -> Result<String> {
-    let file = File::open(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    let file = crate::extracted_files::open_artifact(path)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     if file.metadata().map_err(|e| e.to_string())?.len() > limit {
         return Err(format!(
             "Output exceeds the {} MiB viewer limit",
@@ -712,7 +713,7 @@ pub fn read_text(path: &Path, limit: u64) -> Result<String> {
 
 pub fn read_tail(path: &Path) -> String {
     use std::io::{Seek, SeekFrom};
-    let Ok(mut file) = File::open(path) else {
+    let Ok(mut file) = crate::extracted_files::open_artifact(path) else {
         return String::new();
     };
     let len = file.metadata().map_or(0, |m| m.len());

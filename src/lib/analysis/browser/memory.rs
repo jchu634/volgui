@@ -2,14 +2,13 @@
 use super::super::{BROWSER, browser, record};
 use crate::{
     artifacts::OperatingSystem,
-    case::{CaseDocument, Evidence, Run, RunStatus},
+    case::{CaseSnapshot, Evidence, Run, RunStatus},
     results::{Query, ResultStore},
     volatility::{Installation, Record, Table},
 };
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -43,7 +42,7 @@ fn number(row: &Record, field: &str) -> Option<u64> {
 
 fn processes(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence: &str,
     cancel: &AtomicBool,
 ) -> Result<BTreeMap<u64, Process>, String> {
@@ -155,7 +154,7 @@ fn processes(
 /// Queue browser processes with page content, then parse all recovered browser data.
 pub fn recovery_runs(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence: &Evidence,
     engine: &Installation,
     cancel: &AtomicBool,
@@ -180,11 +179,12 @@ pub fn recovery_runs(
                 && r.arguments == arguments
                 && (matches!(r.status, RunStatus::Queued | RunStatus::Running)
                     || r.status == RunStatus::Completed
-                        && directory
-                            .join("analyses")
-                            .join(&r.id)
-                            .join(format!("pid.{}.dmp", process.pid))
-                            .is_file())
+                        && crate::object_store::exists(
+                            &directory
+                                .join("analyses")
+                                .join(&r.id)
+                                .join(format!("pid.{}.dmp", process.pid)),
+                        ))
         }) {
             continue;
         }
@@ -295,7 +295,7 @@ struct Hit {
 
 // Keep the exact string as the key: query strings and fragments can be evidence.
 fn scan(
-    file: &mut File,
+    file: &mut (impl Read + Seek),
     regions: &[Region],
     cancel: &AtomicBool,
     progress: &impl Fn(String),
@@ -418,7 +418,7 @@ fn url_at(bytes: &[u8], final_region: bool) -> Option<(String, &'static str, boo
 
 pub(in crate::analysis) fn analyze(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     run: &Run,
     cancel: &AtomicBool,
     progress: &impl Fn(String),

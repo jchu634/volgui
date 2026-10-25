@@ -369,6 +369,16 @@ impl Workspace {
                 self.queue_paused = true;
                 return;
             }
+            let checkpoint = match case.save_checkpoint() {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    case.document.runs[i].status = RunStatus::Queued;
+                    case.document.runs[i].started_at = None;
+                    self.error = Some(error);
+                    self.queue_paused = true;
+                    return;
+                }
+            };
             let run = case.document.runs[i].clone();
             let directory = case.run_dir(&run.id);
             let store = ResultStore::at(&case.directory);
@@ -388,6 +398,22 @@ impl Workspace {
             self.message = label;
             let tx = self.tx.clone();
             thread::spawn(move || {
+                if let Err(error) = checkpoint.wait(&cancel) {
+                    let _ = tx.send(Event::Finished(
+                        run.id,
+                        Outcome {
+                            status: if cancel.load(Ordering::Relaxed) {
+                                RunStatus::Cancelled
+                            } else {
+                                RunStatus::Failed
+                            },
+                            exit_code: None,
+                            table: None,
+                            message: error,
+                        },
+                    ));
+                    return;
+                }
                 let mut outcome = if native {
                     volgui::analysis::execute(
                         &case_directory,
@@ -403,6 +429,18 @@ impl Workspace {
                         .expect("engine checked before starting job")
                         .execute(&run, &directory, &cancel)
                 };
+                if let Err(error) = volgui::object_store::ObjectStore::at(&case_directory)
+                    .capture_run(&run.id, &cancel)
+                {
+                    outcome.status = if cancel.load(Ordering::Relaxed) {
+                        RunStatus::Cancelled
+                    } else {
+                        RunStatus::Failed
+                    };
+                    outcome.table = None;
+                    outcome.message =
+                        format!("Could not archive analysis output: {error}. Capture retained.");
+                }
                 if let Some(table) = outcome.table.take()
                     && let Err(e) = store.insert_cancellable(&run, &table, &cancel)
                 {

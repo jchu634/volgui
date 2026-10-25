@@ -13,9 +13,26 @@ pub struct DatabasePage {
     pub more: bool,
 }
 
-pub fn open_database(path: &Path) -> Result<Connection, String> {
+pub struct OpenDatabase {
+    connection: Connection,
+    _lease: Option<tempfile::NamedTempFile>,
+}
+impl std::ops::Deref for OpenDatabase {
+    type Target = Connection;
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+pub fn open_database(path: &Path) -> Result<OpenDatabase, String> {
     let _ = crate::extracted_files::open_artifact(path)?;
-    let mut uri = url::Url::from_file_path(path).map_err(|_| "File path must be absolute")?;
+    let lease = if crate::object_store::stored_hash(path)?.is_some() {
+        Some(crate::object_store::materialize(path)?)
+    } else {
+        None
+    };
+    let physical = lease.as_ref().map_or(path, |f| f.path());
+    let mut uri = url::Url::from_file_path(physical).map_err(|_| "File path must be absolute")?;
     uri.set_query(Some("immutable=1"));
     Connection::open_with_flags(
         uri.as_str(),
@@ -23,6 +40,10 @@ pub fn open_database(path: &Path) -> Result<Connection, String> {
             | OpenFlags::SQLITE_OPEN_URI
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
+    .map(|connection| OpenDatabase {
+        connection,
+        _lease: lease,
+    })
     .map_err(|e| e.to_string())
 }
 

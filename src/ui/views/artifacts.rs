@@ -72,7 +72,7 @@ impl Workspace {
                     {
                         return Ok(None);
                     }
-                    for record in store.fetch(chunk)? {
+                    for record in store.fetch_enriched(chunk)? {
                         width = width.max(measure(&column.text(&record.record)));
                     }
                 }

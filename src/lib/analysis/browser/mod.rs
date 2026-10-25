@@ -4,7 +4,7 @@ mod search;
 
 use super::{record, table};
 use crate::{
-    case::{CaseDocument, Run, RunStatus},
+    case::{CaseSnapshot, Run, RunStatus},
     extracted_files,
     volatility::{Record, Table},
 };
@@ -12,7 +12,6 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
-    fs::File,
     io::Read,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -23,7 +22,7 @@ const SESSION_LIMIT: u64 = 32 * 1024 * 1024;
 
 pub(super) fn analyze(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     run: &Run,
     cancel: &AtomicBool,
     progress: &impl Fn(String),
@@ -200,10 +199,11 @@ pub(super) fn analyze(
 
 pub(super) fn blocked_artifact(directory: &Path, source: &str, path: &Path, error: &str) -> Record {
     let persisted = extracted_files::block_artifact(path, error);
+    let blocked = extracted_files::ensure_openable(path).is_err();
     record(json!({
         "Kind": "Unavailable artifact",
-        "Status": "Potential malware / unavailable",
-        "Opening blocked": true,
+        "Status": if blocked { "Potential malware / unavailable" } else { "Temporarily unavailable" },
+        "Opening blocked": blocked,
         "Source run": source,
         "Source file": path.strip_prefix(directory).unwrap_or(path).display().to_string(),
         "Observation": format!("{error}. The artifact may have been quarantined, deleted or denied access. Malware is not confirmed by this error."),
@@ -362,7 +362,7 @@ fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(
 
 fn read_session(path: &Path) -> Result<Vec<u8>, String> {
     let mut data = Vec::new();
-    File::open(path)
+    extracted_files::open_artifact(path)
         .map_err(|e| e.to_string())?
         .take(SESSION_LIMIT + 1)
         .read_to_end(&mut data)

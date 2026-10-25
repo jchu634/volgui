@@ -399,6 +399,12 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
         )
         .unwrap();
     }
+    // Exercise the real managed-object read path, not retained staging files.
+    for source in &case.document.runs {
+        volgui::object_store::ObjectStore::at(&case.directory)
+            .capture_run(&source.id, &AtomicBool::new(false))
+            .unwrap();
+    }
     save(
         &mut case,
         1,

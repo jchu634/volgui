@@ -6,7 +6,6 @@ impl Workspace {
         let Some(case) = &self.case else {
             return vec![];
         };
-        let mut seen = HashSet::new();
         case.document
             .runs
             .iter()
@@ -15,18 +14,6 @@ impl Workspace {
                 Some(&r.evidence_id) == self.selected_evidence.as_ref()
                     && r.status == RunStatus::Completed
                     && ArtifactGroup::for_plugin(&r.plugin) == group
-            })
-            .filter(|r| {
-                seen.insert(
-                    if matches!(
-                        r.plugin.as_str(),
-                        "windows.handles.Handles" | "windows.registry.printkey.PrintKey"
-                    ) {
-                        format!("{}:{:?}", r.plugin, r.arguments)
-                    } else {
-                        r.plugin.clone()
-                    },
-                )
             })
             .map(|r| r.id.clone())
             .collect()
@@ -236,7 +223,7 @@ impl Workspace {
                 {
                     ids.push(*id);
                 }
-                let rows = store.fetch(&ids)?;
+                let rows = store.fetch_enriched(&ids)?;
                 Ok((index, rows, tree))
             });
             let _ = tx.send(Event::Indexed(epoch, result));
@@ -268,7 +255,7 @@ impl Workspace {
         let epoch = self.query_epoch.load(Ordering::Relaxed);
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = store.fetch(&ids);
+            let result = store.fetch_enriched(&ids);
             let _ = tx.send(Event::Rows(epoch, ids, result));
         });
     }
@@ -285,7 +272,7 @@ impl Workspace {
         thread::spawn(move || {
             let _ = tx.send(Event::Selected(
                 epoch,
-                store.fetch(&[id]).map(|mut r| r.pop()),
+                store.fetch_enriched(&[id]).map(|mut r| r.pop()),
             ));
         });
     }

@@ -5,7 +5,7 @@ pub mod registry;
 pub mod strings;
 
 use crate::{
-    case::{CaseDocument, Evidence, Run, RunStatus, now},
+    case::{CaseSnapshot, Evidence, Run, RunStatus, now},
     volatility::{Outcome, Record, Table},
 };
 use std::{
@@ -52,7 +52,7 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
 
 pub fn execute(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     run: &Run,
     cancel: &AtomicBool,
     progress: impl Fn(String),
@@ -76,7 +76,7 @@ pub fn execute(
         }
         let output = directory.join("analyses").join(&run.id);
         fs::create_dir_all(&output).map_err(|e| e.to_string())?;
-        // Keep raw records for database migration and the existing diagnostics/export workflow.
+        // Preserve the native analysis payload as a hashed provenance object.
         let rows: Vec<_> = table.rows.iter().map(|r| &r.fields).collect();
         let file = fs::File::create(output.join("stdout.json")).map_err(|e| e.to_string())?;
         serde_json::to_writer(file, &rows).map_err(|e| e.to_string())?;
@@ -147,7 +147,7 @@ pub fn browser_file(path: &str) -> bool {
 
 pub fn browser_candidates(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence_id: &str,
     cancel: &AtomicBool,
 ) -> Result<Vec<crate::results::StoredRecord>, String> {
@@ -194,7 +194,7 @@ pub fn browser_candidates(
 
 pub fn browser_recovery_runs(
     directory: &Path,
-    document: &CaseDocument,
+    document: &CaseSnapshot,
     evidence: &Evidence,
     engine: &crate::volatility::Installation,
     physical: bool,

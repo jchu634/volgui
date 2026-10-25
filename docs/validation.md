@@ -5,12 +5,12 @@ The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main` and on p
 ```powershell
 cargo fmt --all --check
 cargo check --locked --all-targets --features test-engine
-cargo test --locked --features test-engine
+cargo test --locked --no-default-features --features test-engine
 cargo test --locked -p accesskit_windows --lib destroyed_window
 cargo clippy --locked --all-targets --features test-engine -- -D warnings
 ```
 
-`test-engine` builds a test-only CLI fixture for exercising process cancellation, nonzero exits, malformed output, literal arguments, large diagnostics and generated artifacts. Normal builds include only the application.
+`desktop` enables the application binary and is on by default. Tests can use `--no-default-features` to avoid replacing a running desktop executable. `test-engine` builds a test-only CLI fixture for exercising process cancellation, nonzero exits, malformed output, literal arguments, large diagnostics and generated artifacts. Normal builds include only the application.
 
 The Windows accessibility dependency has a [local teardown fix](../vendor/accesskit_windows/PATCH.md). Its regression test calls a retained COM provider after destroying the native window and checks that it returns an error without aborting.
 

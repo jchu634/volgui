@@ -3,7 +3,7 @@ use serde_json::json;
 use std::fs;
 use std::sync::atomic::AtomicBool;
 use volgui::{
-    case::{Case, Evidence, MANIFEST, RunStatus},
+    case::{Case, DATABASE, Evidence, RunStatus},
     extracted_files::{DUMP_FILES, FileDumpTarget, queue_file_dump},
     results::StoredRecord,
     settings::Settings,
@@ -167,7 +167,7 @@ fn unavailable_engine_stale_evidence_or_save_failure_does_not_queue_a_dump() {
     let mut missing = stored.clone();
     missing.run_id = "missing".into();
     assert!(queue_file_dump(&mut case, &engine, &missing, false).is_err());
-    let manifest = case.directory.join(MANIFEST);
+    let manifest = case.directory.join(DATABASE);
     let saved = fs::read(&manifest).unwrap();
     fs::remove_file(&manifest).unwrap();
     fs::create_dir(&manifest).unwrap();
@@ -209,7 +209,7 @@ fn individual_dump_executes_and_retains_all_cache_files_and_empty_results() {
         assert_eq!(files.len(), expected_files);
         for file in files {
             assert_eq!(
-                fs::read_to_string(file).unwrap(),
+                volgui::volatility::read_text(&file, 4096).unwrap(),
                 format!("{flag} {offset:#x}")
             );
         }

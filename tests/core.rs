@@ -125,7 +125,7 @@ fn cases_lock_atomically_save_and_preserve_integrity_failures() {
         case.document
             .export(
                 &case.directory,
-                &directory.join("case.volgui.json"),
+                &directory.join("case.sqlite"),
                 b"must not overwrite manifest"
             )
             .is_err()
@@ -368,8 +368,12 @@ mod process_tests {
         let outcome = second.join().unwrap();
         assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
         case.finish(&runs[1].id, &outcome).unwrap();
-        assert!(case.run_dir(&runs[1].id).join("artifact.txt").exists());
-        assert!(case.run_dir(&runs[2].id).join("artifact.txt").exists());
+        assert!(volgui::object_store::exists(
+            &case.run_dir(&runs[1].id).join("artifact.txt")
+        ));
+        assert!(volgui::object_store::exists(
+            &case.run_dir(&runs[2].id).join("artifact.txt")
+        ));
         drop(case);
         let reopened = Case::open(&temp.path().join("case")).unwrap();
         assert_eq!(reopened.document.runs[0].status, RunStatus::Cancelled);

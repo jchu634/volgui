@@ -260,6 +260,21 @@ pub fn cell_text(value: &str) -> String {
     }
 }
 
+/// Recover the host for profile artifacts and older saved browser results.
+pub fn populate_domain(record: &mut Record) {
+    if record
+        .fields
+        .get("Domain")
+        .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
+        && let Ok(url) = url::Url::parse(&record.text("URL"))
+        && let Some(host) = url.host_str()
+    {
+        record
+            .fields
+            .insert("Domain".into(), serde_json::json!(host));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,23 +487,6 @@ mod tests {
             "CommandLine",
         ] {
             assert!(visible_column(column), "{column}");
-        }
-    }
-}
-
-/// Recover the host for profile artifacts and older saved browser results.
-pub fn populate_domain(record: &mut Record) {
-    if record
-        .fields
-        .get("Domain")
-        .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
-    {
-        if let Ok(url) = url::Url::parse(&record.text("URL")) {
-            if let Some(host) = url.host_str() {
-                record
-                    .fields
-                    .insert("Domain".into(), serde_json::json!(host));
-            }
         }
     }
 }

@@ -3,7 +3,7 @@ use std::{fs, sync::atomic::AtomicBool};
 use volgui::{
     analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries},
     artifacts::OperatingSystem,
-    case::{Case, CaseDocument, Evidence, MANIFEST, QueueClearScope, RunStatus},
+    case::{Case, CaseSnapshot, DATABASE, Evidence, QueueClearScope, RunStatus},
     settings::Settings,
     volatility::{Installation, Outcome, Plugin, Table},
 };
@@ -155,7 +155,7 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     assert!(queue_retries(&mut case, &unavailable, &ids).is_err());
     assert_eq!(case.document.runs.len(), 3);
 
-    let manifest = case.directory.join(MANIFEST);
+    let manifest = case.directory.join(DATABASE);
     let saved = fs::read(&manifest).unwrap();
     fs::remove_file(&manifest).unwrap();
     fs::create_dir(&manifest).unwrap();
@@ -242,8 +242,8 @@ fn clearing_queue_preserves_active_jobs_history_and_results_and_survives_reopeni
         run.status = status;
     }
     case.save().unwrap();
-    let manifest = case.directory.join(MANIFEST);
-    let legacy: CaseDocument = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    let manifest = case.directory.join(DATABASE);
+    let legacy = CaseSnapshot::load(&case.directory).unwrap();
     assert!(legacy.cleared_queue_runs.is_empty());
     assert_eq!(legacy.queue_runs().count(), 6);
 
@@ -357,7 +357,7 @@ fn batch_selection_preserves_individual_options_and_is_saved_atomically() {
     assert!(case.queue_batch(invalid).is_err());
     assert!(case.document.runs.is_empty());
     assert!(case.queue_batch(Vec::new()).is_err());
-    let manifest = case.directory.join(MANIFEST);
+    let manifest = case.directory.join(DATABASE);
     let saved = fs::read(&manifest).unwrap();
     fs::remove_file(&manifest).unwrap();
     fs::create_dir(&manifest).unwrap();

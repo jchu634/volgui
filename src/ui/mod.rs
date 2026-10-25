@@ -480,7 +480,7 @@ impl Workspace {
             plugin_query,
             arguments,
             case_name: field("", "Case name", window, cx),
-            case_directory: field("", "Case directory", window, cx),
+            case_directory: field("", "Folder to create the case in", window, cx),
             _subscriptions: subscriptions,
         };
         if let Some(path) = case_path {
@@ -518,7 +518,9 @@ impl Workspace {
         self.busy.is_some() || !self.running.is_empty()
     }
     fn can_switch(&self) -> bool {
-        !self.is_working() && !self.has_queued()
+        !self.is_working()
+            && !self.has_queued()
+            && !self.case.as_ref().is_some_and(Case::has_unsaved_changes)
     }
     fn has_queued(&self) -> bool {
         self.case.as_ref().is_some_and(|c| {
@@ -579,6 +581,15 @@ impl Workspace {
     }
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut changed = false;
+        if let Some(case) = &mut self.case {
+            while let Some(result) = case.poll_save() {
+                changed = true;
+                if let Err(error) = result {
+                    self.error = Some(format!("Could not save case: {error}"));
+                    self.queue_paused = true;
+                }
+            }
+        }
         while let Ok(event) = self.rx.try_recv() {
             changed = true;
             match event {
@@ -700,7 +711,7 @@ impl Workspace {
                 Event::Finished(id, outcome) => {
                     self.running.remove(&id);
                     self.batch_finished += 1;
-                    let saved = match self.case.as_mut().map(|c| c.finish(&id, &outcome)) {
+                    let saved = match self.case.as_mut().map(|c| c.finish_recorded(&id, &outcome)) {
                         Some(Ok(())) => true,
                         Some(Err(error)) => {
                             self.error = Some(error);

@@ -24,10 +24,17 @@ fn blocked_marker(path: &Path) -> PathBuf {
 
 /// Keep a durable record even if antivirus removes the recovered bytes.
 pub fn block_artifact(path: &Path, reason: &str) -> Result<(), String> {
+    if crate::object_store::block(path, reason)? {
+        return Ok(());
+    }
+    if path.try_exists().is_ok_and(|exists| exists) {
+        return Ok(());
+    }
     fs::write(blocked_marker(path), reason).map_err(|e| e.to_string())
 }
 
 pub fn ensure_openable(path: &Path) -> Result<(), String> {
+    crate::object_store::ensure_openable(path)?;
     if blocked_marker(path)
         .try_exists()
         .map_err(|e| e.to_string())?
@@ -37,9 +44,9 @@ pub fn ensure_openable(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn open_artifact(path: &Path) -> Result<fs::File, String> {
+pub fn open_artifact(path: &Path) -> Result<crate::object_store::ArtifactReader, String> {
     ensure_openable(path)?;
-    fs::File::open(path).map_err(|error| {
+    crate::object_store::open(path).map_err(|error| {
         let reason = format!("Potential malware / unavailable artifact: {error}");
         let _ = block_artifact(path, &reason);
         reason
@@ -312,8 +319,19 @@ pub fn list(directory: &Path) -> Result<Vec<PathBuf>, String> {
         }
         Ok(())
     }
-    let mut files = Vec::new();
-    visit(directory, directory, &mut files).map_err(|e| e.to_string())?;
+    let mut files = crate::object_store::list(directory)?;
+    if !directory.is_dir() && files.is_empty() {
+        return Err("Analysis output directory is unavailable".into());
+    }
+    files.retain(|p| {
+        !matches!(
+            p.file_name().and_then(|n| n.to_str()),
+            Some("stdout.json" | "stderr.log")
+        )
+    });
+    if directory.is_dir() {
+        visit(directory, directory, &mut files).map_err(|e| e.to_string())?;
+    }
     // Volatility retains output names even when antivirus has removed their bytes.
     if let Ok(table) = crate::volatility::Table::read(&directory.join("stdout.json")) {
         for row in table.rows {
@@ -359,11 +377,15 @@ pub fn imhex() -> Option<PathBuf> {
 
 pub fn open(executable: &Path, file: &Path) -> Result<(), String> {
     let _ = open_artifact(file)?;
-    let file = file.canonicalize().map_err(|e| e.to_string())?;
-    Command::new(executable)
-        .arg(imhex_path(&file))
+    let lease = crate::object_store::materialize(file)?;
+    let mut child = Command::new(executable)
+        .arg(imhex_path(lease.path()))
         .spawn()
         .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _lease = lease;
+        let _ = child.wait();
+    });
     Ok(())
 }
 

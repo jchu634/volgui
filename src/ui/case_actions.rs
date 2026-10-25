@@ -32,28 +32,28 @@ impl Workspace {
         if self.case.as_ref().is_some_and(|c| {
             path.canonicalize()
                 .ok()
-                .is_some_and(|p| p == c.directory || p == c.directory.join(volgui::case::MANIFEST))
+                .is_some_and(|p| p == c.directory || p == c.directory.join(volgui::case::DATABASE))
         }) {
             self.view = View::Workspace;
             cx.notify();
             return;
         }
-        let cancel = self.start("Opening case and indexing saved scans");
+        self.start("Opening case");
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = Case::open(&path).and_then(|case| {
-                case.document.migrate_results(&case.directory, &cancel)?;
-                Ok(case)
-            });
-            let _ = tx.send(Event::Opened(result));
+            let _ = tx.send(Event::Opened(Case::open(&path)));
         });
         cx.notify();
     }
-    pub(super) fn use_case(&mut self, case: Case, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn use_case(&mut self, mut case: Case, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = case.enable_background_saves() {
+            self.error = Some(error);
+            return;
+        }
         self.query_epoch.fetch_add(1, Ordering::Relaxed);
         self.selection_epoch += 1;
         self.selected_evidence = case.document.evidence.first().map(|e| e.id.clone());
-        let path = case.directory.join(volgui::case::MANIFEST);
+        let path = case.directory.join(volgui::case::DATABASE);
         self.case = Some(case);
         self.handles = None;
         self.handles_loading = false;
@@ -109,19 +109,25 @@ impl Workspace {
             self.plugin_os = os;
         }
     }
-    pub(super) fn create_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn create_case(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_switch() {
             return;
         }
-        let directory = PathBuf::from(self.case_directory.read(cx).value().trim());
-        if directory.as_os_str().is_empty() {
-            self.error = Some("Choose a case directory".into());
+        let parent = PathBuf::from(self.case_directory.read(cx).value().trim());
+        if parent.as_os_str().is_empty() {
+            self.error = Some("Choose a folder to create the case in".into());
             return;
         }
-        match Case::create(&directory, self.case_name.read(cx).value().as_ref()) {
-            Ok(c) => self.use_case(c, window, cx),
-            Err(e) => self.error = Some(e),
+        let name = self.case_name.read(cx).value().to_string();
+        if name.trim().is_empty() {
+            self.error = Some("Enter a case name".into());
+            return;
         }
+        self.start("Creating case");
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Event::Opened(Case::create_named(&parent, &name)));
+        });
         cx.notify();
     }
     pub(super) fn choose_path(
@@ -137,7 +143,7 @@ impl Workspace {
             multiple: purpose == "evidence",
             prompt: Some(
                 match purpose {
-                    "open" => "Open case.volgui.json",
+                    "open" => "Open case.sqlite",
                     "evidence" => "Add memory images",
                     "engine" => "Choose Volatility executable",
                     "symbols" => "Choose symbols directory",
