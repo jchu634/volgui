@@ -168,6 +168,94 @@ impl Workspace {
         content
     }
 
+    fn render_browser_overview(
+        &self,
+        record: &volgui::volatility::Record,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let field = |label: &str, text: String| {
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(heading(label.to_owned(), cx))
+                .child(div().text_sm().child(text))
+        };
+        let separator = || div().h_px().w_full().my_2().bg(cx.theme().border);
+        let pid = record.text("PID");
+        let process = record.text("Process");
+        let mut processes = div().flex().flex_wrap().gap_4().child(field(
+            "Process",
+            if pid.is_empty() {
+                process
+            } else {
+                format!("{process} ({pid})")
+            },
+        ));
+        if let Some(parent) = &self.relations.parent {
+            processes = processes.child(field("Process parent", parent.title.clone()));
+        } else if !record.text("PPID").is_empty() {
+            processes = processes.child(field("Process parent", record.text("PPID")));
+        }
+        let command = ["Command", "CommandLine", "Command line", "Args"]
+            .iter()
+            .map(|name| record.text(name))
+            .find(|text| !text.is_empty())
+            .unwrap_or_default();
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(processes)
+            .child(field("Command", command))
+            .child(separator())
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .child(field("Browser", record.text("Browser")))
+                    .child(field("Domain", record.text("Domain"))),
+            )
+            .child(field("URL", record.text("URL")));
+        if !record.text("Search engine").is_empty() || !record.text("Search terms").is_empty() {
+            content = content.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .child(field("Search engine", record.text("Search engine")))
+                    .child(field("Search term", record.text("Search terms"))),
+            );
+        }
+        let source = record.text("Source file");
+        let path = self.case.as_ref().map(|case| case.directory.join(&source));
+        content
+            .child(separator())
+            .child(field("Kind", record.text("Kind")))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(field("Source file", source))
+                    .when_some(path, |row, path| {
+                        row.child(
+                            Button::new("reveal-browser-source")
+                                .small()
+                                .ghost()
+                                .label("Show in Explorer")
+                                .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                        )
+                    }),
+            )
+    }
+
     pub(in crate::ui) fn render_details(&self, cx: &mut Context<Self>) -> AnyElement {
         let record = self.selected.as_ref();
         let marked = self
@@ -364,31 +452,20 @@ impl Workspace {
                         .fields
                         .iter()
                         .filter(|(name, _)| {
-                            !browser
-                                || (!matches!(
-                                    name.as_str(),
-                                    "Source run" | "Observation" | "String boundary"
-                                ) && !(name.as_str() == "URL parameters"
-                                    && !record.record.text("Search terms").is_empty()))
+                            !(self.result_group() == Some(ArtifactGroup::Processes)
+                                && (name.starts_with("Fact provenance")
+                                    || matches!(name.as_str(), "File output" | "Handles")))
+                                && (!browser
+                                    || (!matches!(
+                                        name.as_str(),
+                                        "Source run" | "Observation" | "String boundary"
+                                    ) && !(name.as_str() == "URL parameters"
+                                        && !record.record.text("Search terms").is_empty())))
                         })
                         .collect();
                     if browser {
-                        let priority = [
-                            "PID",
-                            "Browser",
-                            "Process",
-                            "Process role",
-                            "URL",
-                            "Search terms",
-                            "URL parameters",
-                            "Domain",
-                        ];
-                        ordered.sort_by_key(|(name, _)| {
-                            priority
-                                .iter()
-                                .position(|key| key == name)
-                                .unwrap_or(priority.len())
-                        });
+                        content = content.child(self.render_browser_overview(&record.record, cx));
+                        ordered.clear();
                     }
                     if application {
                         let priority = [
