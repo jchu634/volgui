@@ -127,7 +127,7 @@ impl Workspace {
         let mut content = div().flex().flex_col().gap_2().text_sm();
         match &self.hex_view {
             HexView::Idle => {
-                content = content.child("Select a file and choose Dump file in its details to read its cached contents. Existing per-file extractions are reused. Contents may be incomplete or unavailable in the capture.");
+                content = content.child("No sidebar view is available for this content.");
             }
             HexView::Loading => {
                 content = content.child("Loading file contents...");

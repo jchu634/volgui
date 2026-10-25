@@ -554,14 +554,14 @@ impl Render for HexEditor {
                     .child(
                         div()
                             .id("hex-editor-horizontal")
+                            .p_2()
                             .size_full()
                             .overflow_x_scroll()
                             .track_scroll(&self.horizontal)
                             .child(
                                 div()
                                     .h_full()
-                                    .w_full()
-                                    .min_w(px(720.))
+                                    .w(px(ADDRESS_WIDTH + HEX_WIDTH * 16. + UTF8_WIDTH * 16. + 16.))
                                     .flex()
                                     .flex_col()
                                     .font_family("Consolas")

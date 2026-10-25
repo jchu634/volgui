@@ -129,9 +129,7 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         Some(ArtifactGroup::Strings) => &[
             ("Offset", &["Offset"]),
             ("Encoding", &["Encoding"]),
-            ("Match", &["Match"]),
             ("Context", &["Context"]),
-            ("Source file", &["Source file"]),
         ],
         Some(ArtifactGroup::Registry) => &[
             ("Name", &["Name", "FileFullPath", "File output"]),

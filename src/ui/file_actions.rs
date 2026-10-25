@@ -159,6 +159,14 @@ impl Workspace {
 
     pub(super) fn load_hex(&mut self, cx: &mut Context<Self>) {
         self.reset_hex();
+        if self.result_group() == Some(ArtifactGroup::Strings)
+            && let Some(record) = &self.selected
+            && let Some(offset) = record.record.fields.get("Offset").and_then(|v| v.as_u64())
+        {
+            let path = PathBuf::from(record.record.text("Source file"));
+            self.open_hex_file(vec![path.clone()], path, offset, cx);
+            return;
+        }
         let memory = self.case.as_ref().and_then(|case| {
             let selected = self.selected.as_ref()?;
             let record = &selected.record;

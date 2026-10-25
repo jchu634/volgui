@@ -318,6 +318,19 @@ impl Workspace {
                                 .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
                         );
                     }
+                    if self.result_group() == Some(ArtifactGroup::Strings) {
+                        actions = actions.child(
+                            Button::new("view-string-memory")
+                                .small()
+                                .ghost()
+                                .label("View surrounding memory")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.content_encoding =
+                                        volgui::extracted_files::ContentEncoding::Hex;
+                                    this.load_hex(cx);
+                                })),
+                        );
+                    }
                     if application {
                         actions = actions.child(
                             Button::new("view-application-text-bytes")
