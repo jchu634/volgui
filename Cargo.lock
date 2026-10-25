@@ -7242,6 +7242,7 @@ dependencies = [
  "gpui-kit",
  "lz4_flex",
  "memchr",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

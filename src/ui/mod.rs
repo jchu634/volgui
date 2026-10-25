@@ -74,6 +74,7 @@ enum DetailTab {
     Diagnostics,
     Files,
     Handles,
+    SourceBytes,
 }
 
 struct FileDumpRequest {
@@ -115,6 +116,10 @@ enum Event {
     Indexed(
         u64,
         std::result::Result<(ResultIndex, Vec<StoredRecord>, ResultTree), String>,
+    ),
+    NetworkLoaded(
+        u64,
+        std::result::Result<Option<volgui::network::Graph>, String>,
     ),
     Rows(
         u64,
@@ -170,6 +175,17 @@ pub struct Workspace {
     scope_label: String,
     index: ResultIndex,
     result_tree: ResultTree,
+    network: volgui::network::Graph,
+    network_cache: RefCell<views::network::NetworkViewCache>,
+    network_loading: bool,
+    network_focus: Option<String>,
+    network_endpoint: Option<volgui::network::Selection>,
+    network_protocol: Option<String>,
+    network_state: Option<String>,
+    network_page: usize,
+    network_sidebar_page: usize,
+    network_scroll: ScrollHandle,
+    network_sidebar_scroll: ScrollHandle,
     tree_cursor: Option<usize>,
     row_cache: HashMap<i64, Arc<StoredRecord>>,
     inflight: HashSet<i64>,
@@ -443,6 +459,17 @@ impl Workspace {
             scope_label: "Artifacts".into(),
             index: ResultIndex::default(),
             result_tree: ResultTree::default(),
+            network: volgui::network::Graph::default(),
+            network_cache: RefCell::default(),
+            network_loading: false,
+            network_focus: None,
+            network_endpoint: None,
+            network_protocol: None,
+            network_state: None,
+            network_page: 0,
+            network_sidebar_page: 0,
+            network_scroll: ScrollHandle::default(),
+            network_sidebar_scroll: ScrollHandle::default(),
             tree_cursor: None,
             row_cache: HashMap::new(),
             inflight: HashSet::new(),
@@ -830,6 +857,49 @@ impl Workspace {
                         })
                     {
                         self.start_query(cx);
+                    }
+                }
+                Event::NetworkLoaded(epoch, result) => {
+                    if epoch != self.query_epoch.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    self.network_loading = false;
+                    match result {
+                        Ok(Some(graph)) => {
+                            self.network = graph;
+                            *self.network_cache.borrow_mut() = Default::default();
+                            if self
+                                .network_focus
+                                .as_ref()
+                                .is_none_or(|ip| !self.network.addresses.contains_key(ip))
+                            {
+                                let mut counts = std::collections::BTreeMap::<String, usize>::new();
+                                for entry in &self.network.entries {
+                                    if let Some(endpoint) = &entry.local {
+                                        *counts.entry(endpoint.address.clone()).or_default() += 1;
+                                    }
+                                }
+                                self.network_focus = counts
+                                    .iter()
+                                    .filter(|(ip, _)| {
+                                        !matches!(ip.as_str(), "0.0.0.0" | "::" | "*")
+                                            && !ip
+                                                .parse::<std::net::IpAddr>()
+                                                .is_ok_and(|ip| ip.is_loopback())
+                                    })
+                                    .max_by_key(|(_, n)| *n)
+                                    .or_else(|| counts.iter().max_by_key(|(_, n)| *n))
+                                    .map(|(ip, _)| ip.clone())
+                                    .or_else(|| self.network.addresses.keys().next().cloned());
+                            }
+                            if self.network_endpoint.as_ref().is_some_and(|selection| {
+                                !self.network.contains_selection(selection)
+                            }) {
+                                self.network_endpoint = None;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.error = Some(error),
                     }
                 }
                 Event::Indexed(epoch, result) => {

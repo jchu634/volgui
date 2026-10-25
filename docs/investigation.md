@@ -203,3 +203,16 @@ Offsets refer to the evidence file, not process virtual addresses. At 10,000
 matches the analysis stops and records the limit in Run details. Narrow the
 string to inspect additional matches. Exact Unicode matching is supported;
 case-insensitive matching folds ASCII characters only.
+
+
+## Network investigation
+
+Network shows IP nodes with clickable local and remote port labels. Choose a focus IP, filter protocol/state or search, and page through peers. Click a port to list every matching network entry in the endpoint sidebar. Click an IP for all its ports. The sidebar retains repeated source runs and ignores graph filters. Credentials and payload configuration candidates appear first. Process buttons open the process view; clicking a card opens its original record in the bottom details. Source bytes shows recovered text at its acquisition offset. Back restores the graph selection and filters.
+
+Run **New analysis > Network investigation and correlation**, or **Analyze network** in Network. This queues available Windows NetScan, NetStat, PsList, CmdLine, CmdScan, Consoles and Handles plugins, then correlates their collected records. CmdScan is a basic analysis choice. Completed unfiltered inventories are reused. Unavailable or failed inventories are listed in parser diagnostics.
+
+Preprocessing reads IP-based SMB references, explicit net use credentials, TCP transport URLs and reverse-shell command candidates only from collected engine records. Each finding retains its source run, row and field. Credentials must appear in an explicit network drive command associated with that share. It does not search raw acquisition bytes for credentials, strings or payload configurations. Use Global string search or Process Memory separately for those searches. Recovered command text can be stale or unexecuted and does not establish a live connection.
+
+Findings from earlier network analyses that scanned raw memory remain visible with their original provenance. New runs use parser version network-v2-records and do not repeat that scan. Source bytes is available for those older findings that retained acquisition offsets.
+
+Recovered plaintext credentials are saved with the case and included in exports of those findings.

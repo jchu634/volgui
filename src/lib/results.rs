@@ -91,6 +91,27 @@ pub struct HandlePage {
 }
 
 impl ResultStore {
+    /// Every run/row occurrence in the requested network scope, including repeated findings.
+    /// Unlike the general result browser, an endpoint investigation must not collapse runs.
+    pub fn network_ids(&self, runs: &[String]) -> Result<Vec<i64>> {
+        if runs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = db
+            .prepare(&format!(
+                "SELECT id FROM records WHERE run_id IN ({marks}) ORDER BY run_id,row_index,id"
+            ))
+            .map_err(|e| e.to_string())?;
+        statement
+            .query_map(params_from_iter(runs), |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
+    }
     pub fn open(directory: &Path) -> Result<Self> {
         let store = Self {
             path: directory.join(DATABASE),

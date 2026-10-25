@@ -20,10 +20,10 @@ impl Workspace {
                 } else {
                     run.arguments.first().cloned()
                 };
-                if let Some(value) = value.filter(|value| !value.is_empty()) {
-                    if !history.contains(&value) {
-                        history.push(value);
-                    }
+                if let Some(value) = value.filter(|value| !value.is_empty())
+                    && !history.contains(&value)
+                {
+                    history.push(value);
                 }
             }
         }
@@ -47,13 +47,21 @@ impl Workspace {
                         let _ = weak.update(cx, |this, cx| {
                             if process {
                                 let saved = this.case.as_ref().and_then(|case| {
-                                    case.document.runs.iter().rev().find(|run| {
-                                        Some(&run.evidence_id) == this.selected_evidence.as_ref()
-                                            && run.plugin == volgui::analysis::APPLICATION
-                                            && run.status == RunStatus::Completed
-                                            && volgui::analysis::application::target_pid(&run.arguments)
+                                    case.document
+                                        .runs
+                                        .iter()
+                                        .rev()
+                                        .find(|run| {
+                                            Some(&run.evidence_id)
+                                                == this.selected_evidence.as_ref()
+                                                && run.plugin == volgui::analysis::APPLICATION
+                                                && run.status == RunStatus::Completed
+                                                && volgui::analysis::application::target_pid(
+                                                    &run.arguments,
+                                                )
                                                 .is_ok_and(|pid| pid.to_string() == value)
-                                    }).map(|run| run.id.clone())
+                                        })
+                                        .map(|run| run.id.clone())
                                 });
                                 if let Some(id) = saved {
                                     this.select_run(id, window, cx);

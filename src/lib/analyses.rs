@@ -32,7 +32,7 @@ pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<us
 fn is_recovery_analysis(plugin: &str) -> bool {
     matches!(
         plugin,
-        crate::analysis::BROWSER | crate::analysis::APPLICATION
+        crate::analysis::BROWSER | crate::analysis::APPLICATION | crate::analysis::NETWORK
     )
 }
 
@@ -96,6 +96,7 @@ pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -
 /// The common investigation tasks shown before the full plugin catalog.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
+        crate::analysis::NETWORK => "Network investigation and correlation",
         crate::analysis::BROWSER => "Browser recovery and analysis",
         crate::analysis::APPLICATION => "Process Memory recovery and analysis",
         REGISTRY_ALL => "All registry subkeys",
@@ -122,6 +123,7 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.malware.malfind.Malfind" => "Suspicious memory",
         "windows.modules.Modules" | "linux.lsmod.Lsmod" | "mac.lsmod.Lsmod" => "Loaded modules",
         "windows.consoles.Consoles" => "Console history",
+        "windows.cmdscan.CmdScan" => "Scanned command history",
         "windows.sessions.Sessions" => "User sessions",
         _ => return None,
     })
@@ -133,6 +135,10 @@ pub const REGISTRY_ALL: &str = "windows.registry.AllSubkeys";
 pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
     let mut catalog = plugins.to_vec();
     catalog.extend([
+        Plugin {
+            id: crate::analysis::NETWORK.into(),
+            description: "Collect available Windows sockets, processes, command lines, console history and handles. Correlate SMB shares and explicit connection commands in collected records. Credentials are read only when present in a network drive command. Does not scan raw memory for strings. Findings retain source run and row provenance.".into(),
+        },
         Plugin {
             id: crate::analysis::APPLICATION.into(),
             description: "Choose a PID to recover text from that process's memory. Automatically collects processes, command lines, memory regions and dumps. Inspect hex and decoded text together, including old edits and partial buffers.".into(),
@@ -303,8 +309,13 @@ impl AnalysisDraft {
         let mut ordinary = self.clone();
         let browser = ordinary.selected.remove(crate::analysis::BROWSER);
         let application = ordinary.selected.remove(crate::analysis::APPLICATION);
+        let network = ordinary.selected.remove(crate::analysis::NETWORK);
         let registry = ordinary.selected.remove(REGISTRY_ALL);
-        for id in [crate::analysis::BROWSER, REGISTRY_ALL] {
+        for id in [
+            crate::analysis::BROWSER,
+            crate::analysis::NETWORK,
+            REGISTRY_ALL,
+        ] {
             if self.selected.contains(id)
                 && self
                     .arguments
@@ -315,6 +326,36 @@ impl AnalysisDraft {
             }
         }
         let mut runs = ordinary.prepare(engine, evidence, &case.directory.join("analyses"))?;
+        if network {
+            if self.os != OperatingSystem::Windows {
+                return Err("Network investigation currently requires Windows evidence".into());
+            }
+            for plugin in crate::analysis::network::SOURCES {
+                if engine.plugins.iter().any(|p| p.id == *plugin)
+                    && !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                        r.evidence_id == evidence.id
+                            && r.plugin == *plugin
+                            && r.arguments.is_empty()
+                            && matches!(
+                                r.status,
+                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            )
+                    })
+                {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            runs.push(crate::analysis::prepare(
+                evidence,
+                crate::analysis::NETWORK,
+                vec![],
+            )?);
+        }
         if application {
             if self.os != OperatingSystem::Windows {
                 return Err("Process Memory recovery requires Windows evidence".into());

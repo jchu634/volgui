@@ -13,6 +13,14 @@ pub(super) struct Location {
     sort: Option<(String, bool)>,
     browser: ArtifactGroup,
     detail: DetailTab,
+    network_focus: Option<String>,
+    network_endpoint: Option<volgui::network::Selection>,
+    network_protocol: Option<String>,
+    network_state: Option<String>,
+    network_page: usize,
+    network_sidebar_page: usize,
+    network_offset: Point<Pixels>,
+    content_sidebar_visible: bool,
 }
 
 impl Workspace {
@@ -29,6 +37,14 @@ impl Workspace {
             sort: self.sort.clone(),
             browser: self.browser_group,
             detail: self.detail,
+            network_focus: self.network_focus.clone(),
+            network_endpoint: self.network_endpoint.clone(),
+            network_protocol: self.network_protocol.clone(),
+            network_state: self.network_state.clone(),
+            network_page: self.network_page,
+            network_sidebar_page: self.network_sidebar_page,
+            network_offset: self.network_scroll.offset(),
+            content_sidebar_visible: self.content_sidebar_visible,
         };
         if self.back_stack.last().is_some_and(|last| {
             last.view == location.view
@@ -74,6 +90,16 @@ impl Workspace {
         self.browser_group = location.browser;
         self.detail = location.detail;
         self.index = ResultIndex::default();
+        self.network = volgui::network::Graph::default();
+        *self.network_cache.borrow_mut() = Default::default();
+        self.network_focus = location.network_focus;
+        self.network_endpoint = location.network_endpoint;
+        self.network_protocol = location.network_protocol;
+        self.network_state = location.network_state;
+        self.network_page = location.network_page;
+        self.network_sidebar_page = location.network_sidebar_page;
+        self.network_scroll.set_offset(location.network_offset);
+        self.content_sidebar_visible = location.content_sidebar_visible;
         self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.result_scroll = UniformListScrollHandle::default();
@@ -99,6 +125,10 @@ impl Workspace {
         self.relation_epoch += 1;
         self.query_due = None;
         self.case = None;
+        self.network = volgui::network::Graph::default();
+        *self.network_cache.borrow_mut() = Default::default();
+        self.network_endpoint = None;
+        self.network_focus = None;
         self.reset_file_listing();
         self.handles = None;
         self.handles_loading = false;

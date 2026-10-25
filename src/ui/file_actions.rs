@@ -79,7 +79,10 @@ impl Workspace {
 
     pub(super) fn toggle_content_sidebar(&mut self, cx: &mut Context<Self>) {
         self.content_sidebar_visible = !self.content_sidebar_visible;
-        if self.result_group() == Some(ArtifactGroup::Applications) {
+        if matches!(
+            self.result_group(),
+            Some(ArtifactGroup::Applications | ArtifactGroup::Network)
+        ) {
             cx.notify();
             return;
         }

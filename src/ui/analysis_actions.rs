@@ -14,6 +14,8 @@ impl Workspace {
         thread::spawn(move || {
             let result = if plugin == volgui::analysis::APPLICATION {
                 Ok(volgui::analysis::application::HELP.into())
+            } else if plugin == volgui::analysis::NETWORK {
+                Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. No raw memory string scan or payload configuration recovery is performed. Use Global string search or Process Memory separately for memory searches. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
             } else if plugin == volgui::analysis::BROWSER
                 || plugin == volgui::analyses::REGISTRY_ALL
             {

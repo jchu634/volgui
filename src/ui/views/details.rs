@@ -211,6 +211,28 @@ impl Workspace {
             .overflow_scroll()
             .p_3()
             .size_full();
+        if self.result_group() == Some(ArtifactGroup::Network) {
+            let has_bytes = record.is_some_and(|r| {
+                r.record.text("Source type") == "Residual memory string"
+                    && r.record
+                        .fields
+                        .get("Offset")
+                        .and_then(|v| v.as_u64())
+                        .is_some()
+            });
+            tabs = tabs.child(
+                Button::new("network-source-bytes")
+                    .small()
+                    .ghost()
+                    .label("Source bytes")
+                    .selected(self.detail == DetailTab::SourceBytes)
+                    .disabled(!has_bytes)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.detail = DetailTab::SourceBytes;
+                        this.load_network_bytes(cx);
+                    })),
+            );
+        }
         if matches!(self.detail, DetailTab::Overview | DetailTab::Files) {
             content = content.child(self.render_file_actions(false, cx));
         }
@@ -257,6 +279,9 @@ impl Workspace {
             );
         }
         match self.detail {
+            DetailTab::SourceBytes => {
+                content = content.child(self.render_hex_panel(cx));
+            }
             DetailTab::Handles => {
                 content = content.child(self.render_handles(cx));
             }

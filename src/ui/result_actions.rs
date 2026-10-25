@@ -122,6 +122,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let was_application = self.result_group() == Some(ArtifactGroup::Applications);
+        self.network = volgui::network::Graph::default();
+        *self.network_cache.borrow_mut() = Default::default();
+        self.network_focus = None;
+        self.network_endpoint = None;
+        self.network_protocol = None;
+        self.network_state = None;
+        self.network_page = 0;
+        self.network_sidebar_page = 0;
         self.column_filters.clear();
         self.scope = runs;
         if !was_application && self.result_group() == Some(ArtifactGroup::Applications) {
@@ -132,6 +140,9 @@ impl Workspace {
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
         self.scope_label = label;
+        if self.result_group() == Some(ArtifactGroup::Network) {
+            self.content_sidebar_visible = true;
+        }
         self.selected = None;
         self.selected_row = None;
         self.selected_run = self.scope.first().cloned();
@@ -192,6 +203,7 @@ impl Workspace {
         let epoch = self.query_epoch.fetch_add(1, Ordering::Relaxed) + 1;
         let token = self.query_epoch.clone();
         self.loading = true;
+        self.network_loading = group == Some(ArtifactGroup::Network);
         self.inflight.clear();
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -254,6 +266,10 @@ impl Workspace {
                 Ok((index, rows, tree))
             });
             let _ = tx.send(Event::Indexed(epoch, result));
+            if group == Some(ArtifactGroup::Network) {
+                let graph = volgui::network::Graph::load(&store, &query, epoch, &token);
+                let _ = tx.send(Event::NetworkLoaded(epoch, graph));
+            }
         });
         cx.notify();
     }
@@ -319,7 +335,11 @@ impl Workspace {
         });
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let _ = tx.send(Event::Selected(epoch, store.process_record(&runs, &pid)));
+            let result=store.process_record(&runs,&pid).and_then(|record| match record {
+                Some(record)=>Ok(Some(record)),
+                None=>Err(format!("PID {pid} is not uniquely present in the collected process inventories. Collect processes or inspect the network record's source; the process may have exited or its PID may have been reused.")),
+            });
+            let _ = tx.send(Event::Selected(epoch, result));
         });
     }
     pub(super) fn load_annotation(&mut self, run: String, row: usize, cx: &mut Context<Self>) {
@@ -348,6 +368,11 @@ impl Workspace {
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         self.selected = Some(Arc::new(record));
+        if self.result_group() == Some(ArtifactGroup::Network)
+            && self.detail == DetailTab::SourceBytes
+        {
+            self.load_network_bytes(cx);
+        }
         if self.result_group() == Some(ArtifactGroup::Applications) {
             let row = &self.selected.as_ref().unwrap().record;
             self.content_encoding = match row.text("Encoding").as_str() {
@@ -364,7 +389,9 @@ impl Workspace {
             self.load_handles(0, cx);
         }
         self.hex_scroll.set_offset(Point::default());
-        if self.content_sidebar_visible || self.result_group() == Some(ArtifactGroup::Applications)
+        if self.result_group() != Some(ArtifactGroup::Network)
+            && (self.content_sidebar_visible
+                || self.result_group() == Some(ArtifactGroup::Applications))
         {
             self.load_hex(cx);
         }

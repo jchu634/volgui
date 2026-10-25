@@ -87,6 +87,9 @@ impl ArtifactGroup {
         }
     }
     pub fn for_plugin(plugin: &str) -> Self {
+        if plugin == crate::analysis::NETWORK {
+            return Self::Network;
+        }
         if plugin == crate::analysis::APPLICATION {
             return Self::Applications;
         }

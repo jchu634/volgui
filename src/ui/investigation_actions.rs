@@ -2,6 +2,53 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn load_network_bytes(&mut self, cx: &mut Context<Self>) {
+        let target = self.case.as_ref().and_then(|case| {
+            let record = self.selected.as_ref()?;
+            if record.record.text("Source type") != "Residual memory string" {
+                return None;
+            }
+            let offset = record
+                .record
+                .fields
+                .get("Match offset")
+                .or_else(|| record.record.fields.get("Offset"))?
+                .as_u64()?;
+            let run = case.document.runs.iter().find(|r| r.id == record.run_id)?;
+            let evidence = case
+                .document
+                .evidence
+                .iter()
+                .find(|e| e.id == run.evidence_id)?;
+            Some((evidence.path.clone(), offset))
+        });
+        if let Some((path, offset)) = target {
+            self.open_hex_file(vec![path.clone()], path, offset, cx);
+        }
+    }
+    pub(super) fn analyze_network(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure analysis engine in settings")?;
+            let case = self.case.as_ref().ok_or("Open a case first")?;
+            let mut draft = AnalysisDraft::new(evidence);
+            draft.selected.insert(analysis::NETWORK.into());
+            draft.prepare_in_case(engine, evidence, case)
+        })();
+        match result {
+            Ok(runs) => {
+                self.content_sidebar_visible = true;
+                self.queue_investigation(runs, window, cx);
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
     pub(super) fn open_application_dump(&mut self, cx: &mut Context<Self>) {
         let pid = self.application_pid.read(cx).value().trim().to_string();
         let source = self.case.as_ref().and_then(|case| {

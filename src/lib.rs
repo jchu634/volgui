@@ -15,6 +15,8 @@ pub mod extracted_files;
 pub mod file_content;
 #[path = "lib/hex_editor.rs"]
 pub mod hex_editor;
+#[path = "lib/network.rs"]
+pub mod network;
 #[path = "lib/object_store.rs"]
 pub mod object_store;
 #[path = "lib/result_table.rs"]
