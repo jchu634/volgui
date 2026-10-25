@@ -13,6 +13,8 @@ use crate::{
     volatility::{Installation, Record, Table},
 };
 
+mod paths;
+
 pub const SOURCES: [&str; 2] = ["windows.filescan.FileScan", "windows.handles.Handles"];
 pub const PENDING: &str = "Waiting to prepare file and document recovery";
 
@@ -25,6 +27,7 @@ pub enum RecoveryState {
     Unsupported,
     Pending,
     Unavailable,
+    Referenced,
 }
 
 impl RecoveryState {
@@ -37,6 +40,7 @@ impl RecoveryState {
             Self::Unsupported => "Cannot dump this object",
             Self::Pending => "Recovery queued",
             Self::Unavailable => "Recovered output unavailable",
+            Self::Referenced => "Path reference only",
         }
     }
 
@@ -86,6 +90,7 @@ pub struct RecoveryIndex {
     objects: HashMap<(String, Vec<String>), Recovery>,
     plugins: HashMap<String, (String, String)>,
     dump_states: HashMap<String, RecoveryState>,
+    output_states: HashMap<(String, String), RecoveryState>,
 }
 
 impl RecoveryIndex {
@@ -101,6 +106,23 @@ impl RecoveryIndex {
                 Ok((
                     r.get::<_, String>(0)?,
                     (r.get::<_, bool>(1)?, r.get::<_, i64>(2)?),
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()
+            .map_err(|e| e.to_string())?;
+        let mut statement = db.prepare(
+            "SELECT run_id,name,sha256 IS NOT NULL AND blocked_reason IS NULL AND size>0 FROM analysis_outputs WHERE name NOT IN ('stdout.json','stderr.log')",
+        ).map_err(|e| e.to_string())?;
+        let output_states = statement
+            .query_map([], |r| {
+                Ok((
+                    (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                    if r.get::<_, bool>(2)? {
+                        RecoveryState::Recovered
+                    } else {
+                        RecoveryState::Unavailable
+                    },
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -162,6 +184,7 @@ impl RecoveryIndex {
         Ok(Self {
             objects,
             dump_states,
+            output_states,
             plugins: document
                 .runs
                 .iter()
@@ -184,6 +207,9 @@ impl RecoveryIndex {
         let Some((plugin, _)) = self.plugins.get(&record.run_id) else {
             return RecoveryState::Untested;
         };
+        if plugin == super::FILES && record.record.text("Kind") == "Referenced executable path" {
+            return RecoveryState::Referenced;
+        }
         if plugin == DUMP_FILES {
             let output = record.record.text("File output");
             let output = if output.is_empty() {
@@ -193,6 +219,9 @@ impl RecoveryIndex {
             };
             if !output.is_empty() && !output.starts_with("file.") {
                 return RecoveryState::Unavailable;
+            }
+            if let Some(state) = self.output_states.get(&(record.run_id.clone(), output)) {
+                return *state;
             }
             return self
                 .dump_states
@@ -384,9 +413,20 @@ pub(super) fn analyze(
             progress(format!("Indexed {} file objects", rows.len()));
         }
     }
-    let message = format!(
+    let mut message = format!(
         "Recovered cached contents for {recovered} of {} file objects. Recovered files may be partial. Source run and row identify each original observation.",
         rows.len()
     );
+    let evidence = document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let references = paths::scan(&evidence.path, cancel, progress)?;
+    message.push_str(&format!(
+        " Found {} executable path references in the evidence bytes. References do not establish file presence, recoverability, or maliciousness.",
+        references.len()
+    ));
+    rows.extend(references);
     Ok((super::table(rows), message))
 }

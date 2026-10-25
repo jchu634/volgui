@@ -18,11 +18,23 @@ Open recovered contents with the Sidebar to inspect hex, decoded text or SQLite
 tables, or use Save as to export a cache variant. Recovery can produce partial
 contents and does not guarantee that a document is complete.
 
-**Show unavailable files** in the Files and Processes tree headers reveals failed,
-uncached and unsupported Windows file objects. These are hidden by default.
+**Show unavailable files** in the Files and Processes tree headers includes failed,
+uncached and unsupported Windows file objects. It is enabled by default so failed
+recovery or antivirus quarantine does not conceal file observations.
 Untested files stay visible until an extraction establishes their status.
 Directory pseudo-files such as `$Directory` and `$I30` directory-index streams
 are always omitted from these trees. Original records remain in the case.
+
+File recovery also searches the evidence bytes for absolute Windows executable
+paths in UTF-8, UTF-16LE and UTF-16BE, retaining up to 10,000 distinct paths.
+These rows say **Path reference only** and record the evidence byte offset.
+They can reveal names whose file objects no longer survive, but do not establish
+that the file was present, recoverable, or malicious. They cannot be passed to
+DumpFiles as file-object addresses.
+
+When an extracted file disappears before archiving or Windows reports a malware
+block, the output name remains recorded as unavailable. Other outputs and parsed
+findings are retained. VolGUI does not restore quarantined files.
 
 Use **Retry extraction** in record details to retry a selected file. For older
 captures whose unlabelled FileScan offsets are physical, pass `--physical` to the

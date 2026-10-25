@@ -558,12 +558,30 @@ impl Workspace {
                 {
                     outcome.status = if cancel.load(Ordering::Relaxed) {
                         RunStatus::Cancelled
+                    } else if outcome.table.is_some() {
+                        outcome.status
                     } else {
                         RunStatus::Failed
                     };
-                    outcome.table = None;
-                    outcome.message =
-                        format!("Could not archive analysis output: {error}. Capture retained.");
+                    // Parsed observations remain evidence even if output bytes
+                    // cannot be archived, for example after antivirus quarantine.
+                    outcome.message = format!(
+                        "{}\nCould not archive analysis output: {error}. Available capture files and parsed results retained.",
+                        outcome.message
+                    );
+                }
+                if run.plugin == volgui::extracted_files::DUMP_FILES
+                    && let Ok(outputs) = volgui::object_store::output_metadata(&directory)
+                {
+                    let unavailable = outputs
+                        .values()
+                        .filter(|output| output.blocked_reason.is_some())
+                        .count();
+                    if unavailable > 0 {
+                        outcome.message.push_str(&format!(
+                            "\n{unavailable} recovered outputs unavailable or blocked, possibly quarantined. Parsed findings retained."
+                        ));
+                    }
                 }
                 if let Some(table) = outcome.table.take()
                     && let Err(e) = store.insert_cancellable(&run, &table, &cancel)

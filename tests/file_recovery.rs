@@ -75,6 +75,110 @@ fn records(case: &Case, run: &str) -> Vec<StoredRecord> {
     store.fetch(&index.ids).unwrap()
 }
 
+#[test]
+fn executable_references_without_file_objects_appear_in_the_file_tree() {
+    let (_temp, mut case, _, _) = fixture(json!([]));
+    let name =
+        r"C:\Users\sepehr\Documents\49f5_354bd7ad_611729000b81358a_22ee7136c30a2f24\runas.exe";
+    let source = case.document.evidence[0].path.clone();
+    fs::write(&source, format!("\0{name}\0")).unwrap();
+    let mut evidence = Evidence::inspect(&source, &AtomicBool::new(false), |_, _| {}).unwrap();
+    evidence.id = case.document.evidence[0].id.clone();
+    case.document.evidence[0] = evidence;
+    let report = analysis::prepare(&case.document.evidence[0], analysis::FILES, vec![]).unwrap();
+    case.queue(report.clone()).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &report,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    case.finish(&report.id, &outcome).unwrap();
+    let row = records(&case, &report.id).remove(0);
+    assert_eq!(row.record.text("Name"), name);
+    assert!(FileDumpTarget::from_record(analysis::FILES, &row.record).is_none());
+    let recovery = RecoveryIndex::load(&case.directory, &case.document).unwrap();
+    assert_eq!(recovery.state(&row, false), RecoveryState::Referenced);
+    let store = ResultStore::at(&case.directory);
+    let (entries, _) = files::filter_entries(
+        &store,
+        &recovery,
+        store.tree_entries(&[report.id]).unwrap(),
+        false,
+        false,
+    )
+    .unwrap();
+    let tree = volgui::result_tree::ResultTree::files(entries, &[row.id]);
+    assert!(
+        tree.nodes
+            .iter()
+            .any(|n| n.label == "runas.exe" && n.record_id == Some(row.id))
+    );
+}
+
+#[test]
+#[ignore = "Requires VOLGUI_TEST_MEMORY_DUMP pointing to memory_dump_95.bin"]
+fn real_memory_dump_contains_the_documents_executable_reference() {
+    let path = std::env::var_os("VOLGUI_TEST_MEMORY_DUMP").expect("Set VOLGUI_TEST_MEMORY_DUMP");
+    let (_temp, mut case, _, _) = fixture(json!([]));
+    let mut evidence = Evidence::inspect(
+        std::path::Path::new(&path),
+        &AtomicBool::new(false),
+        |_, _| {},
+    )
+    .unwrap();
+    evidence.id = case.document.evidence[0].id.clone();
+    case.document.evidence[0] = evidence;
+    let report = analysis::prepare(&case.document.evidence[0], analysis::FILES, vec![]).unwrap();
+    case.queue(report.clone()).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &report,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    let table = outcome.table.as_ref().unwrap();
+    let row = table
+        .rows
+        .iter()
+        .find(|r| {
+            r.text("Name")
+                .to_lowercase()
+                .ends_with(r"\documents\49f5_354bd7ad_611729000b81358a_22ee7136c30a2f24\runas.exe")
+        })
+        .expect("Documents executable reference");
+    println!(
+        "{} at evidence offset {} ({})",
+        row.text("Name"),
+        row.text("Evidence offset"),
+        row.text("Encoding")
+    );
+    case.finish(&report.id, &outcome).unwrap();
+    let store = ResultStore::at(&case.directory);
+    let index = store
+        .query(&Query {
+            runs: vec![report.id.clone()],
+            text: "runas.exe".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!index.ids.is_empty());
+    let recovery = RecoveryIndex::load(&case.directory, &case.document).unwrap();
+    let (entries, _) = files::filter_entries(
+        &store,
+        &recovery,
+        store.tree_entries(&[report.id]).unwrap(),
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(entries.iter().any(|e| index.ids.contains(&e.id)));
+}
+
 fn dump(
     case: &mut Case,
     engine: &Installation,

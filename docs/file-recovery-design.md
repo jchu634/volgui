@@ -1,6 +1,6 @@
 # File recovery
 
-The file browser calls `files::filter_entries` on its query worker before building either a directory tree or process file children. It returns the retained entries and recovery states for row labels. Unknown files remain visible. Confirmed empty extractions, failed attempts, and unsupported Windows file objects are hidden unless Show unavailable files is enabled. Directory pseudo-files are always omitted from these views, while the original records remain saved.
+The file browser calls `files::filter_entries` on its query worker before building either a directory tree or process file children. It returns the retained entries and recovery states for row labels. Unknown files remain visible. Show unavailable files defaults to enabled; disabling it hides confirmed empty extractions, failed attempts, and unsupported Windows file objects. Directory pseudo-files are always omitted from these views, while the original records remain saved.
 
 `RecoveryIndex::load(directory, document)` associates extraction outcomes with evidence, address space, and object address. It reads output metadata once, and uses ordinary output listings for runs without archived metadata. A recovered output takes precedence over an unsuccessful retry. File names alone never establish availability.
 

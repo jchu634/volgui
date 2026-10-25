@@ -489,7 +489,7 @@ impl Workspace {
             selection_epoch: 0,
             browser_group: ArtifactGroup::Processes,
             show_file_handles: true,
-            show_unavailable_files: false,
+            show_unavailable_files: true,
             file_recovery_states: HashMap::new(),
             file_recovery: None,
             result_scroll: UniformListScrollHandle::default(),
