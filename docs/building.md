@@ -10,7 +10,9 @@ cargo build --release
 
 Once the workflows are on the default branch, open **Actions > Nightly build > Run workflow** on GitHub and select the branch to build. The [nightly workflow](../.github/workflows/nightly.yml) uses stable Rust to build the Windows x86_64 release executable from the committed lockfile.
 
-Download `volgui-nightly-windows-x86_64-<commit>-<attempt>` from the completed run's artifacts. The ZIP contains `volgui.exe`, build instructions, the source commit and build details in `BUILD.txt`, and an executable checksum in `SHA256SUMS`. Artifacts are retained for 30 days. Builds run only when triggered manually.
+Each successful run publishes a GitHub prerelease tagged `nightly-<run-id>-<attempt>` for the built commit. Download `volgui-nightly-windows-x86_64.zip` from the repository's Releases page. The ZIP contains `volgui.exe`, build instructions, the source commit and build details in `BUILD.txt`, and an executable checksum in `SHA256SUMS`. Rerunning the workflow creates a separate prerelease.
+
+The same files remain available in the completed run's `volgui-nightly-windows-x86_64-<commit>-<attempt>` artifact for 30 days. Builds run only when triggered manually.
 
 ## Running
 
