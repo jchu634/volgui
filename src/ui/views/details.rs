@@ -190,6 +190,22 @@ impl Workspace {
             ("files", "Extracted files", DetailTab::Files),
             ("handles", "Handles", DetailTab::Handles),
         ] {
+            if (tab == DetailTab::Files
+                && !matches!(
+                    self.result_group(),
+                    Some(
+                        ArtifactGroup::Files
+                            | ArtifactGroup::Processes
+                            | ArtifactGroup::Modules
+                            | ArtifactGroup::Registry
+                            | ArtifactGroup::Applications
+                    )
+                ))
+                || (tab == DetailTab::Handles
+                    && self.result_group() != Some(ArtifactGroup::Processes))
+            {
+                continue;
+            }
             tabs = tabs.child(
                 Button::new(id)
                     .small()
@@ -614,20 +630,12 @@ impl Workspace {
                         serde_json::to_string_pretty(&run.command).unwrap_or_default(),
                         run.message
                     );
-                    let output = self.case.as_ref().unwrap().run_dir(&run.id);
-                    content = content
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_family("Consolas")
-                                .child(SelectableText::new("run-diagnostics", text)),
-                        )
-                        .child(
-                            Button::new("show-output")
-                                .small()
-                                .label("Show output directory")
-                                .on_click(move |_, _, cx| cx.reveal_path(&output)),
-                        );
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .font_family("Consolas")
+                            .child(SelectableText::new("run-diagnostics", text)),
+                    );
                 }
             }
         }

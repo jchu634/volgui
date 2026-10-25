@@ -76,6 +76,15 @@ impl Render for Workspace {
                                 }),
                         ),
                 )
+                .when_some(self.case.as_ref(), |bar, case| {
+                    bar.child(div().h_4().w_px().bg(cx.theme().border)).child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .child(case.document.name.clone()),
+                    )
+                })
                 .child(div().flex_1())
                 .child(
                     div()

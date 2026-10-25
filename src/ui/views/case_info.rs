@@ -26,7 +26,7 @@ impl Workspace {
                         .small()
                         .w(px(160.))
                         .label("Export case report")
-                        .on_click(cx.listener(|this, _, window, cx| this.export(true, window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.export(window, cx))),
                 );
             for e in &case.document.evidence {
                 let id = e.id.clone();

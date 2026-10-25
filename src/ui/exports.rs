@@ -2,31 +2,19 @@
 use super::*;
 
 impl Workspace {
-    pub(super) fn export(&mut self, report: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = &self.case else {
             return;
         };
         let document = c.document.clone();
         let directory = c.directory.clone();
-        let query = self.active_query(cx);
         let tx = self.tx.clone();
-        let receiver = cx.prompt_for_new_path(
-            &directory,
-            Some(if report {
-                "case-report.html"
-            } else {
-                "artifacts.csv"
-            }),
-        );
+        let receiver = cx.prompt_for_new_path(&directory, Some("case-report.html"));
         cx.spawn_in(window, async move |_, _| match receiver.await {
             Ok(Ok(Some(path))) => {
                 thread::spawn(move || {
                     let result = (|| {
-                        let content = if report {
-                            document.report(&directory)?
-                        } else {
-                            ResultStore::at(&directory).export_csv(&query)?
-                        };
+                        let content = document.report(&directory)?;
                         document.export(&directory, &path, content.as_bytes())?;
                         Ok(path)
                     })();

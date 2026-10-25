@@ -125,12 +125,7 @@ impl Workspace {
             }
             for path in &recent {
                 menu = menu.item(Self::file_item(
-                    path.parent()
-                        .unwrap_or(path)
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
+                    path.to_string_lossy().into_owned(),
                     FileCommand::Recent(path.clone()),
                     disabled,
                     recent_weak.clone(),

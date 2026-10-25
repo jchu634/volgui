@@ -177,6 +177,7 @@ impl Workspace {
             .child(
                 div()
                     .id("artifact-results-table")
+                    .p_3()
                     .aria_label("Artifact results")
                     .flex_1()
                     .min_h_0()
@@ -189,7 +190,7 @@ impl Workspace {
             )
             .into_any_element()
     }
-    pub(in crate::ui) fn render_results_toolbar(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::ui) fn render_results_toolbar(&self, _cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .items_center()
@@ -214,14 +215,6 @@ impl Workspace {
                         .small()
                         .cleanable(true),
                 ),
-            )
-            .child(
-                Button::new("export-csv")
-                    .small()
-                    .ghost()
-                    .label("Export CSV")
-                    .disabled(self.scope.is_empty())
-                    .on_click(cx.listener(|this, _, window, cx| this.export(false, window, cx))),
             )
     }
     pub(in crate::ui) fn results_empty_message(&self, cx: &App) -> String {
