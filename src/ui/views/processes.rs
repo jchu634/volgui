@@ -55,6 +55,7 @@ impl Workspace {
             })
             .unwrap_or_default();
         self.artifact_tree_row(i, depth, cx)
+            .when(depth > 0, |row| row.child("└"))
             .child(Icon::new(IconName::Cpu).size_4().flex_shrink_0())
             .child(div().flex_shrink_0().child(node.label.clone()))
             .when_some(node.pid.as_ref(), |row, pid| {

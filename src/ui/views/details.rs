@@ -544,7 +544,7 @@ impl Workspace {
                                             .justify_start()
                                             .h(px(28.))
                                             .label(format!(
-                                                "{} · PID {}",
+                                                "└ {} · PID {}",
                                                 child.title,
                                                 child.pid.as_deref().unwrap_or("")
                                             ))

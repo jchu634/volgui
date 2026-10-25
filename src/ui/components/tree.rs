@@ -44,6 +44,9 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
+                    .flex_wrap()
+                    .min_w_0()
+                    .overflow_hidden()
                     .gap_2()
                     .px_3()
                     .py_1()
@@ -63,6 +66,7 @@ impl Workspace {
                     .when(group == ArtifactGroup::Processes, |header| {
                         header.child(
                             Checkbox::new("show-process-file-handles")
+                                .xsmall()
                                 .label("Show file handles")
                                 .checked(self.show_file_handles)
                                 .on_click(cx.listener(|this, checked, _, cx| {
