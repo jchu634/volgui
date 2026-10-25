@@ -438,12 +438,8 @@ fn queue_fills_slots_refills_out_of_order_and_obeys_limit_changes() {
     let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
     let mut runs: Vec<_> = (0..4)
         .map(|_| {
-            volgui::investigation::prepare(
-                &evidence,
-                volgui::investigation::STRINGS,
-                vec!["search".into()],
-            )
-            .unwrap()
+            volgui::analysis::prepare(&evidence, volgui::analysis::STRINGS, vec!["search".into()])
+                .unwrap()
         })
         .collect();
     let limit = |n| std::num::NonZeroUsize::new(n).unwrap();
@@ -472,12 +468,12 @@ fn browser_analysis_waits_for_prior_jobs_and_keeps_later_jobs_queued() {
     fs::write(&image, b"queue fixture").unwrap();
     let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
     let mut runs: Vec<_> = [
-        volgui::investigation::STRINGS,
-        volgui::investigation::BROWSER,
-        volgui::investigation::STRINGS,
+        volgui::analysis::STRINGS,
+        volgui::analysis::BROWSER,
+        volgui::analysis::STRINGS,
     ]
     .into_iter()
-    .map(|plugin| volgui::investigation::prepare(&evidence, plugin, vec!["search".into()]).unwrap())
+    .map(|plugin| volgui::analysis::prepare(&evidence, plugin, vec!["search".into()]).unwrap())
     .collect();
     let limit = Settings::default().max_concurrent_jobs;
     runs[0].status = RunStatus::Running;
@@ -495,11 +491,7 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
     use volgui::analyses::{REGISTRY_ALL, application_plugins};
     let catalog = application_plugins(&[]);
     let choices = chooser_plugins(&catalog, OperatingSystem::Windows, false, "");
-    assert!(
-        choices
-            .iter()
-            .any(|p| p.id == volgui::investigation::BROWSER)
-    );
+    assert!(choices.iter().any(|p| p.id == volgui::analysis::BROWSER));
     assert!(choices.iter().any(|p| p.id == REGISTRY_ALL));
     let temp = tempfile::tempdir().unwrap();
     let image = temp.path().join("image.raw");
@@ -510,13 +502,13 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
     let engine = Installation {
         settings: Settings::default(),
         version: "fixture".into(),
-        plugins: vec![plugin(volgui::investigation::registry::PRINT_KEY)],
+        plugins: vec![plugin(volgui::analysis::registry::PRINT_KEY)],
     };
     let mut draft = AnalysisDraft::new(&evidence);
     draft.selected.insert(REGISTRY_ALL.into());
     let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].plugin, volgui::investigation::registry::PRINT_KEY);
+    assert_eq!(runs[0].plugin, volgui::analysis::registry::PRINT_KEY);
     assert_eq!(runs[0].arguments, ["--recurse"]);
     draft
         .arguments
@@ -543,7 +535,7 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
         plugins: ids.into_iter().map(plugin).collect(),
     };
     let mut draft = AnalysisDraft::new(&evidence);
-    draft.selected.insert(volgui::investigation::BROWSER.into());
+    draft.selected.insert(volgui::analysis::BROWSER.into());
     assert!(
         draft
             .prepare_in_case(&engine, &evidence, &case)
@@ -581,6 +573,6 @@ fn browser_recovery_requires_completed_unfiltered_prerequisites_for_same_evidenc
     case.document.runs[0].arguments.clear();
     let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].plugin, volgui::investigation::BROWSER);
+    assert_eq!(runs[0].plugin, volgui::analysis::BROWSER);
     assert_eq!(case.document.runs.len(), 3);
 }

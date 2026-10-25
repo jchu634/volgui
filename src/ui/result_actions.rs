@@ -88,7 +88,7 @@ impl Workspace {
             return;
         };
         self.remember_location(cx);
-        if run.plugin == volgui::investigation::registry::PRINT_KEY {
+        if run.plugin == volgui::analysis::registry::PRINT_KEY {
             let path = run
                 .arguments
                 .windows(2)

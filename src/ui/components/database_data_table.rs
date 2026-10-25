@@ -3,8 +3,8 @@ use super::*;
 
 pub(in crate::ui) struct DatabaseTable {
     workspace: WeakEntity<Workspace>,
-    pub(super) columns: Vec<String>,
-    pub(super) location: Option<(PathBuf, String, usize)>,
+    pub(in crate::ui) columns: Vec<String>,
+    pub(in crate::ui) location: Option<(PathBuf, String, usize)>,
 }
 
 impl DatabaseTable {

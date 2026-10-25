@@ -507,7 +507,7 @@ impl ResultStore {
                 fields: serde_json::from_str(&json).map_err(|e| e.to_string())?,
                 depth: 0,
             };
-            let offset = crate::investigation::registry::hive_offset(&record);
+            let offset = crate::analysis::registry::hive_offset(&record);
             let value_type = record.text("Type");
             Ok(crate::result_tree::RegistryEntry {
                 id,

@@ -13,11 +13,12 @@ VolGUI runs a separately installed Volatility engine and stores analysis results
 
 ## Source layout
 
-- `src/ui.rs` owns shared workspace state, initialization, and background event dispatch.
+- `src/ui/mod.rs` owns shared workspace state, initialization, and background event dispatch.
 - `src/ui/` contains the window shell, navigation, dialogs, and actions grouped by responsibility.
-- `src/views/` contains the changing workspace views. Processes and files have their own tree view modules, alongside artifact tables and record details.
-- `src/lib/` contains the SQLite result handler and Volatility CLI handler. `src/lib.rs` keeps their existing public module paths.
-- The remaining source modules define case storage, settings, analysis drafts, artifact groups, extracted files, and table formatting.
+- `src/ui/views/` contains workspace screens and record details.
+- `src/ui/components/` contains shared data tables, artifact trees, and the hex panel.
+- `src/lib/` contains application logic, including case storage, settings, result handling, and the Volatility CLI handler. `src/lib.rs` exports these modules.
+- `src/lib/analysis/` contains native analyses, with browser parsing, memory recovery, and search helpers grouped under `browser/`.
 
 Views share workspace state and call its actions. They do not run SQLite queries or CLI processes while rendering. This keeps background work and navigation consistent across views without introducing a second state synchronization layer. A separate state object per view would duplicate selection and case ownership, so the split follows rendering and action responsibilities instead.
 

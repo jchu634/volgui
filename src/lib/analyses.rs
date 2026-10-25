@@ -18,14 +18,14 @@ pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<us
     if running.clone().count() >= limit.get()
         || running
             .clone()
-            .any(|run| run.plugin == crate::investigation::BROWSER)
+            .any(|run| run.plugin == crate::analysis::BROWSER)
     {
         return None;
     }
     let index = runs
         .iter()
         .position(|run| run.status == RunStatus::Queued)?;
-    if runs[index].plugin == crate::investigation::BROWSER && running.count() > 0 {
+    if runs[index].plugin == crate::analysis::BROWSER && running.count() > 0 {
         return None;
     }
     Some(index)
@@ -34,7 +34,7 @@ pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<us
 /// The common investigation tasks shown before the full plugin catalog.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
-        crate::investigation::BROWSER => "Browser recovery and analysis",
+        crate::analysis::BROWSER => "Browser recovery and analysis",
         REGISTRY_ALL => "All registry subkeys",
         "windows.info.Info" => "System information",
         "windows.pslist.PsList" | "linux.pslist.PsList" | "mac.pslist.PsList" => "Processes",
@@ -71,7 +71,7 @@ pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
     let mut catalog = plugins.to_vec();
     catalog.extend([
         Plugin {
-            id: crate::investigation::BROWSER.into(),
+            id: crate::analysis::BROWSER.into(),
             description: "Recover and parse browser memory, history and saved tabs. Requires completed PsList, CmdLine and FileScan jobs. Does not collect prerequisites.".into(),
         },
         Plugin {
@@ -110,8 +110,8 @@ pub fn queue_retries_with_engine(
                 .iter()
                 .find(|e| e.id == previous.evidence_id)
                 .ok_or("Evidence is no longer available")?;
-            if crate::investigation::is_native(&previous.plugin) {
-                return crate::investigation::prepare(
+            if crate::analysis::is_native(&previous.plugin) {
+                return crate::analysis::prepare(
                     evidence,
                     &previous.plugin,
                     previous.arguments.clone(),
@@ -146,7 +146,7 @@ pub fn chooser_plugins(
         .iter()
         .filter(|plugin| {
             (os.accepts(&plugin.id)
-                && (plugin.id != crate::investigation::BROWSER
+                && (plugin.id != crate::analysis::BROWSER
                     || matches!(os, OperatingSystem::Windows | OperatingSystem::Unknown)))
                 && (extended || basic_label(&plugin.id).is_some())
                 && format!(
@@ -223,9 +223,9 @@ impl AnalysisDraft {
         case: &Case,
     ) -> Result<Vec<Run>> {
         let mut ordinary = self.clone();
-        let browser = ordinary.selected.remove(crate::investigation::BROWSER);
+        let browser = ordinary.selected.remove(crate::analysis::BROWSER);
         let registry = ordinary.selected.remove(REGISTRY_ALL);
-        for id in [crate::investigation::BROWSER, REGISTRY_ALL] {
+        for id in [crate::analysis::BROWSER, REGISTRY_ALL] {
             if self.selected.contains(id)
                 && self
                     .arguments
@@ -242,7 +242,7 @@ impl AnalysisDraft {
             }
             runs.push(engine.prepare(
                 evidence,
-                crate::investigation::registry::PRINT_KEY,
+                crate::analysis::registry::PRINT_KEY,
                 vec!["--recurse".into()],
                 &case.directory.join("analyses"),
             )?);
@@ -276,7 +276,7 @@ impl AnalysisDraft {
             browser_evidence.operating_system = self.os;
             let evidence = &browser_evidence;
             let cancel = std::sync::atomic::AtomicBool::new(false);
-            let mut memory = match crate::investigation::browser_memory_runs(
+            let mut memory = match crate::analysis::browser_memory_runs(
                 &case.directory,
                 &case.document,
                 evidence,
@@ -291,9 +291,9 @@ impl AnalysisDraft {
                 }
                 Err(error) => return Err(error),
             };
-            memory.retain(|run| run.plugin != crate::investigation::BROWSER);
+            memory.retain(|run| run.plugin != crate::analysis::BROWSER);
             runs.extend(memory);
-            runs.extend(crate::investigation::browser_recovery_runs(
+            runs.extend(crate::analysis::browser_recovery_runs(
                 &case.directory,
                 &case.document,
                 evidence,

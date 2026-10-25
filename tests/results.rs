@@ -454,7 +454,7 @@ fn simultaneous_result_imports_wait_for_the_writer_and_remain_cancellable() {
 fn browser_filters_use_derived_domains_and_combine_with_search_and_export() {
     let temp = tempfile::tempdir().unwrap();
     let store = ResultStore::open(temp.path()).unwrap();
-    let scan = run("browser", volgui::investigation::BROWSER);
+    let scan = run("browser", volgui::analysis::BROWSER);
     let table = Table::parse(&json!([
         {"PID":42,"Browser":"Chrome","Kind":"Web search","URL":"https://www.google.com/search?q=cat","Search terms":"cat"},
         {"PID":43,"Browser":"Firefox","Kind":"Web search","URL":"https://www.google.com/search?q=dog","Search terms":"dog"},

@@ -1,8 +1,8 @@
 //! Validate browser recovery in a separate case, reusing the source evidence fingerprint.
 use std::{collections::BTreeSet, path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{
+    analysis,
     case::{Case, CaseDocument, RunStatus, now},
-    investigation,
     settings::Settings,
     volatility::{Installation, Table},
 };
@@ -63,7 +63,7 @@ fn main() -> Result<(), String> {
         },
         &cancel,
     )?;
-    let runs = investigation::browser_memory_runs(
+    let runs = analysis::browser_memory_runs(
         &case.directory,
         &case.document,
         &evidence,
@@ -73,7 +73,7 @@ fn main() -> Result<(), String> {
     let runs: Vec<_> = runs
         .into_iter()
         .filter(|r| {
-            r.plugin == investigation::BROWSER
+            r.plugin == analysis::BROWSER
                 || selected.is_empty()
                 || r.arguments.get(1).is_some_and(|pid| selected.contains(pid))
         })
@@ -85,8 +85,8 @@ fn main() -> Result<(), String> {
         queued.started_at = Some(now());
         case.save()?;
         eprintln!("{} {:?}", run.plugin, run.arguments);
-        let outcome = if investigation::is_native(&run.plugin) {
-            investigation::execute(&case.directory, &case.document, &run, &cancel, |message| {
+        let outcome = if analysis::is_native(&run.plugin) {
+            analysis::execute(&case.directory, &case.document, &run, &cancel, |message| {
                 eprintln!("{message}")
             })
         } else {
@@ -96,7 +96,7 @@ fn main() -> Result<(), String> {
         if outcome.status != RunStatus::Completed {
             return Err(outcome.message);
         }
-        if run.plugin == investigation::BROWSER {
+        if run.plugin == analysis::BROWSER {
             let table = outcome.table.unwrap();
             for row in table
                 .rows

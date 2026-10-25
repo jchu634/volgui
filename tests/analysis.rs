@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 use std::{fs, sync::atomic::AtomicBool};
 use volgui::{
+    analysis::{self, BROWSER, STRINGS, registry, strings},
     artifacts::OperatingSystem,
     case::{Case, Evidence, Run, RunStatus, now},
     extracted_files::{ContentEncoding, DUMP_FILES, HexPage},
     file_content::database_page,
-    investigation::{self, BROWSER, STRINGS, registry, strings},
     results::{Query, ResultStore},
     settings::Settings,
     volatility::{Installation, Outcome, Plugin, Table},
@@ -198,9 +198,9 @@ fn browser_analysis_parses_history_searches_and_provenance_and_excludes_other_ev
     )
     .unwrap();
     let before = fs::read(&path).unwrap();
-    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
-    let outcome = investigation::execute(
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,
@@ -288,7 +288,7 @@ fn recovery_queues_targeted_unique_files_then_native_analysis_and_reuses_complet
         vec![],
         json!([{ "Offset":65536,"Name":"C:\\Other\\History" }]),
     );
-    let runs = investigation::browser_recovery_runs(
+    let runs = analysis::browser_recovery_runs(
         &case.directory,
         &case.document,
         &case.document.evidence[0],
@@ -336,7 +336,7 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
             {"PID":70,"Process":"msedge.exe","Args":"msedge.exe --type=gpu-process"}
         ]),
     );
-    let runs = investigation::browser_memory_runs(
+    let runs = analysis::browser_memory_runs(
         &case.directory,
         &case.document,
         &case.document.evidence[0],
@@ -398,9 +398,9 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
         vec![],
         json!([{"PID":999,"ImageFileName":"msedge.exe"}]),
     );
-    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
-    let outcome = investigation::execute(
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,
@@ -436,7 +436,7 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
             .text("Browser"),
         "Firefox"
     );
-    let reused = investigation::browser_memory_runs(
+    let reused = analysis::browser_memory_runs(
         &case.directory,
         &case.document,
         &case.document.evidence[0],
@@ -482,7 +482,7 @@ fn browser_recovery_requires_inventory_from_the_selected_capture() {
     );
     let cancel = AtomicBool::new(false);
     assert!(
-        investigation::browser_candidates(
+        analysis::browser_candidates(
             &case.directory,
             &case.document,
             &case.document.evidence[1].id,
@@ -492,7 +492,7 @@ fn browser_recovery_requires_inventory_from_the_selected_capture() {
         .is_empty()
     );
     assert!(
-        investigation::browser_memory_runs(
+        analysis::browser_memory_runs(
             &case.directory,
             &case.document,
             &case.document.evidence[1],
@@ -534,8 +534,8 @@ fn browser_profile_handle_owners_are_preserved_without_choosing_one_arbitrarily(
     );
     fs::create_dir_all(case.run_dir(&dump.id)).unwrap();
     chrome_database(&case.run_dir(&dump.id).join("cache.dat"));
-    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
-    let outcome = investigation::execute(
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,
@@ -627,14 +627,14 @@ fn sqlite_preview_quotes_names_pages_rows_and_never_changes_database() {
 #[test]
 fn native_search_runs_without_engine_and_remains_exportable() {
     let (_temp, mut case, _) = setup();
-    let run = investigation::prepare(
+    let run = analysis::prepare(
         &case.document.evidence[0],
         STRINGS,
         vec!["memory forensics".into()],
     )
     .unwrap();
     case.queue(run.clone()).unwrap();
-    let outcome = investigation::execute(
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,
@@ -675,8 +675,8 @@ fn quarantined_profile_keeps_an_entry_blocks_opening_and_other_files_are_parsed(
         br#"{"windows":[{"tabs":[{"index":1,"entries":[{"url":"https://example.org/healthy"}]}]}]}"#,
     )
     .unwrap();
-    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
-    let outcome = investigation::execute(
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,
@@ -736,8 +736,8 @@ fn missing_browser_memory_dump_is_retained_as_a_blocked_finding() {
         json!([]),
     );
     fs::create_dir_all(case.run_dir(&dump.id)).unwrap();
-    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
-    let outcome = investigation::execute(
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
         &case.directory,
         &case.document,
         &run,

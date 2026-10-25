@@ -1,14 +1,23 @@
-// Exports the application domain and handler modules.
+// Exports application logic from the library directory.
+#[path = "lib/analyses.rs"]
 pub mod analyses;
+#[path = "lib/analysis/mod.rs"]
+pub mod analysis;
+#[path = "lib/artifacts.rs"]
 pub mod artifacts;
+#[path = "lib/case.rs"]
 pub mod case;
+#[path = "lib/extracted_files.rs"]
 pub mod extracted_files;
+#[path = "lib/file_content.rs"]
 pub mod file_content;
-pub mod investigation;
+#[path = "lib/result_table.rs"]
 pub mod result_table;
+#[path = "lib/result_tree.rs"]
 pub mod result_tree;
 #[path = "lib/results.rs"]
 pub mod results;
+#[path = "lib/settings.rs"]
 pub mod settings;
 #[path = "lib/volatility.rs"]
 pub mod volatility;

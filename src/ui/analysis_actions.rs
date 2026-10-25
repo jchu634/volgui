@@ -12,8 +12,13 @@ impl Workspace {
         let cancel = self.start("Loading plugin options");
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = if plugin == volgui::investigation::BROWSER || plugin == volgui::analyses::REGISTRY_ALL {
-                Ok("This analysis accepts no custom options. Select its checkbox to queue it.".into())
+            let result = if plugin == volgui::analysis::BROWSER
+                || plugin == volgui::analyses::REGISTRY_ALL
+            {
+                Ok(
+                    "This analysis accepts no custom options. Select its checkbox to queue it."
+                        .into(),
+                )
             } else {
                 engine.help(&plugin, &cancel)
             };
@@ -328,7 +333,7 @@ impl Workspace {
                 }
                 return;
             };
-            let native = volgui::investigation::is_native(&case.document.runs[i].plugin);
+            let native = volgui::analysis::is_native(&case.document.runs[i].plugin);
             if !native && engine.is_none() {
                 return;
             }
@@ -384,7 +389,7 @@ impl Workspace {
             let tx = self.tx.clone();
             thread::spawn(move || {
                 let mut outcome = if native {
-                    volgui::investigation::execute(
+                    volgui::analysis::execute(
                         &case_directory,
                         &document,
                         &run,

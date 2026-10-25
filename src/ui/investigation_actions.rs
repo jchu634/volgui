@@ -1,5 +1,5 @@
 use super::*;
-use volgui::{case::Run, investigation};
+use volgui::{analysis, case::Run};
 
 impl Workspace {
     pub(super) fn recover_and_analyze_browser(
@@ -57,7 +57,7 @@ impl Workspace {
         let tx = self.tx.clone();
         thread::spawn(move || {
             let result = (|| {
-                let mut runs = match investigation::browser_memory_runs(
+                let mut runs = match analysis::browser_memory_runs(
                     &directory, &document, &evidence, &engine, &cancel,
                 ) {
                     Ok(runs) => runs,
@@ -69,8 +69,8 @@ impl Workspace {
                     }
                     Err(error) => return Err(error),
                 };
-                runs.retain(|run| run.plugin != investigation::BROWSER);
-                runs.extend(investigation::browser_recovery_runs(
+                runs.retain(|run| run.plugin != analysis::BROWSER);
+                runs.extend(analysis::browser_recovery_runs(
                     &directory, &document, &evidence, &engine, false, &cancel,
                 )?);
                 Ok(runs)
@@ -142,7 +142,7 @@ impl Workspace {
             if self.string_ignore_case {
                 arguments.push("--ignore-ascii-case".into());
             }
-            investigation::prepare(evidence, investigation::STRINGS, arguments)
+            analysis::prepare(evidence, analysis::STRINGS, arguments)
         })();
         match result {
             Ok(run) => {
@@ -177,27 +177,21 @@ impl Workspace {
                 .find(|r| r.id == record.run_id)
                 .ok_or("Missing source analysis")?;
             let key = if child {
-                investigation::registry::child_key(source, &record.record)
+                analysis::registry::child_key(source, &record.record)
                     .ok_or("Select a registry subkey")?
             } else {
                 self.registry_key.read(cx).value().to_string()
             };
-            let arguments = investigation::registry::arguments(&record.record, &key, recurse)?;
-            if let Some(cached) = investigation::registry::cached(case, source, &arguments) {
+            let arguments = analysis::registry::arguments(&record.record, &key, recurse)?;
+            if let Some(cached) = analysis::registry::cached(case, source, &arguments) {
                 return Ok((cached.id.clone(), None));
             }
             let engine = self
                 .installation
                 .as_ref()
                 .ok_or("Configure Volatility to read registry keys that have not been collected")?;
-            let requested = investigation::registry::prepare(
-                case,
-                engine,
-                source,
-                &record.record,
-                &key,
-                recurse,
-            )?;
+            let requested =
+                analysis::registry::prepare(case, engine, source, &record.record, &key, recurse)?;
             Ok::<_, String>((requested.id.clone(), Some(requested)))
         })();
         match result {

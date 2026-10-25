@@ -2,6 +2,7 @@
 mod analysis_actions;
 mod case_actions;
 mod chrome;
+mod components;
 mod exports;
 mod file_actions;
 mod investigation_actions;
@@ -9,7 +10,6 @@ mod navigation;
 mod popups;
 mod result_actions;
 mod shell;
-#[path = "views/mod.rs"]
 mod views;
 
 use gpui_kit::{
@@ -171,9 +171,9 @@ pub struct Workspace {
     browser_group: ArtifactGroup,
     show_file_handles: bool,
     result_scroll: UniformListScrollHandle,
-    result_table: Entity<TableState<views::result_data_table::ResultTable>>,
-    analysis_table: Entity<TableState<views::analysis_data_table::AnalysisTable>>,
-    database_table: Entity<TableState<views::database_data_table::DatabaseTable>>,
+    result_table: Entity<TableState<components::result_data_table::ResultTable>>,
+    analysis_table: Entity<TableState<components::analysis_data_table::AnalysisTable>>,
+    database_table: Entity<TableState<components::database_data_table::DatabaseTable>>,
     details_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
     relations_scroll: UniformListScrollHandle,
@@ -304,7 +304,7 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         let result_table = cx.new(|cx| {
             TableState::new(
-                views::result_data_table::ResultTable::new(workspace.clone()),
+                components::result_data_table::ResultTable::new(workspace.clone()),
                 window,
                 cx,
             )
@@ -316,7 +316,7 @@ impl Workspace {
         });
         let analysis_table = cx.new(|cx| {
             TableState::new(
-                views::analysis_data_table::AnalysisTable::new(workspace.clone()),
+                components::analysis_data_table::AnalysisTable::new(workspace.clone()),
                 window,
                 cx,
             )
@@ -327,7 +327,7 @@ impl Workspace {
         });
         let database_table = cx.new(|cx| {
             TableState::new(
-                views::database_data_table::DatabaseTable::new(workspace),
+                components::database_data_table::DatabaseTable::new(workspace),
                 window,
                 cx,
             )

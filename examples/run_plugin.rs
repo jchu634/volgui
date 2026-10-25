@@ -2,8 +2,8 @@
 //! Run one plugin on the first evidence in an existing case, without rehashing its acquisition.
 use std::{path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{
+    analysis,
     case::{Case, RunStatus, now},
-    investigation,
     settings::Settings,
     volatility::Installation,
 };
@@ -28,7 +28,7 @@ fn main() -> Result<(), String> {
         .ok_or("Case has no evidence")?
         .clone();
     let cancel = AtomicBool::new(false);
-    let engine = if investigation::is_native(&plugin) {
+    let engine = if analysis::is_native(&plugin) {
         None
     } else {
         Some(Installation::discover(
@@ -43,7 +43,7 @@ fn main() -> Result<(), String> {
     let run = if let Some(engine) = &engine {
         engine.prepare(&image, &plugin, arguments, &case.directory.join("analyses"))?
     } else {
-        investigation::prepare(&image, &plugin, arguments)?
+        analysis::prepare(&image, &plugin, arguments)?
     };
     case.queue(run.clone())?;
     let queued = case.document.runs.last_mut().unwrap();
@@ -53,7 +53,7 @@ fn main() -> Result<(), String> {
     let outcome = if let Some(engine) = &engine {
         engine.execute(&run, &case.run_dir(&run.id), &cancel)
     } else {
-        investigation::execute(&case.directory, &case.document, &run, &cancel, |_| {})
+        analysis::execute(&case.directory, &case.document, &run, &cancel, |_| {})
     };
     case.finish(&run.id, &outcome)?;
     println!(

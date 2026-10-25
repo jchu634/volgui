@@ -8,7 +8,7 @@ Two designs were considered. Separate, transient panels would make services easy
 to add but lose export, provenance and reopening. Native analysis runs reuse the
 case queue and store. The latter keeps one owner for results and cancellation.
 
-`investigation::prepare(evidence, plugin, arguments) -> Run` creates an application
+`analysis::prepare(evidence, plugin, arguments) -> Run` creates an application
 job. `execute(directory, document, run, cancel, progress) -> Outcome` performs work
 on the existing worker thread. Only known application job IDs bypass Volatility.
 Profile recovery queues targeted DumpFiles jobs first, then parses recovered

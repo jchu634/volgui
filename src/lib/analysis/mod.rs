@@ -1,8 +1,6 @@
 //! Application analyses use the case queue and record store, just like engine jobs.
 mod browser;
-mod browser_memory;
-mod browser_search;
-pub use browser_memory::recovery_runs as browser_memory_runs;
+pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod registry;
 pub mod strings;
 

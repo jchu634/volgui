@@ -427,7 +427,9 @@ impl Workspace {
                                 content = content.child(div().text_sm().child("ImHex was not found. Install it in its default location or add it to PATH to open files here."));
                             }
                             for (i, file) in files.iter().cloned().enumerate() {
-                                if !file.is_file() || volgui::extracted_files::ensure_openable(&file).is_err() {
+                                if !file.is_file()
+                                    || volgui::extracted_files::ensure_openable(&file).is_err()
+                                {
                                     content = content.child(div().py_1().text_sm().child(format!(
                                         "{} — Potential malware / unavailable. Opening blocked.",
                                         file.strip_prefix(&directory).unwrap_or(&file).display()
@@ -567,7 +569,9 @@ impl Workspace {
                                 .xsmall()
                                 .ghost()
                                 .icon(if marked {
-                                    Icon::default().data(include_bytes!("../../assets/icons/bookmark-filled.svg"))
+                                    Icon::default().data(include_bytes!(
+                                        "../../../assets/icons/bookmark-filled.svg"
+                                    ))
                                 } else {
                                     Icon::new(IconName::Bookmark)
                                 })

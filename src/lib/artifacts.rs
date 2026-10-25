@@ -84,10 +84,10 @@ impl ArtifactGroup {
         }
     }
     pub fn for_plugin(plugin: &str) -> Self {
-        if plugin == crate::investigation::BROWSER {
+        if plugin == crate::analysis::BROWSER {
             return Self::Web;
         }
-        if plugin == crate::investigation::STRINGS {
+        if plugin == crate::analysis::STRINGS {
             return Self::Strings;
         }
         let parts: Vec<_> = plugin.split('.').collect();

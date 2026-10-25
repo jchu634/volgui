@@ -29,7 +29,7 @@ impl Workspace {
                             .runs
                             .iter()
                             .find(|run| run.id == r.run_id)?;
-                        volgui::investigation::registry::child_key(run, &r.record)
+                        volgui::analysis::registry::child_key(run, &r.record)
                     })
                     .is_some();
                 tools = tools.child(div().text_xs().child("Expand branches to inspect collected registry keys and values. Select a key and choose Open subkey to collect its contents."))

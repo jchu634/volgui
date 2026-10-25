@@ -123,7 +123,7 @@ const PROVIDERS: &[Provider] = &[
 ];
 
 /// This decodes a URL observation. It does not establish who entered the query.
-pub(super) fn search_terms(address: &str) -> Option<(String, String)> {
+pub(in crate::analysis) fn search_terms(address: &str) -> Option<(String, String)> {
     let url = url::Url::parse(address).ok()?;
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
@@ -153,7 +153,7 @@ pub(super) fn search_terms(address: &str) -> Option<(String, String)> {
 }
 
 /// Recognize known Edge annotation URLs without claiming who typed a query.
-pub(super) fn query_origin(url: &url::Url) -> &'static str {
+pub(in crate::analysis) fn query_origin(url: &url::Url) -> &'static str {
     if matches!(url.host_str(), Some("bing.com" | "www.bing.com"))
         && url.path() == "/search"
         && url.query_pairs().any(|(key, value)| {

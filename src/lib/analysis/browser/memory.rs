@@ -1,5 +1,5 @@
 //! Recover URL strings from PID-scoped dumps without treating them as visits.
-use super::{BROWSER, browser, record};
+use super::super::{BROWSER, browser, record};
 use crate::{
     artifacts::OperatingSystem,
     case::{CaseDocument, Evidence, Run, RunStatus},
@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) const MEMMAP: &str = "windows.memmap.Memmap";
+pub(in crate::analysis) const MEMMAP: &str = "windows.memmap.Memmap";
 const CHUNK: usize = 1024 * 1024;
 const MAX_URL: usize = 8192;
 const MAX_PROCESS_URLS: usize = 10_000;
@@ -193,7 +193,7 @@ pub fn recovery_runs(
     if runs.len() > 128 {
         return Err("More than 128 browser processes found. Recover selected PIDs using Memmap --pid <PID> --dump in New analysis.".into());
     }
-    runs.push(super::prepare(evidence, BROWSER, vec![])?);
+    runs.push(super::super::prepare(evidence, BROWSER, vec![])?);
     Ok(runs)
 }
 
@@ -416,7 +416,7 @@ fn url_at(bytes: &[u8], final_region: bool) -> Option<(String, &'static str, boo
     Some((text, if wide { "UTF-16LE" } else { "UTF-8" }, complete))
 }
 
-pub(super) fn analyze(
+pub(in crate::analysis) fn analyze(
     directory: &Path,
     document: &CaseDocument,
     run: &Run,
@@ -518,7 +518,7 @@ pub(super) fn analyze(
                 row.fields.insert("Search terms".into(), json!(terms));
                 row.fields.insert(
                     "Query origin".into(),
-                    json!(super::browser_search::query_origin(&parsed_url)),
+                    json!(super::search::query_origin(&parsed_url)),
                 );
             }
             rows.push(row);

@@ -3,7 +3,7 @@ use super::*;
 use std::rc::Rc;
 
 #[derive(Clone)]
-pub(super) enum AnalysisRow {
+pub(in crate::ui) enum AnalysisRow {
     Extended,
     Group {
         group: ArtifactGroup,
@@ -23,9 +23,9 @@ pub(super) enum AnalysisRow {
 
 pub(in crate::ui) struct AnalysisTable {
     workspace: WeakEntity<Workspace>,
-    pub(super) rows: Vec<AnalysisRow>,
-    pub(super) visible_ids: Vec<String>,
-    pub(super) range_ids: Rc<Vec<String>>,
+    pub(in crate::ui) rows: Vec<AnalysisRow>,
+    pub(in crate::ui) visible_ids: Vec<String>,
+    pub(in crate::ui) range_ids: Rc<Vec<String>>,
 }
 
 impl AnalysisTable {

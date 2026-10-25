@@ -1,3 +1,6 @@
+pub(super) mod memory;
+mod search;
+
 use super::{record, table};
 use crate::{
     case::{CaseDocument, Run, RunStatus},
@@ -166,7 +169,7 @@ pub(super) fn analyze(
             break;
         }
     }
-    let memory = super::browser_memory::analyze(
+    let memory = memory::analyze(
         directory,
         document,
         run,
@@ -237,7 +240,7 @@ fn timestamp(microseconds: i64, chrome: bool) -> String {
         .unwrap_or_default()
 }
 
-pub(super) use super::browser_search::search_terms;
+pub(super) use search::search_terms;
 
 fn push(
     rows: &mut Vec<Record>,
