@@ -22,6 +22,214 @@ impl ResultTable {
     }
 }
 
+struct ColumnFilter {
+    workspace: WeakEntity<Workspace>,
+    scope: Vec<String>,
+    column: String,
+    label: String,
+    values: Option<Result<Arc<Vec<String>>, String>>,
+    search: Entity<InputState>,
+    matches: Arc<Vec<usize>>,
+    scroll: UniformListScrollHandle,
+}
+
+impl ColumnFilter {
+    fn new(
+        workspace: WeakEntity<Workspace>,
+        store: ResultStore,
+        scope: Vec<String>,
+        column: String,
+        label: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        if let Some(workspace) = workspace.upgrade() {
+            cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
+        }
+        let search = field("", "Search values...", window, cx);
+        cx.subscribe(&search, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.filter_values(cx);
+                cx.notify();
+            }
+        })
+        .detach();
+        let runs = scope.clone();
+        let field = column.clone();
+        let load = cx
+            .background_executor()
+            .spawn(async move { store.filter_values(&runs, &field).map(Arc::new) });
+        cx.spawn(async move |this, cx| {
+            let values = load.await;
+            let _ = this.update(cx, |this, cx| {
+                this.values = Some(values);
+                this.filter_values(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        Self {
+            workspace,
+            scope,
+            column,
+            label,
+            values: None,
+            search,
+            matches: Arc::new(Vec::new()),
+            scroll: UniformListScrollHandle::default(),
+        }
+    }
+
+    fn filter_values(&mut self, cx: &App) {
+        let needle = self.search.read(cx).value().to_lowercase();
+        self.matches = Arc::new(match &self.values {
+            Some(Ok(values)) => values
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| {
+                    let label = if value.is_empty() {
+                        "N.A."
+                    } else {
+                        value.as_str()
+                    };
+                    label.to_lowercase().contains(&needle)
+                })
+                .map(|(i, _)| i)
+                .collect(),
+            _ => Vec::new(),
+        });
+        self.scroll = UniformListScrollHandle::default();
+    }
+}
+
+impl Render for ColumnFilter {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel = div()
+            .id("column-filter-panel")
+            .flex()
+            .flex_col()
+            .w(px(280.))
+            .text_sm();
+        let values = match &self.values {
+            None => return panel.p_2().child("Loading filters...").into_any_element(),
+            Some(Err(error)) => {
+                return panel
+                    .p_2()
+                    .child(format!("Could not load filters: {error}"))
+                    .into_any_element();
+            }
+            Some(Ok(values)) => values.clone(),
+        };
+        let matches = self.matches.clone();
+        let height = px((matches.len().clamp(1, 11) * 28) as f32);
+        let all_checked = self
+            .workspace
+            .upgrade()
+            .is_some_and(|workspace| !workspace.read(cx).column_filters.contains_key(&self.column));
+        panel
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div().font_weight(FontWeight::BOLD).child(
+                            Checkbox::new("filter-all")
+                                .label(self.label.clone())
+                                .checked(all_checked)
+                                .on_change(cx.listener(|this, checked, _, cx| {
+                                    cx.stop_propagation();
+                                    let _ = this.workspace.update(cx, |state, cx| {
+                                        if state.scope != this.scope {
+                                            return;
+                                        }
+                                        if *checked {
+                                            state.column_filters.remove(&this.column);
+                                        } else {
+                                            state
+                                                .column_filters
+                                                .insert(this.column.clone(), BTreeSet::new());
+                                        }
+                                        state.start_query(cx);
+                                    });
+                                })),
+                        ),
+                    )
+                    .child(
+                        Input::new(&self.search)
+                            .id("filter-search")
+                            .aria_label(format!("Search {} values", self.label))
+                            .small()
+                            .flex_1()
+                            .min_w_0(),
+                    ),
+            )
+            .child(div().h(px(1.)).w_full().my_1().bg(cx.theme().border))
+            .child(
+                uniform_list(
+                    "filter-values",
+                    matches.len(),
+                    cx.processor(move |this, range: Range<usize>, _, cx| {
+                        range
+                            .map(|i| {
+                                let i = matches[i];
+                                let value = values[i].clone();
+                                let checked = this.workspace.upgrade().is_some_and(|workspace| {
+                                    workspace
+                                        .read(cx)
+                                        .column_filters
+                                        .get(&this.column)
+                                        .is_none_or(|selected| selected.contains(&value))
+                                });
+                                let all = values.clone();
+                                div().h(px(28.)).w_full().overflow_hidden().child(
+                                    Checkbox::new(("filter-value", i))
+                                        .label(if value.is_empty() {
+                                            "N.A.".into()
+                                        } else {
+                                            value.clone()
+                                        })
+                                        .checked(checked)
+                                        .on_change(cx.listener(move |this, checked, _, cx| {
+                                            cx.stop_propagation();
+                                            let _ = this.workspace.update(cx, |state, cx| {
+                                                if state.scope != this.scope {
+                                                    return;
+                                                }
+                                                let selected = state
+                                                    .column_filters
+                                                    .entry(this.column.clone())
+                                                    .or_insert_with(|| {
+                                                        all.iter().cloned().collect()
+                                                    });
+                                                if *checked {
+                                                    selected.insert(value.clone());
+                                                } else {
+                                                    selected.remove(&value);
+                                                }
+                                                if selected.len() == all.len() {
+                                                    state.column_filters.remove(&this.column);
+                                                }
+                                                state.start_query(cx);
+                                            });
+                                        })),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&self.scroll)
+                .h(height)
+                .w_full(),
+            )
+            .when(self.matches.is_empty(), |panel| {
+                panel.child(div().p_2().child("No matching values"))
+            })
+            .into_any_element()
+    }
+}
+
 impl TableDelegate for ResultTable {
     fn columns_count(&self, _: &App) -> usize {
         self.columns.len()
@@ -40,7 +248,7 @@ impl TableDelegate for ResultTable {
     fn render_th(
         &mut self,
         col: usize,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = &self.columns[col];
@@ -63,88 +271,54 @@ impl TableDelegate for ResultTable {
         let active = weak
             .upgrade()
             .is_some_and(|workspace| workspace.read(cx).column_filters.contains_key(&column));
+        let panel_state =
+            window.use_keyed_state(key("column-filter-panel", &column), cx, |_, _| {
+                None::<Entity<ColumnFilter>>
+            });
+        let close_state = panel_state.clone();
         header
             .child(
-                Button::new(key("column-filter", &column))
-                    .xsmall()
-                    .ghost()
-                    .icon(IconName::ChevronDown)
-                    .selected(active)
-                    .tooltip(format!("Filter {label}"))
-                    .accessibility_label(format!("Filter {label}"))
-                    .dropdown_menu(move |mut menu, _, cx| {
-                        let Some(workspace) = weak.upgrade() else {
-                            return menu;
-                        };
-                        cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
-                        let state = workspace.read(cx);
-                        let values = match state
-                            .store()
-                            .map(|store| store.filter_values(&state.scope, &column))
-                        {
-                            Some(Ok(values)) => values,
-                            Some(Err(error)) => {
-                                return menu.label(format!("Could not load filters: {error}"));
-                            }
-                            None => return menu,
-                        };
-                        menu = menu.scrollable(true).max_h(px(360.)).min_w(px(200.));
-                        let clear_weak = weak.clone();
-                        let clear_column = column.clone();
-                        menu = menu
-                            .item(PopupMenuItem::new("Select all").on_click(move |_, _, cx| {
-                                let _ = clear_weak.update(cx, |state, cx| {
-                                    state.column_filters.remove(&clear_column);
-                                    state.start_query(cx);
-                                });
-                            }))
-                            .separator();
-                        let values = std::sync::Arc::new(values);
-                        for (i, value) in values.iter().enumerate() {
-                            let weak = weak.clone();
-                            let column = column.clone();
-                            let value = value.clone();
-                            let all = values.clone();
-                            menu = menu.item(PopupMenuItem::element(move |_, cx| {
-                                let checked = weak.upgrade().is_some_and(|workspace| {
-                                    workspace
-                                        .read(cx)
-                                        .column_filters
-                                        .get(&column)
-                                        .is_none_or(|selected| selected.contains(&value))
-                                });
-                                let weak = weak.clone();
-                                let column = column.clone();
-                                let value = value.clone();
-                                let all = all.clone();
-                                Checkbox::new(("filter-value", i))
-                                    .label(if value.is_empty() {
-                                        "N.A.".into()
-                                    } else {
-                                        value.clone()
-                                    })
-                                    .checked(checked)
-                                    .on_change(move |checked, _, cx| {
-                                        cx.stop_propagation();
-                                        let _ = weak.update(cx, |state, cx| {
-                                            let selected = state
-                                                .column_filters
-                                                .entry(column.clone())
-                                                .or_insert_with(|| all.iter().cloned().collect());
-                                            if *checked {
-                                                selected.insert(value.clone());
-                                            } else {
-                                                selected.remove(&value);
-                                            }
-                                            if selected.len() == all.len() {
-                                                state.column_filters.remove(&column);
-                                            }
-                                            state.start_query(cx);
-                                        });
-                                    })
-                            }));
+                Popover::new(key("column-filter-popover", &column))
+                    .anchor(Anchor::TopLeft)
+                    .on_open_change(move |open, _, cx| {
+                        if !open {
+                            close_state.update(cx, |panel, _| *panel = None);
                         }
-                        menu
+                    })
+                    .trigger(
+                        Button::new(key("column-filter", &column))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::ChevronDown)
+                            .selected(active)
+                            .tooltip(format!("Filter {label}"))
+                            .accessibility_label(format!("Filter {label}")),
+                    )
+                    .content(move |_, window, cx| {
+                        if let Some(panel) = panel_state.read(cx) {
+                            return panel.clone().into_any_element();
+                        }
+                        let Some(workspace) = weak.upgrade() else {
+                            return div().into_any_element();
+                        };
+                        let state = workspace.read(cx);
+                        let Some(store) = state.store() else {
+                            return div().into_any_element();
+                        };
+                        let scope = state.scope.clone();
+                        let panel = cx.new(|cx| {
+                            ColumnFilter::new(
+                                weak.clone(),
+                                store,
+                                scope,
+                                column.clone(),
+                                label.clone(),
+                                window,
+                                cx,
+                            )
+                        });
+                        panel_state.update(cx, |state, _| *state = Some(panel.clone()));
+                        panel.into_any_element()
                     }),
             )
             .into_any_element()
