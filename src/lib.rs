@@ -13,6 +13,8 @@ pub mod database;
 pub mod extracted_files;
 #[path = "lib/file_content.rs"]
 pub mod file_content;
+#[path = "lib/hex_editor.rs"]
+pub mod hex_editor;
 #[path = "lib/object_store.rs"]
 pub mod object_store;
 #[path = "lib/result_table.rs"]

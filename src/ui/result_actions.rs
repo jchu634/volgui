@@ -118,8 +118,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let was_application = self.result_group() == Some(ArtifactGroup::Applications);
         self.column_filters.clear();
         self.scope = runs;
+        if !was_application && self.result_group() == Some(ArtifactGroup::Applications) {
+            self.content_sidebar_visible = true;
+            self.content_encoding = volgui::extracted_files::ContentEncoding::Utf8;
+        }
         self.selection_epoch += 1;
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
@@ -350,14 +355,14 @@ impl Workspace {
             let pid = row.text("PID");
             self.application_pid
                 .update(cx, |input, cx| input.set_value(pid, window, cx));
-            self.hex_visible = true;
             self.application_text_scroll.set_offset(Point::default());
         }
         if self.detail == DetailTab::Handles {
             self.load_handles(0, cx);
         }
         self.hex_scroll.set_offset(Point::default());
-        if self.hex_visible {
+        if self.content_sidebar_visible || self.result_group() == Some(ArtifactGroup::Applications)
+        {
             self.load_hex(cx);
         }
         self.raw_expanded.clear();

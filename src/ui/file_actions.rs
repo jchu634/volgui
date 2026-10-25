@@ -77,9 +77,13 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn toggle_hex(&mut self, cx: &mut Context<Self>) {
-        self.hex_visible = !self.hex_visible;
-        if self.hex_visible {
+    pub(super) fn toggle_content_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.content_sidebar_visible = !self.content_sidebar_visible;
+        if self.result_group() == Some(ArtifactGroup::Applications) {
+            cx.notify();
+            return;
+        }
+        if self.content_sidebar_visible {
             self.load_hex(cx);
         } else {
             self.reset_hex();
@@ -90,6 +94,7 @@ impl Workspace {
     pub(super) fn reset_hex(&mut self) {
         self.hex_epoch += 1;
         self.hex_view = HexView::Idle;
+        self.hex_editor = None;
         self.database_view = None;
         self.database_epoch += 1;
     }
@@ -219,7 +224,9 @@ impl Workspace {
         offset: u64,
         cx: &mut Context<Self>,
     ) {
-        self.hex_visible = true;
+        if self.result_group() != Some(ArtifactGroup::Applications) {
+            self.content_sidebar_visible = true;
+        }
         self.reset_hex();
         self.hex_view = HexView::Loading;
         let epoch = self.hex_epoch;

@@ -64,7 +64,7 @@ impl Workspace {
         }
         self.file_dumps.clear();
         self.reset_file_listing();
-        self.hex_visible = false;
+        self.content_sidebar_visible = false;
         self.reset_hex();
         self.selected = None;
         self.selected_run = None;

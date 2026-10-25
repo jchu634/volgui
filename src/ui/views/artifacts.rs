@@ -95,7 +95,7 @@ impl Workspace {
         if self.result_group() == Some(ArtifactGroup::Applications) {
             return self.render_application_memory(cx);
         }
-        let results = if self.hex_visible {
+        let results = if self.content_sidebar_visible {
             h_resizable("artifact-hex-split")
                 .child(
                     resizable_panel()

@@ -202,7 +202,8 @@ pub struct Workspace {
     imhex_path: Option<PathBuf>,
     file_offset_physical: bool,
     hex_view: HexView,
-    hex_visible: bool,
+    hex_editor: Option<Entity<components::hex_editor::HexEditor>>,
+    content_sidebar_visible: bool,
     hex_scroll: ScrollHandle,
     hex_epoch: u64,
     content_encoding: volgui::extracted_files::ContentEncoding,
@@ -474,7 +475,8 @@ impl Workspace {
             imhex_path: None,
             file_offset_physical: false,
             hex_view: HexView::Idle,
-            hex_visible: false,
+            hex_editor: None,
+            content_sidebar_visible: false,
             hex_scroll: ScrollHandle::default(),
             hex_epoch: 0,
             content_encoding: volgui::extracted_files::ContentEncoding::Hex,
@@ -806,7 +808,7 @@ impl Workspace {
                                 if !request.show_hex {
                                     self.detail = DetailTab::Files;
                                 }
-                                if self.hex_visible {
+                                if self.content_sidebar_visible {
                                     self.load_hex(cx);
                                 }
                             }
@@ -988,6 +990,32 @@ impl Workspace {
                     }
                     self.hex_view = match result {
                         Ok((files, page)) => {
+                            let offset = if self.result_group() == Some(ArtifactGroup::Applications)
+                            {
+                                self.selected
+                                    .as_ref()
+                                    .and_then(|row| row.record.fields.get("Dump offset")?.as_u64())
+                                    .unwrap_or(page.offset)
+                            } else {
+                                page.offset
+                            };
+                            let editor = cx.new(|cx| {
+                                components::hex_editor::HexEditor::new(
+                                    page.path.clone(),
+                                    page.total,
+                                    offset,
+                                    window,
+                                    cx,
+                                )
+                            });
+                            cx.subscribe(
+                                &editor,
+                                |_, _, _: &components::hex_editor::SelectionChanged, cx| {
+                                    cx.notify()
+                                },
+                            )
+                            .detach();
+                            self.hex_editor = Some(editor);
                             self.hex_offset.update(cx, |input, cx| {
                                 input.set_value(format!("{:#x}", page.offset), window, cx)
                             });

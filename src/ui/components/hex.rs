@@ -4,6 +4,45 @@ use volgui::extracted_files::HEX_PAGE_SIZE;
 
 impl Workspace {
     pub(in crate::ui) fn render_hex_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let body = if self.content_encoding == volgui::extracted_files::ContentEncoding::Hex
+            && let Some(editor) = &self.hex_editor
+            && let HexView::Ready { files, page } = &self.hex_view
+        {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .min_w_0()
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .child(self.render_file_actions(true, cx))
+                        .child(self.render_content_controls(files, &page.path, cx)),
+                )
+                .child(div().flex_1().min_h_0().min_w_0().child(editor.clone()))
+                .into_any_element()
+        } else {
+            div()
+                .relative()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .child(
+                    div()
+                        .id("hex-content-scroll")
+                        .size_full()
+                        .overflow_scroll()
+                        .track_scroll(&self.hex_scroll)
+                        .p_3()
+                        .child(self.render_file_actions(true, cx))
+                        .child(self.render_hex(cx)),
+                )
+                .child(Scrollbar::vertical(&self.hex_scroll).mode(ScrollbarMode::Always))
+                .child(Scrollbar::horizontal(&self.hex_scroll).mode(ScrollbarMode::Always))
+                .into_any_element()
+        };
         div()
             .size_full()
             .min_w_0()
@@ -29,26 +68,58 @@ impl Workspace {
                         ),
                     ),
             )
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .id("hex-content-scroll")
-                            .size_full()
-                            .overflow_scroll()
-                            .track_scroll(&self.hex_scroll)
-                            .p_3()
-                            .child(self.render_file_actions(true, cx))
-                            .child(self.render_hex(cx)),
-                    )
-                    .child(Scrollbar::vertical(&self.hex_scroll).mode(ScrollbarMode::Always))
-                    .child(Scrollbar::horizontal(&self.hex_scroll).mode(ScrollbarMode::Always)),
-            )
+            .child(div().relative().flex_1().min_h_0().min_w_0().child(body))
             .into_any_element()
+    }
+
+    fn render_content_controls(
+        &self,
+        files: &[PathBuf],
+        selected_path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut encodings = div().flex().flex_wrap().gap_1();
+        for (i, encoding) in volgui::extracted_files::ContentEncoding::ALL
+            .into_iter()
+            .enumerate()
+        {
+            encodings = encodings.child(
+                Button::new(("content-encoding", i))
+                    .xsmall()
+                    .ghost()
+                    .label(encoding.label())
+                    .selected(self.content_encoding == encoding)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_content_encoding(encoding, cx)),
+                    ),
+            );
+        }
+        let mut choices = div().flex().flex_wrap().gap_1();
+        for (i, file) in files.iter().enumerate() {
+            let path = file.clone();
+            choices = choices.child(
+                Button::new(("hex-cache-file", i))
+                    .xsmall()
+                    .ghost()
+                    .label(
+                        file.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                    .selected(file == selected_path)
+                    .tooltip(file.display().to_string())
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.read_hex_page(path.clone(), 0, cx)),
+                    ),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(encodings)
+            .child(choices)
     }
 
     pub(in crate::ui) fn render_hex(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -70,53 +141,14 @@ impl Workspace {
                 );
             }
             HexView::Ready { files, page } => {
-                let mut encodings = div().flex().flex_wrap().gap_1();
-                for (i, encoding) in volgui::extracted_files::ContentEncoding::ALL
-                    .into_iter()
-                    .enumerate()
-                {
-                    encodings = encodings.child(
-                        Button::new(("content-encoding", i))
-                            .xsmall()
-                            .ghost()
-                            .label(encoding.label())
-                            .selected(self.content_encoding == encoding)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_content_encoding(encoding, cx)
-                            })),
-                    );
-                }
                 if !application {
-                    content = content.child(encodings);
-                }
-                let mut choices = div().flex().flex_wrap().gap_1();
-                for (i, file) in files.iter().enumerate() {
-                    let path = file.clone();
-                    choices = choices.child(
-                        Button::new(("hex-cache-file", i))
-                            .xsmall()
-                            .ghost()
-                            .label(
-                                file.file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned(),
-                            )
-                            .selected(file == &page.path)
-                            .tooltip(file.display().to_string())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.read_hex_page(path.clone(), 0, cx)
-                            })),
-                    );
+                    content = content.child(self.render_content_controls(files, &page.path, cx));
                 }
                 let previous_path = page.path.clone();
                 let next_path = page.path.clone();
                 let jump_path = page.path.clone();
                 let previous = page.offset.saturating_sub(HEX_PAGE_SIZE);
                 let next = page.offset.saturating_add(HEX_PAGE_SIZE);
-                if !application {
-                    content = content.child(choices);
-                }
                 if !application
                     && self.content_encoding == volgui::extracted_files::ContentEncoding::Sqlite
                 {

@@ -68,7 +68,7 @@ impl Workspace {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.file_offset_physical = !this.file_offset_physical;
                             this.reset_hex();
-                            if this.hex_visible { this.load_hex(cx); }
+                            if this.content_sidebar_visible { this.load_hex(cx); }
                             cx.notify();
                         })),
                 );

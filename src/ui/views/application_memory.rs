@@ -72,21 +72,10 @@ impl Workspace {
             .child(div().px_3().py_2().child(heading("Hex bytes", cx)))
             .child(
                 div()
-                    .id("memory-hex-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_scroll()
-                    .track_scroll(&self.hex_scroll)
-                    .p_3()
-                    .child(match &self.hex_view {
-                        HexView::Idle => div()
-                            .text_sm()
-                            .child(
-                                "Enter a PID and scan its memory, or select a recovered fragment.",
-                            )
-                            .into_any_element(),
-                        _ => self.render_hex(cx),
-                    }),
+                    .min_w_0()
+                    .child(self.render_memory_hex(cx)),
             );
         let mut text = div().flex().flex_col().size_full().min_w_0().min_h_0();
         let mut encodings = div()
@@ -96,7 +85,7 @@ impl Workspace {
             .gap_1()
             .px_3()
             .py_2()
-            .child(heading("Decoded text", cx));
+            .child(heading("Decode selection", cx));
         for (i, encoding) in [
             ContentEncoding::Utf8,
             ContentEncoding::Utf16Le,
@@ -130,47 +119,74 @@ impl Workspace {
             .gap_3();
         match &self.hex_view {
             HexView::Ready { page, .. } => {
-                let alignment = if matches!(
-                    self.content_encoding,
-                    ContentEncoding::Utf16Le | ContentEncoding::Utf16Be
-                ) {
-                    selected
-                        .and_then(|r| r.record.fields.get("Dump offset")?.as_u64())
-                        .map_or(0, |offset| (offset % 2) as usize)
-                } else {
-                    0
-                };
-                let alignment = alignment.min(page.bytes.len());
-                let display = HexPage {
-                    path: page.path.clone(),
-                    offset: page.offset + alignment as u64,
-                    total: page.total,
-                    bytes: page.bytes[alignment..].to_vec(),
-                };
-                let encoding = if matches!(
-                    self.content_encoding,
-                    ContentEncoding::Utf16Le | ContentEncoding::Utf16Be
-                ) {
-                    self.content_encoding
-                } else {
-                    ContentEncoding::Utf8
-                };
-                let content = display
-                    .decoded(encoding)
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n")
-                    .chars()
-                    .map(|c| {
-                        if c.is_control() && !matches!(c, '\n' | '\t') {
-                            '·'
-                        } else {
-                            c
+                let preview = self
+                    .hex_editor
+                    .as_ref()
+                    .and_then(|editor| editor.read(cx).selection());
+                if let Some(preview) = preview {
+                    decoded = decoded.child(heading(
+                        format!(
+                            "Bytes {:#x}..{:#x} · {} selected",
+                            preview.range.start,
+                            preview.range.end,
+                            preview.range.end - preview.range.start,
+                        ),
+                        cx,
+                    ));
+                    match &preview.bytes {
+                        Some(Ok(bytes)) => {
+                            let encoding = match self.content_encoding {
+                                ContentEncoding::Utf16Le | ContentEncoding::Utf16Be => {
+                                    self.content_encoding
+                                }
+                                _ => ContentEncoding::Utf8,
+                            };
+                            let display = HexPage {
+                                path: page.path.clone(),
+                                offset: preview.range.start,
+                                total: page.total,
+                                bytes: bytes.to_vec(),
+                            };
+                            let content = display
+                                .decoded(encoding)
+                                .replace("\r\n", "\n")
+                                .replace('\r', "\n");
+                            decoded =
+                                decoded
+                                    .child(div().font_family("Consolas").text_sm().child(
+                                        SelectableText::new("memory-decoded-selection", content),
+                                    ))
+                                    .when(
+                                        preview.range.end - preview.range.start
+                                            > bytes.len() as u64,
+                                        |view| {
+                                            view.child(
+                                    div().text_xs().text_color(cx.theme().muted_foreground)
+                                        .child("Showing the first 64 KiB of the selection."))
+                                        },
+                                    )
+                                    .when(
+                                        matches!(
+                                            encoding,
+                                            ContentEncoding::Utf16Le | ContentEncoding::Utf16Be
+                                        ) && bytes.len() % 2 != 0,
+                                        |view| {
+                                            view.child(
+                                    div().text_xs().text_color(cx.theme().muted_foreground)
+                                        .child("The trailing byte is incomplete for UTF-16."))
+                                        },
+                                    )
+                                    .child(self.render_memory_numbers(bytes, cx));
                         }
-                    })
-                    .collect::<String>();
-                decoded=decoded.child(heading(format!("Bytes {:#x}..{:#x}",display.offset,page.offset+page.bytes.len() as u64),cx))
-                    .child(div().font_family("Consolas").text_sm().child(SelectableText::new("memory-decoded-page",content)))
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Hex and text show the same dump page. Offsets are within the process dump; adjacent dumped pages may have different virtual addresses."));
+                        Some(Err(error)) => decoded = decoded.child(error.clone()),
+                        None => decoded = decoded.child("Reading selected bytes..."),
+                    }
+                } else {
+                    decoded = decoded
+                        .child("Select bytes in the hex or UTF-8 columns to decode them here.");
+                }
+                decoded = decoded.child(div().text_xs().text_color(cx.theme().muted_foreground)
+                    .child("Offsets are within the process dump. Adjacent dump rows may have different virtual address mappings. Text decoding starts at the first selected byte."));
             }
             HexView::Loading => {
                 decoded = decoded.child("Loading process memory...");
@@ -195,6 +211,24 @@ impl Workspace {
             decoded = decoded.child(self.results_empty_message(cx));
         }
         text = text.child(decoded);
+        let body = if self.content_sidebar_visible {
+            h_resizable("application-memory-split")
+                .child(
+                    resizable_panel()
+                        .size(px(800.))
+                        .size_range(px(300.)..Pixels::MAX)
+                        .child(hex),
+                )
+                .child(
+                    resizable_panel()
+                        .size(px(380.))
+                        .size_range(px(260.)..Pixels::MAX)
+                        .child(text),
+                )
+                .into_any_element()
+        } else {
+            hex.into_any_element()
+        };
         div()
             .flex()
             .flex_col()
@@ -204,22 +238,98 @@ impl Workspace {
             .child(self.render_results_toolbar(cx))
             .child(self.render_investigation_tools(cx))
             .child(navigation)
-            .child(
-                div().flex_1().min_h_0().min_w_0().child(
-                    h_resizable("application-memory-split")
-                        .child(
-                            resizable_panel()
-                                .size(px(650.))
-                                .size_range(px(300.)..Pixels::MAX)
-                                .child(hex),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size_range(px(260.)..Pixels::MAX)
-                                .child(text),
-                        ),
-                ),
-            )
+            .child(div().flex_1().min_h_0().min_w_0().child(body))
             .into_any_element()
+    }
+
+    fn render_memory_hex(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(editor) = &self.hex_editor {
+            return editor.clone().into_any_element();
+        }
+        let message = match &self.hex_view {
+            HexView::Idle => "Enter a PID and scan its memory, or select a recovered fragment.",
+            HexView::Loading => "Loading process memory...",
+            HexView::Error(error) => error.as_str(),
+            HexView::Ready { .. } => "Preparing hex editor...",
+        };
+        div()
+            .p_3()
+            .text_sm()
+            .child(message.to_owned())
+            .when(matches!(self.hex_view, HexView::Error(_)), |s| {
+                s.child(
+                    Button::new("memory-hex-retry")
+                        .small()
+                        .ghost()
+                        .label("Retry")
+                        .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_memory_numbers(&self, bytes: &[u8], cx: &App) -> AnyElement {
+        let mut values = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .text_xs()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .pt_3()
+            .child(heading("Values at selection start", cx));
+        let mut rows = Vec::new();
+        if let Some(byte) = bytes.first() {
+            rows.push(("u8 / i8", format!("{} / {}", byte, *byte as i8), "".into()));
+        }
+        macro_rules! value {
+            ($ty:ty, $width:expr) => {
+                if let Some(slice) = bytes.get(..$width) {
+                    let data: [u8; $width] = slice.try_into().unwrap();
+                    rows.push((
+                        stringify!($ty),
+                        format!("{:?}", <$ty>::from_le_bytes(data)),
+                        format!("{:?}", <$ty>::from_be_bytes(data)),
+                    ));
+                }
+            };
+        }
+        value!(u16, 2);
+        value!(i16, 2);
+        value!(u32, 4);
+        value!(i32, 4);
+        value!(f32, 4);
+        value!(u64, 8);
+        value!(i64, 8);
+        value!(f64, 8);
+        values = values.child(
+            div()
+                .flex()
+                .gap_2()
+                .child(div().w(px(56.)))
+                .child(div().flex_1().child("Little endian"))
+                .child(div().flex_1().child("Big endian")),
+        );
+        for (i, (label, little, big)) in rows.into_iter().enumerate() {
+            values = values.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(div().w(px(56.)).flex_shrink_0().child(label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(SelectableText::new(("memory-number-le", i), little)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(SelectableText::new(("memory-number-be", i), big)),
+                    ),
+            );
+        }
+        values.into_any_element()
     }
 }

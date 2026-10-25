@@ -100,16 +100,23 @@ These engine plugins are already basic choices. The installed engine must supply
 all four plugins. Completed dumps are reused; exact inventory and dump run IDs
 are saved with the parser job. Each extraction retains its own case history.
 
-The memory reader shows hex bytes beside decoded text for the same dump page.
-Previous/Next page and Go to offset update both panels. Choose UTF-8, UTF-16LE or
-UTF-16BE for text decoding. **Open dump from start** lets you read the entire dump,
-including pages that produced no recovered strings. Dump offsets refer to the
-logical process-dump file, rather than the acquisition file. Packed pages need not
+The memory reader continuously scrolls through the dump, loading only visible
+byte blocks. Its fixed header labels ten-digit addresses, sixteen hex columns
+and UTF-8 byte cells. Drag in either byte column, Shift-click, or use Shift with
+arrow keys to select a range. The right sidebar decodes that range as UTF-8,
+UTF-16LE or UTF-16BE and shows numeric values in both byte orders. Text decoding
+starts at the first selected byte, including odd offsets. Decode and copy are
+limited to the first 64 KiB of large selections. Ctrl+C copies hex or UTF-8 text
+according to the column where selection began. Go to offset accepts decimal and
+0x hexadecimal offsets. Ctrl+Home and Ctrl+End navigate to the dump boundaries.
+The **Sidebar** toggle hides the decoder while preserving hex selection and scroll.
+The entire dump is accessible, including bytes that produced no recovered strings.
+Dump offsets refer to the logical process-dump file, rather than the acquisition file. Packed pages need not
 be contiguous in virtual memory.
 
 Search for a name, phrase or flag, then use **Previous match** and **Next match**
 to move through recovered fragments and their original bytes. The full recovered
-fragment appears below the decoded page, preserving text spanning several pages.
+fragment appears below the selection decoder, preserving text spanning several pages.
 Old or deleted copies remain separate fragments. **Bookmark fragment** and CSV
 export use the existing case tools. A failed search leaves the dump readable.
 
@@ -153,10 +160,10 @@ retain the normal extraction actions. Non-file handles do not enter the file tre
 
 ## File contents
 
-Select a file and enable **Contents** in the bottom bar. Use the extraction action
+Select a file and enable **Sidebar** in the bottom bar. Use the extraction action
 when its bytes have not been recovered. The pane offers:
 
-- Hex bytes, offsets and ASCII.
+- Virtualized hex bytes, ten-digit offsets and UTF-8 byte cells.
 - UTF-8, UTF-16LE and UTF-16BE text. Decoding is per page; malformed characters or
   characters split across pages can appear as replacement characters.
 - Read-only SQLite tables, 100 rows per page, with bounded cell previews. The
