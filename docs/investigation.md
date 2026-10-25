@@ -6,17 +6,33 @@ history as Volatility jobs, and their findings support bookmarks and CSV export.
 
 ## Browser activity
 
-1. Choose **Browser activity**, then **Scan for files**, or run **Process handles**
-   from New analysis. Wait for the scan to finish and return to Browser activity.
-2. Choose **Recover browser activity**. VolGUI queues per-file extractions for
-   recognized browser history and session paths, then analyzes the recovered bytes.
-3. Filter the results by `Web history`, `Web search` or `Session tab`, or search
-   for a URL, title, search term or profile path.
+1. Choose **Browser activity**, then **Collect browser processes**. This collects
+   process names, parent PIDs and command lines for the selected Windows capture.
+2. Choose **Recover browser memory**. VolGUI queues PID-scoped Memmap dumps for
+   browser and content processes, then scans their user memory for URL strings.
+   GPU and utility processes are skipped. Embedded WebView processes are excluded. Tor Browser is identified by its
+   installation path in the command line, or a confirmed Tor parent process.
+3. Search for a phrase, domain or PID. **Memory search** rows include decoded
+   terms, browser, PID and process role. **Memory URL** rows retain other URLs.
+   Repeated exact URLs are grouped per PID with an occurrence count. Decoded URL
+   parameters also make phrases searchable in URLs that are not result pages.
+4. Select a finding and choose **View URL bytes** to inspect the dump at its
+   recorded offset. The details also include a process virtual address, encoding,
+   command line and source extraction. **Open source extraction** opens the dump job.
 
-**Analyze recovered files** reparses existing extractions without requiring a
-configured engine. It also works with browser files produced by other dump jobs.
-**Open source extraction** on a finding opens its source job. Its Extracted files
-tab lets you inspect or save the recovered database or session file.
+Process dumps can occupy several GB each and remain in the case. Completed dumps
+are reused. To recover only selected PIDs, use **Process memory maps / dumps** in
+New analysis with `--pid <PID> --dump`, then **Analyze recovered data**.
+
+For recorded history and saved tabs, choose **Scan for files** or collect
+**Process handles**, then **Recover profile files**. This queues per-file
+extractions for recognized browser history and session paths. Filter the results
+by `Web history`, `Web search` or `Session tab`.
+
+**Analyze recovered data** reparses existing profile files and browser process
+dumps without requiring an engine. File handle owners are labelled separately
+from URLs found in process memory. If several PIDs hold a profile file, all appear
+in Related PIDs rather than choosing one as the process that performed a search.
 
 Supported sources:
 
@@ -29,10 +45,26 @@ Supported sources:
 - Firefox session JSON and Mozilla LZ4 session files, using the selected history
   entry of each tab and excluding closed tabs.
 
-Search URLs for Google, Bing, DuckDuckGo, Yahoo and Brave produce decoded search
-terms. Chromium keyword records can also identify searches from custom providers.
-Each finding retains its source job and cache file. Original profile paths and
-owning PIDs are included when the source file scan or handle supplies them.
+Search URL parsing supports Brave, Search, DuckDuckGo, WebCrawler, Ecosia,
+Excite, Rumble, YouTube, Yandex, Bing, Info, Ask and Google. Yahoo support remains
+available for existing cases. Parsing uses provider hostnames, result-page paths
+and query parameters, including YouTube's `search_query` and Yandex's `text`.
+Spaces and percent-encoded text are decoded. Search templates, blank queries,
+autocomplete endpoints and lookalike hosts are excluded. Recognized DuckDuckGo
+onion result URLs are supported. Historical provider URLs remain useful even if
+the service has changed since the capture.
+
+Memory findings establish that URL bytes occur in a process's user address space.
+They can include stale data, embedded resources, suggestions or prefetches. They
+alone do not prove a visit, a user action or a tab open at capture time, and have
+no inferred timestamp. Shared kernel mappings are excluded because they can
+contain other processes' data. Only contiguous mapped user pages are joined;
+unreadable gaps never become invented strings. Invalid or truncated mapping
+ranges are skipped with diagnostics while other readable ranges are retained. Truncated candidates are flagged
+and do not produce decoded search terms. String boundary describes whether a
+byte delimiter was found; adjacent text can still be present in memory strings.
+Query origin flags known automated Edge annotation URLs. Other query URLs retain
+an unknown origin, so decoded terms are not presented as proof of typed input.
 
 Session tabs describe a saved session snapshot. A historical session file, stale
 cache variant or closed browser can still contain these records. They do not prove
@@ -48,8 +80,14 @@ columns and Windows handle offsets take precedence.
 
 Browser analysis retains at most 100,000 findings, reported in diagnostics if
 reached. Session parsing is limited to 32 MiB per file or decompressed session.
-Automatic recovery refuses batches exceeding 512 new file objects. Extract a
+Process scanning uses bounded buffers, an 8 KiB URL limit and at most 10,000
+unique URLs per PID. Memory recovery refuses batches exceeding 128 new process
+dumps. Automatic profile recovery refuses batches exceeding 512 new file objects. Extract a
 specific profile's files through Files to narrow large investigations.
+
+On 32-bit Windows mappings, the scanner conservatively uses the default 2 GiB
+user range. Captures configured with a 3 GiB user split may omit URLs above that
+boundary. The 64-bit user/kernel boundary is bit 47, including masked mappings.
 
 ## Process handles
 

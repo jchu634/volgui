@@ -3,6 +3,7 @@
 use std::{path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{
     case::{Case, RunStatus, now},
+    investigation,
     settings::Settings,
     volatility::Installation,
 };
@@ -27,21 +28,33 @@ fn main() -> Result<(), String> {
         .ok_or("Case has no evidence")?
         .clone();
     let cancel = AtomicBool::new(false);
-    let engine = Installation::discover(
-        Settings {
-            executable,
-            offline: true,
-            ..Default::default()
-        },
-        &cancel,
-    )?;
-    let run = engine.prepare(&image, &plugin, arguments, &case.directory.join("analyses"))?;
+    let engine = if investigation::is_native(&plugin) {
+        None
+    } else {
+        Some(Installation::discover(
+            Settings {
+                executable,
+                offline: true,
+                ..Default::default()
+            },
+            &cancel,
+        )?)
+    };
+    let run = if let Some(engine) = &engine {
+        engine.prepare(&image, &plugin, arguments, &case.directory.join("analyses"))?
+    } else {
+        investigation::prepare(&image, &plugin, arguments)?
+    };
     case.queue(run.clone())?;
     let queued = case.document.runs.last_mut().unwrap();
     queued.status = RunStatus::Running;
     queued.started_at = Some(now());
     case.save()?;
-    let outcome = engine.execute(&run, &case.run_dir(&run.id), &cancel);
+    let outcome = if let Some(engine) = &engine {
+        engine.execute(&run, &case.run_dir(&run.id), &cancel)
+    } else {
+        investigation::execute(&case.directory, &case.document, &run, &cancel, |_| {})
+    };
     case.finish(&run.id, &outcome)?;
     println!(
         "{} · {} records\nOutput: {}",

@@ -2,6 +2,61 @@ use super::*;
 use volgui::{case::Run, investigation};
 
 impl Workspace {
+    pub(super) fn collect_browser_processes(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure Volatility in settings")?;
+            let output = self
+                .case
+                .as_ref()
+                .ok_or("Open a case first")?
+                .directory
+                .join("analyses");
+            ["windows.pslist.PsList", "windows.cmdline.CmdLine"]
+                .into_iter()
+                .map(|plugin| engine.prepare(evidence, plugin, vec![], &output))
+                .collect::<Result<Vec<_>, _>>()
+        })();
+        match result {
+            Ok(runs) => self.queue_investigation(runs, window, cx),
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn recover_browser_memory(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        let (Some(evidence), Some(engine), Some(case)) = (
+            self.evidence().cloned(),
+            self.installation.clone(),
+            self.case.as_ref(),
+        ) else {
+            return;
+        };
+        let directory = case.directory.clone();
+        let document = case.document.clone();
+        let cancel = self.start("Finding browser processes to recover", None);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = investigation::browser_memory_runs(
+                &directory, &document, &evidence, &engine, &cancel,
+            );
+            let _ = tx.send(Event::BrowserPrepared(result));
+        });
+        cx.notify();
+    }
+
     pub(super) fn collect_source(
         &mut self,
         plugin: &str,

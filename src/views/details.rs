@@ -127,6 +127,18 @@ impl Workspace {
             }
             DetailTab::Overview => {
                 if let Some(record) = record {
+                    if matches!(
+                        record.record.text("Kind").as_str(),
+                        "Memory URL" | "Memory search"
+                    ) {
+                        content = content.child(
+                            Button::new("view-browser-url-bytes")
+                                .small()
+                                .ghost()
+                                .label("View URL bytes")
+                                .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
+                        );
+                    }
                     if let Some(source) = record
                         .record
                         .fields

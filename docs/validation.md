@@ -48,3 +48,37 @@ browser recovery queues, history/search parsing, offsets across string scan chun
 unaligned UTF-16, cancellation and result limits, all handle types, registry query
 arguments, and read-only SQLite paging. Browser parser unit tests cover timestamps,
 provider host validation, selected session navigation and tab/window closure.
+
+## Browser memory validation
+
+Use a separate output case to validate an existing capture without changing the
+source case or repeating its evidence hash:
+
+```powershell
+cargo run --locked --example validate_browser -- <source-case-directory> <new-case-directory> <vol-executable> [PID ...]
+```
+
+The example imports the latest completed process and command-line inventories,
+recovers the selected browser PIDs or all browser/content PIDs when none are given,
+then executes the same native browser analysis as the UI. The new case retains
+all dump files, mapping records and browser findings. `browser.csv` is exported
+for review. The stored evidence fingerprint comes from the source case; metadata
+is checked, but this command does not repeat a full evidence hash.
+
+Reparse existing dumps with the current implementation:
+
+```powershell
+cargo run --locked --example run_plugin -- <case-directory> <vol-executable> volgui.browser.Activity
+```
+
+In the app, open the output case, choose Browser activity, then Analyze recovered
+data. Filter for a known phrase and verify its PID, process role and virtual
+address. Choose View URL bytes and compare the retained bytes to the URL. Repeat
+with Tor searches and a website URL, and check the source command line identifies
+the Tor installation. Bookmark and export a finding, then reopen the case.
+
+Automated tests cover each requested search provider and its query parameter,
+URL decoding, false provider hosts, templates, autocomplete exclusions, UTF-16,
+chunk boundaries, mapping gaps, masked kernel mappings, occurrence counts,
+Tor parent attribution, multiple file handle owners, evidence separation,
+completed dump reuse, persistence and CSV export.

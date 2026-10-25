@@ -317,13 +317,15 @@ impl Workspace {
         });
         let table = div()
             .id("analysis-table")
-            .flex_1()
+            .w(px(772.))
+            .max_w_full()
+            .h_full()
             .min_h_0()
             .min_w_0()
             .child(
                 DataTable::new(&self.analysis_table)
                     .small()
-                    .header_row_height(px(34.)),
+                    .header_row_height(px(32.)),
             );
         let mut body = div().flex().flex_1().min_h_0().gap_3().child(table);
         if let Some(id) = &self.plugin {
