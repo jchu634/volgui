@@ -75,6 +75,12 @@ impl Workspace {
             return;
         };
         self.remember_location(cx);
+        if run.plugin == volgui::analysis::APPLICATION
+            && let Ok(pid) = volgui::analysis::application::target_pid(&run.arguments)
+        {
+            self.application_pid
+                .update(cx, |input, cx| input.set_value(pid.to_string(), window, cx));
+        }
         if run.plugin == volgui::analysis::registry::PRINT_KEY {
             let path = run
                 .arguments
@@ -90,7 +96,20 @@ impl Workspace {
             self.selected_evidence = Some(run.evidence_id.clone());
             self.sync_os();
         }
-        self.set_scope(vec![id], run.plugin, window, cx);
+        let open_memory = run.plugin == volgui::analysis::APPLICATION
+            && run.status == RunStatus::Completed
+            && volgui::analysis::application::target_pid(&run.arguments).is_ok();
+        let label = if run.plugin == volgui::analysis::APPLICATION {
+            volgui::analysis::application::target_pid(&run.arguments)
+                .map(|pid| format!("Process memory · PID {pid}"))
+                .unwrap_or_else(|_| "Process Memory".into())
+        } else {
+            run.plugin
+        };
+        self.set_scope(vec![id], label, window, cx);
+        if open_memory {
+            self.open_application_dump(cx);
+        }
     }
     pub(super) fn set_scope(
         &mut self,
@@ -310,7 +329,7 @@ impl Workspace {
     pub(super) fn show_record(
         &mut self,
         record: StoredRecord,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.reset_hex();
@@ -321,6 +340,19 @@ impl Workspace {
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         self.selected = Some(Arc::new(record));
+        if self.result_group() == Some(ArtifactGroup::Applications) {
+            let row = &self.selected.as_ref().unwrap().record;
+            self.content_encoding = match row.text("Encoding").as_str() {
+                "UTF-16LE" => volgui::extracted_files::ContentEncoding::Utf16Le,
+                "UTF-16BE" => volgui::extracted_files::ContentEncoding::Utf16Be,
+                _ => volgui::extracted_files::ContentEncoding::Utf8,
+            };
+            let pid = row.text("PID");
+            self.application_pid
+                .update(cx, |input, cx| input.set_value(pid, window, cx));
+            self.hex_visible = true;
+            self.application_text_scroll.set_offset(Point::default());
+        }
         if self.detail == DetailTab::Handles {
             self.load_handles(0, cx);
         }

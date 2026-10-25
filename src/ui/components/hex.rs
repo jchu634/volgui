@@ -52,6 +52,7 @@ impl Workspace {
     }
 
     pub(in crate::ui) fn render_hex(&self, cx: &mut Context<Self>) -> AnyElement {
+        let application = self.result_group() == Some(ArtifactGroup::Applications);
         let mut content = div().flex().flex_col().gap_2().text_sm();
         match &self.hex_view {
             HexView::Idle => {
@@ -85,7 +86,9 @@ impl Workspace {
                             })),
                     );
                 }
-                content = content.child(encodings);
+                if !application {
+                    content = content.child(encodings);
+                }
                 let mut choices = div().flex().flex_wrap().gap_1();
                 for (i, file) in files.iter().enumerate() {
                     let path = file.clone();
@@ -111,8 +114,12 @@ impl Workspace {
                 let jump_path = page.path.clone();
                 let previous = page.offset.saturating_sub(HEX_PAGE_SIZE);
                 let next = page.offset.saturating_add(HEX_PAGE_SIZE);
-                content = content.child(choices);
-                if self.content_encoding == volgui::extracted_files::ContentEncoding::Sqlite {
+                if !application {
+                    content = content.child(choices);
+                }
+                if !application
+                    && self.content_encoding == volgui::extracted_files::ContentEncoding::Sqlite
+                {
                     return content.child(self.render_database(cx)).into_any_element();
                 }
                 content = content.child(
@@ -172,7 +179,11 @@ impl Workspace {
                         .min_w(px(640.))
                         .child(SelectableText::new(
                             "hex-bytes",
-                            page.decoded(self.content_encoding),
+                            page.decoded(if application {
+                                volgui::extracted_files::ContentEncoding::Hex
+                            } else {
+                                self.content_encoding
+                            }),
                         )),
                 );
             }

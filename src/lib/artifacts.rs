@@ -41,6 +41,7 @@ pub enum ArtifactGroup {
     Network,
     Files,
     Web,
+    Applications,
     Strings,
     Registry,
     Memory,
@@ -51,11 +52,12 @@ pub enum ArtifactGroup {
     Other,
 }
 impl ArtifactGroup {
-    pub const BROWSER: [Self; 6] = [
+    pub const BROWSER: [Self; 7] = [
         Self::Processes,
         Self::Network,
         Self::Files,
         Self::Web,
+        Self::Applications,
         Self::Registry,
         Self::Strings,
     ];
@@ -73,6 +75,7 @@ impl ArtifactGroup {
             Self::Network => "Network",
             Self::Files => "Files and documents",
             Self::Web => "Browser activity",
+            Self::Applications => "Process Memory",
             Self::Strings => "Global string search",
             Self::Registry => "Registry",
             Self::Memory => "Memory scan results",
@@ -84,6 +87,9 @@ impl ArtifactGroup {
         }
     }
     pub fn for_plugin(plugin: &str) -> Self {
+        if plugin == crate::analysis::APPLICATION {
+            return Self::Applications;
+        }
         if plugin == crate::analysis::BROWSER {
             return Self::Web;
         }

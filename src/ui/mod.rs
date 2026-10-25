@@ -212,6 +212,10 @@ pub struct Workspace {
     handles_loading: bool,
     handle_epoch: u64,
     string_needle: Entity<InputState>,
+    application_pid: Entity<InputState>,
+    analysis_application_pid: Entity<InputState>,
+    analysis_application_contains: Entity<InputState>,
+    application_text_scroll: ScrollHandle,
     string_ignore_case: bool,
     registry_key: Entity<InputState>,
     artifact_open: Option<ArtifactGroup>,
@@ -315,6 +319,8 @@ impl Workspace {
         let query = field("", "Search artifact fields...", window, cx);
         let plugin_query = field("", "Find a plugin...", window, cx);
         let arguments = field("", "e.g. --pid 3488", window, cx);
+        let analysis_application_pid = field("", "Process ID", window, cx);
+        let analysis_application_contains = field("", "Optional literal text", window, cx);
         let workspace = cx.entity().downgrade();
         let result_table = cx.new(|cx| {
             TableState::new(
@@ -378,6 +384,22 @@ impl Workspace {
                 }
             }),
             cx.subscribe(&plugin_query, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe(
+                &analysis_application_pid,
+                |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.save_application_options(cx);
+                    }
+                },
+            ),
+            cx.subscribe(
+                &analysis_application_contains,
+                |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.save_application_options(cx);
+                    }
+                },
+            ),
             cx.subscribe(&arguments, |this, input, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change)
                     && let Some(id) = this.plugin.clone()
@@ -462,6 +484,10 @@ impl Workspace {
             handles_loading: false,
             handle_epoch: 0,
             string_needle: field("", "Literal string in evidence...", window, cx),
+            application_pid: field("", "PID to scan", window, cx),
+            analysis_application_pid,
+            analysis_application_contains,
+            application_text_scroll: ScrollHandle::default(),
             string_ignore_case: false,
             registry_key: field(
                 "",
@@ -831,7 +857,19 @@ impl Workspace {
                             }) {
                                 self.selected = None;
                                 self.selected_row = None;
-                                self.reset_hex();
+                                if self.result_group() == Some(ArtifactGroup::Applications) {
+                                    if let Some(row) = self
+                                        .index
+                                        .ids
+                                        .first()
+                                        .and_then(|id| self.row_cache.get(id))
+                                        .cloned()
+                                    {
+                                        self.show_record((*row).clone(), window, cx);
+                                    }
+                                } else {
+                                    self.reset_hex();
+                                }
                             }
                             if let Some((position, (node, _))) = self
                                 .result_tree

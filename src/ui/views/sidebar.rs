@@ -8,6 +8,7 @@ impl Workspace {
             ArtifactGroup::Network => IconName::Network,
             ArtifactGroup::Files => IconName::Folder,
             ArtifactGroup::Web => IconName::Network,
+            ArtifactGroup::Applications => IconName::Layers,
             ArtifactGroup::Strings => IconName::Search,
             ArtifactGroup::Registry => IconName::Database,
             ArtifactGroup::Memory => IconName::Shield,
@@ -61,7 +62,7 @@ impl Workspace {
             .flex_col()
             .gap_1()
             .flex_shrink_0()
-            .child(heading("BROWSER AND REGISTRY", cx));
+            .child(heading("APPLICATIONS AND REGISTRY", cx));
         for group in ArtifactGroup::BROWSER {
             let label = if group == ArtifactGroup::Files {
                 "Files"
@@ -86,7 +87,10 @@ impl Workspace {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.choose_group(group, window, cx);
                 }));
-            if matches!(group, ArtifactGroup::Web | ArtifactGroup::Registry) {
+            if matches!(
+                group,
+                ArtifactGroup::Web | ArtifactGroup::Applications | ArtifactGroup::Registry
+            ) {
                 browser_registry = browser_registry.child(button);
             } else {
                 tabs = tabs.child(button);

@@ -847,8 +847,38 @@ impl CaseSnapshot {
                 rusqlite::params![e.id,e.path.to_str().ok_or("Evidence path is not UTF-8")?,e.size as i64,e.modified_ns.map(|n|n.to_string()),e.sha256,e.added_at,e.verification.as_ref().map(serde_json::to_string).transpose().map_err(|e|e.to_string())?,serde_json::to_string(&e.operating_system).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
         }
         for r in &self.runs {
-            tx.execute("INSERT INTO analysis_runs VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(id) DO UPDATE SET started_at=excluded.started_at,finished_at=excluded.finished_at,status=excluded.status,exit_code=excluded.exit_code,message=excluded.message,queue_hidden=excluded.queue_hidden",
-                rusqlite::params![r.id,r.evidence_id,r.plugin,serde_json::to_string(&r.arguments).map_err(|e|e.to_string())?,serde_json::to_string(&r.command).map_err(|e|e.to_string())?,r.engine_version,r.created_at,r.started_at,r.finished_at,serde_json::to_string(&r.status).map_err(|e|e.to_string())?,r.exit_code,r.message,self.cleared_queue_runs.contains(&r.id)]).map_err(|e|e.to_string())?;
+            // Only an unstarted application placeholder can resolve its arguments
+            // in place. Executed commands and source IDs remain immutable.
+            tx.execute("INSERT INTO analysis_runs VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(id) DO UPDATE SET arguments_json=CASE WHEN analysis_runs.plugin=?14 AND analysis_runs.message=?15 AND analysis_runs.started_at IS NULL THEN excluded.arguments_json ELSE analysis_runs.arguments_json END,command_json=CASE WHEN analysis_runs.plugin=?14 AND analysis_runs.message=?15 AND analysis_runs.started_at IS NULL THEN excluded.command_json ELSE analysis_runs.command_json END,started_at=excluded.started_at,finished_at=excluded.finished_at,status=excluded.status,exit_code=excluded.exit_code,message=excluded.message,queue_hidden=excluded.queue_hidden",
+                rusqlite::params![r.id,r.evidence_id,r.plugin,serde_json::to_string(&r.arguments).map_err(|e|e.to_string())?,serde_json::to_string(&r.command).map_err(|e|e.to_string())?,r.engine_version,r.created_at,r.started_at,r.finished_at,serde_json::to_string(&r.status).map_err(|e|e.to_string())?,r.exit_code,r.message,self.cleared_queue_runs.contains(&r.id),crate::analysis::APPLICATION,crate::analyses::APPLICATION_RECOVERY_PENDING]).map_err(|e|e.to_string())?;
+        }
+        // Deferred recovery inserts prerequisite jobs before an existing parser.
+        // Run IDs are stable foreign keys; rowid is only the persisted queue order.
+        let stored_order = tx
+            .prepare("SELECT id FROM analysis_runs ORDER BY rowid")
+            .map_err(|e| e.to_string())?
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        if !stored_order.iter().eq(self.runs.iter().map(|run| &run.id)) {
+            let mut position: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(rowid),0) FROM analysis_runs",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            for run in &self.runs {
+                position = position
+                    .checked_add(1)
+                    .ok_or("Analysis queue order exceeds SQLite limits")?;
+                tx.execute(
+                    "UPDATE analysis_runs SET rowid=?1 WHERE id=?2",
+                    rusqlite::params![position, run.id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
         }
         tx.execute("DELETE FROM annotations", [])
             .map_err(|e| e.to_string())?;

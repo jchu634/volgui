@@ -12,23 +12,61 @@ use crate::{
 };
 
 /// Select the next job in queue order without exceeding the global limit.
-/// Browser parsing waits for preceding dumps and blocks later jobs until complete.
+/// Recovery parsers wait for preceding dumps and block later jobs until complete.
 pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<usize> {
     let running = runs.iter().filter(|run| run.status == RunStatus::Running);
     if running.clone().count() >= limit.get()
-        || running
-            .clone()
-            .any(|run| run.plugin == crate::analysis::BROWSER)
+        || running.clone().any(|run| is_recovery_analysis(&run.plugin))
     {
         return None;
     }
     let index = runs
         .iter()
         .position(|run| run.status == RunStatus::Queued)?;
-    if runs[index].plugin == crate::analysis::BROWSER && running.count() > 0 {
+    if is_recovery_analysis(&runs[index].plugin) && running.count() > 0 {
         return None;
     }
     Some(index)
+}
+
+fn is_recovery_analysis(plugin: &str) -> bool {
+    matches!(
+        plugin,
+        crate::analysis::BROWSER | crate::analysis::APPLICATION
+    )
+}
+
+pub const APPLICATION_RECOVERY_PENDING: &str = "Waiting to prepare process memory recovery";
+
+/// Replace a deferred application job with its pinned inputs and parser job.
+pub fn prepare_application_recovery(
+    case: &Case,
+    engine: &Installation,
+    run: &Run,
+) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    // Later jobs must never become inputs to an earlier recovery request.
+    let mut document = case.document.clone();
+    if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
+        document.runs.truncate(index);
+    }
+    let mut runs = crate::analysis::application::recovery_runs(
+        &case.directory,
+        &document,
+        evidence,
+        engine,
+        &run.arguments,
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    let parser = runs.last_mut().ok_or("Missing application parser job")?;
+    parser.id = run.id.clone();
+    parser.created_at = run.created_at.clone();
+    Ok(runs)
 }
 
 pub const BROWSER_RECOVERY_PENDING: &str =
@@ -59,6 +97,7 @@ pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
         crate::analysis::BROWSER => "Browser recovery and analysis",
+        crate::analysis::APPLICATION => "Process Memory recovery and analysis",
         REGISTRY_ALL => "All registry subkeys",
         "windows.info.Info" => "System information",
         "windows.pslist.PsList" | "linux.pslist.PsList" | "mac.pslist.PsList" => "Processes",
@@ -94,6 +133,10 @@ pub const REGISTRY_ALL: &str = "windows.registry.AllSubkeys";
 pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
     let mut catalog = plugins.to_vec();
     catalog.extend([
+        Plugin {
+            id: crate::analysis::APPLICATION.into(),
+            description: "Choose a PID to recover text from that process's memory. Automatically collects processes, command lines, memory regions and dumps. Inspect hex and decoded text together, including old edits and partial buffers.".into(),
+        },
         Plugin {
             id: crate::analysis::BROWSER.into(),
             description: "Recover and parse browser memory, history and saved tabs. Requires unfiltered PsList, CmdLine and FileScan jobs, completed or queued before this analysis. Does not collect prerequisites.".into(),
@@ -138,10 +181,17 @@ pub fn queue_retries_with_engine(
                 let mut run = crate::analysis::prepare(
                     evidence,
                     &previous.plugin,
-                    previous.arguments.clone(),
+                    if previous.plugin == crate::analysis::APPLICATION {
+                        crate::analysis::application::user_arguments(&previous.arguments)?
+                    } else {
+                        previous.arguments.clone()
+                    },
                 )?;
                 if previous.plugin == crate::analysis::BROWSER {
                     run.message = BROWSER_RECOVERY_PENDING.into();
+                }
+                if previous.plugin == crate::analysis::APPLICATION {
+                    run.message = APPLICATION_RECOVERY_PENDING.into();
                 }
                 return Ok(run);
             }
@@ -174,7 +224,7 @@ pub fn chooser_plugins(
         .iter()
         .filter(|plugin| {
             (os.accepts(&plugin.id)
-                && (plugin.id != crate::analysis::BROWSER
+                && (!is_recovery_analysis(&plugin.id)
                     || matches!(os, OperatingSystem::Windows | OperatingSystem::Unknown)))
                 && (extended || basic_label(&plugin.id).is_some())
                 && format!(
@@ -252,6 +302,7 @@ impl AnalysisDraft {
     ) -> Result<Vec<Run>> {
         let mut ordinary = self.clone();
         let browser = ordinary.selected.remove(crate::analysis::BROWSER);
+        let application = ordinary.selected.remove(crate::analysis::APPLICATION);
         let registry = ordinary.selected.remove(REGISTRY_ALL);
         for id in [crate::analysis::BROWSER, REGISTRY_ALL] {
             if self.selected.contains(id)
@@ -264,6 +315,52 @@ impl AnalysisDraft {
             }
         }
         let mut runs = ordinary.prepare(engine, evidence, &case.directory.join("analyses"))?;
+        if application {
+            if self.os != OperatingSystem::Windows {
+                return Err("Process Memory recovery requires Windows evidence".into());
+            }
+            let arguments = parse_arguments(
+                self.arguments
+                    .get(crate::analysis::APPLICATION)
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            )?;
+            let arguments = crate::analysis::application::user_arguments(&arguments)?;
+            crate::analysis::application::target_pid(&arguments)?;
+            // Validate engine capabilities before saving any part of the batch.
+            for plugin in [
+                crate::analysis::application::MEMMAP,
+                crate::analysis::application::VADINFO,
+            ] {
+                if !engine.plugins.iter().any(|p| p.id == plugin) {
+                    return Err(format!(
+                        "Process Memory recovery requires the {plugin} plugin"
+                    ));
+                }
+            }
+            for plugin in crate::analysis::application::INVENTORY {
+                if !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                    r.evidence_id == evidence.id
+                        && r.plugin == plugin
+                        && r.arguments.is_empty()
+                        && matches!(
+                            r.status,
+                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                        )
+                }) {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            let mut run =
+                crate::analysis::prepare(evidence, crate::analysis::APPLICATION, arguments)?;
+            run.message = APPLICATION_RECOVERY_PENDING.into();
+            runs.push(run);
+        }
         if registry {
             if self.os != OperatingSystem::Windows {
                 return Err("Recursive registry analysis requires Windows evidence".into());

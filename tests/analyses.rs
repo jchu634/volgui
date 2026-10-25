@@ -492,6 +492,16 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
     let catalog = application_plugins(&[]);
     let choices = chooser_plugins(&catalog, OperatingSystem::Windows, false, "");
     assert!(choices.iter().any(|p| p.id == volgui::analysis::BROWSER));
+    assert!(
+        choices
+            .iter()
+            .any(|p| p.id == volgui::analysis::APPLICATION)
+    );
+    assert!(
+        !chooser_plugins(&catalog, OperatingSystem::Linux, false, "")
+            .iter()
+            .any(|p| p.id == volgui::analysis::APPLICATION)
+    );
     assert!(choices.iter().any(|p| p.id == REGISTRY_ALL));
     let temp = tempfile::tempdir().unwrap();
     let image = temp.path().join("image.raw");
@@ -513,6 +523,75 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
     draft
         .arguments
         .insert(REGISTRY_ALL.into(), "--key ignored".into());
+    assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
+}
+
+#[test]
+fn application_choice_collects_prerequisites_and_forms_a_queue_barrier() {
+    use volgui::{
+        analyses::{APPLICATION_RECOVERY_PENDING, next_queued_run},
+        analysis::{APPLICATION, application},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"application queue").unwrap();
+    let mut evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    evidence.operating_system = OperatingSystem::Windows;
+    let mut case = Case::create(&temp.path().join("case"), "Applications").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let mut engine = Installation {
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: application::INVENTORY
+            .into_iter()
+            .chain([application::MEMMAP, application::VADINFO])
+            .map(plugin)
+            .collect(),
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.insert(APPLICATION.into());
+    assert!(
+        draft
+            .prepare_in_case(&engine, &evidence, &case)
+            .unwrap_err()
+            .contains("Choose a PID")
+    );
+    draft
+        .arguments
+        .insert(APPLICATION.into(), "--pid 42 --contains customers".into());
+    let mut runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs.len(), 3);
+    assert_eq!(runs[0].plugin, application::INVENTORY[0]);
+    assert_eq!(runs[1].plugin, application::INVENTORY[1]);
+    assert_eq!(runs[2].message, APPLICATION_RECOVERY_PENDING);
+    runs[0].status = RunStatus::Completed;
+    runs[1].status = RunStatus::Running;
+    assert_eq!(
+        next_queued_run(&runs, Settings::default().max_concurrent_jobs),
+        None
+    );
+    runs[1].status = RunStatus::Completed;
+    assert_eq!(
+        next_queued_run(&runs, Settings::default().max_concurrent_jobs),
+        Some(2)
+    );
+    runs[2].status = RunStatus::Running;
+    runs.push(runs[0].clone());
+    runs[3].status = RunStatus::Queued;
+    assert_eq!(
+        next_queued_run(&runs, Settings::default().max_concurrent_jobs),
+        None
+    );
+    engine.plugins.retain(|p| p.id != application::VADINFO);
+    assert!(
+        draft
+            .prepare_in_case(&engine, &evidence, &case)
+            .unwrap_err()
+            .contains("VadInfo")
+    );
+    draft
+        .arguments
+        .insert(APPLICATION.into(), "--pid nope".into());
     assert!(draft.prepare_in_case(&engine, &evidence, &case).is_err());
 }
 

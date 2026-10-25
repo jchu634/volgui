@@ -86,6 +86,64 @@ On 32-bit Windows mappings, the scanner conservatively uses the default 2 GiB
 user range. Captures configured with a 3 GiB user split may omit URLs above that
 boundary. The 64-bit user/kernel boundary is bit 47, including masked mappings.
 
+## Application memory
+
+Enter a PID in **Application memory** and click **Scan process memory**. To choose
+from the process inventory, click **Choose from Processes**, select a process and
+click **Scan memory for PID**. In **New analysis**, the basic **Application memory
+recovery and analysis** choice exposes PID and optional text-filter fields directly.
+A PID is required; there is no application-name default.
+
+VolGUI automatically queues unfiltered PsList and CmdLine when needed. After they
+finish, it queues per-PID VadInfo and Memmap dumps, then the native text analysis.
+These engine plugins are already basic choices. The installed engine must supply
+all four plugins. Completed dumps are reused; exact inventory and dump run IDs
+are saved with the parser job. Each extraction retains its own case history.
+
+The memory reader shows hex bytes beside decoded text for the same dump page.
+Previous/Next page and Go to offset update both panels. Choose UTF-8, UTF-16LE or
+UTF-16BE for text decoding. **Open dump from start** lets you read the entire dump,
+including pages that produced no recovered strings. Dump offsets refer to the
+logical process-dump file, rather than the acquisition file. Packed pages need not
+be contiguous in virtual memory.
+
+Search for a name, phrase or flag, then use **Previous match** and **Next match**
+to move through recovered fragments and their original bytes. The full recovered
+fragment appears below the decoded page, preserving text spanning several pages.
+Old or deleted copies remain separate fragments. **Bookmark fragment** and CSV
+export use the existing case tools. A failed search leaves the dump readable.
+
+CLI options support `--pid 5700` and `--contains "customer"` to filter by a literal
+substring with ASCII case ignored. Every application uses the same text-carving
+rules; no application document format is assumed.
+
+The parser scans private writable user mappings and excludes mapped images,
+read-only regions, shared pages and kernel addresses. Only contiguous mapped
+ranges are joined. It carves UTF-8, UTF-16LE and UTF-16BE strings, including odd
+offsets. Windows UTF-16 strings can also have a shifted interpretation in the
+opposite byte order. Matching interpretations at adjacent byte offsets share one
+candidate, with the other encoding and offset retained under Alternate interpretation.
+Little-endian is the primary display convention on Windows. This does not prove
+the original encoding; genuinely big-endian text retains its byte span in details.
+Text must contain at least eight characters, four ASCII letters or digits, and
+at least half ASCII characters. Text entirely in other scripts may be omitted.
+
+These are text candidates. They may include old edits, undo data, resource text,
+copied buffers or only part of a document. Nearby paths and process command lines
+do not establish which file or tab owns a string. The parser does not reconstruct
+Notepad's live tab objects, gap buffers or save state. It keeps competing versions
+separate and labels document association and save state as unknown.
+This distinction follows Microsoft's documentation that
+[RichEdit does not store text as a simple character array](https://learn.microsoft.com/en-us/windows/win32/controls/em-gethandle).
+
+Recovery is limited to 64 processes, 50,000 distinct candidates and 32 MiB of
+retained text per analysis. Each fragment holds at most 64 KiB plus one Unicode
+character; longer strings are split and marked as partial. Exact repeated strings
+within a process and encoding share one row with an occurrence count and the first
+source address. Mapping boundaries and limits remain in the finding details.
+Missing, damaged or blocked artifacts appear in Run details. Use PID and substring
+filters to narrow recovery if a result limit is reached.
+
 ## Process handles
 
 Select a process and open its **Handles** details tab. This lists all collected

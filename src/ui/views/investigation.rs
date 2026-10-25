@@ -4,6 +4,14 @@ impl Workspace {
     pub(in crate::ui) fn render_investigation_tools(&self, cx: &mut Context<Self>) -> Div {
         let mut tools = div().flex().flex_col().gap_2().px_3().py_2();
         match self.result_group() {
+            Some(ArtifactGroup::Applications) => {
+                tools = tools.child(div().flex().flex_wrap().items_center().gap_2()
+                        .child("PID")
+                        .child(Input::new(&self.application_pid).id("application-memory-pid").aria_label("Process ID to scan").small().w(px(150.)))
+                        .child(Button::new("scan-application-memory").small().primary().label("Scan process memory")
+                            .disabled(self.evidence().is_none() || self.busy.is_some() || self.installation.is_none())
+                            .on_click(cx.listener(|this, _, window, cx| this.scan_application_memory(None,window,cx)))));
+            }
             Some(ArtifactGroup::Web) => {
                 tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches.\n Memory findings may include stale strings and do not alone prove a visit."))
                     .child(div().flex().items_center().child(Button::new("recover-analyze-browser").small().label("Start analysis")

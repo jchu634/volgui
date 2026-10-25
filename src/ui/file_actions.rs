@@ -152,8 +152,16 @@ impl Workspace {
     pub(super) fn load_hex(&mut self, cx: &mut Context<Self>) {
         self.reset_hex();
         let memory = self.case.as_ref().and_then(|case| {
-            let record = &self.selected.as_ref()?.record;
-            if !matches!(record.text("Kind").as_str(), "Memory URL" | "Memory search") {
+            let selected = self.selected.as_ref()?;
+            let record = &selected.record;
+            let application = case
+                .document
+                .runs
+                .iter()
+                .any(|r| r.id == selected.run_id && r.plugin == volgui::analysis::APPLICATION);
+            if !application
+                && !matches!(record.text("Kind").as_str(), "Memory URL" | "Memory search")
+            {
                 return None;
             }
             let source = case.document.runs.iter().find(|r| {

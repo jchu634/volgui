@@ -92,6 +92,9 @@ impl Workspace {
         });
     }
     pub(in crate::ui) fn render_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.result_group() == Some(ArtifactGroup::Applications) {
+            return self.render_application_memory(cx);
+        }
         let results = if self.hex_visible {
             h_resizable("artifact-hex-split")
                 .child(

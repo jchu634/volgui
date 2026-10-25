@@ -1,5 +1,7 @@
 //! Application analyses use the case queue and record store, just like engine jobs.
+pub mod application;
 mod browser;
+mod process_memory;
 pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod registry;
 pub mod strings;
@@ -16,10 +18,11 @@ use std::{
 };
 
 pub const BROWSER: &str = "volgui.browser.Activity";
+pub const APPLICATION: &str = "volgui.application.Memory";
 pub const STRINGS: &str = "volgui.strings.Search";
 
 pub fn is_native(plugin: &str) -> bool {
-    matches!(plugin, BROWSER | STRINGS)
+    matches!(plugin, BROWSER | APPLICATION | STRINGS)
 }
 
 pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Result<Run, String> {
@@ -29,6 +32,9 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
     evidence.check_metadata()?;
     if plugin == STRINGS {
         strings::validate(&arguments)?;
+    }
+    if plugin == APPLICATION {
+        application::validate(&arguments)?;
     }
     Ok(Run {
         id: uuid::Uuid::new_v4().to_string(),
@@ -66,6 +72,7 @@ pub fn execute(
         evidence.check_metadata()?;
         match run.plugin.as_str() {
             BROWSER => browser::analyze(directory, document, run, cancel, &progress),
+            APPLICATION => application::analyze(directory, document, run, cancel, &progress),
             STRINGS => strings::search(&evidence.path, &run.arguments, cancel, &progress),
             _ => Err("Unknown application analysis".into()),
         }

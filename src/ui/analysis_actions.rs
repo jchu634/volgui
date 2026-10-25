@@ -12,7 +12,9 @@ impl Workspace {
         let cancel = self.start("Loading plugin options");
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = if plugin == volgui::analysis::BROWSER
+            let result = if plugin == volgui::analysis::APPLICATION {
+                Ok(volgui::analysis::application::HELP.into())
+            } else if plugin == volgui::analysis::BROWSER
                 || plugin == volgui::analyses::REGISTRY_ALL
             {
                 Ok(
@@ -29,12 +31,60 @@ impl Workspace {
 
     pub(super) fn save_plugin_arguments(&mut self, cx: &App) {
         if let Some(id) = self.plugin.clone()
+            && id != volgui::analysis::APPLICATION
             && let Some(draft) = self.analysis_drafts.get_mut(self.analysis_active)
         {
             draft
                 .arguments
                 .insert(id, self.arguments.read(cx).value().to_string());
         }
+    }
+    pub(super) fn save_application_options(&mut self, cx: &mut Context<Self>) {
+        let mut args = Vec::new();
+        let pid = self
+            .analysis_application_pid
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let contains = self
+            .analysis_application_contains
+            .read(cx)
+            .value()
+            .to_string();
+        if !pid.is_empty() {
+            args.extend(["--pid".into(), pid]);
+        }
+        if !contains.is_empty() {
+            args.extend(["--contains".into(), contains]);
+        }
+        if let Some(draft) = self.analysis_drafts.get_mut(self.analysis_active) {
+            draft.arguments.insert(
+                volgui::analysis::APPLICATION.into(),
+                volgui::volatility::format_arguments(&args),
+            );
+        }
+        cx.notify();
+    }
+    pub(super) fn sync_application_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let args = self
+            .analysis_drafts
+            .get(self.analysis_active)
+            .and_then(|draft| draft.arguments.get(volgui::analysis::APPLICATION))
+            .and_then(|args| volgui::volatility::parse_arguments(args).ok())
+            .unwrap_or_default();
+        let value = |flag: &str| {
+            args.windows(2)
+                .find(|pair| pair[0] == flag)
+                .map(|pair| pair[1].clone())
+                .unwrap_or_default()
+        };
+        let pid = value("--pid");
+        let contains = value("--contains");
+        self.analysis_application_pid
+            .update(cx, |input, cx| input.set_value(pid, window, cx));
+        self.analysis_application_contains
+            .update(cx, |input, cx| input.set_value(contains, window, cx));
     }
     pub(super) fn focus_plugin(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.save_plugin_arguments(cx);
@@ -63,6 +113,7 @@ impl Workspace {
         self.analysis_error = None;
         self.arguments
             .update(cx, |s, cx| s.set_value("", window, cx));
+        self.sync_application_options(window, cx);
         cx.notify();
     }
     pub(super) fn set_os(
@@ -341,22 +392,34 @@ impl Workspace {
                 }
                 return;
             };
-            if case.document.runs[i].plugin == volgui::analysis::BROWSER
-                && case.document.runs[i].message == volgui::analyses::BROWSER_RECOVERY_PENDING
+            let application_pending = case.document.runs[i].plugin == volgui::analysis::APPLICATION
+                && case.document.runs[i].message == volgui::analyses::APPLICATION_RECOVERY_PENDING;
+            if application_pending
+                || case.document.runs[i].plugin == volgui::analysis::BROWSER
+                    && case.document.runs[i].message == volgui::analyses::BROWSER_RECOVERY_PENDING
             {
                 let Some(engine) = engine.as_ref() else {
                     return;
                 };
-                match volgui::analyses::prepare_browser_recovery(
-                    case,
-                    engine,
-                    &case.document.runs[i],
-                ) {
+                let prepared = if application_pending {
+                    volgui::analyses::prepare_application_recovery(
+                        case,
+                        engine,
+                        &case.document.runs[i],
+                    )
+                } else {
+                    volgui::analyses::prepare_browser_recovery(case, engine, &case.document.runs[i])
+                };
+                match prepared {
                     Ok(runs) => {
                         let previous = case.document.runs.clone();
                         case.document.runs[i].message.clear();
-                        let count = runs.len();
-                        case.document.runs.splice(i..i, runs);
+                        let count = runs.len().saturating_sub(usize::from(application_pending));
+                        if application_pending {
+                            case.document.runs.splice(i..=i, runs);
+                        } else {
+                            case.document.runs.splice(i..i, runs);
+                        }
                         if let Err(error) = case.save() {
                             case.document.runs = previous;
                             self.error = Some(error);

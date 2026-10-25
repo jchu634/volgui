@@ -214,6 +214,48 @@ impl Workspace {
         if matches!(self.detail, DetailTab::Overview | DetailTab::Files) {
             content = content.child(self.render_file_actions(false, cx));
         }
+        if self.detail == DetailTab::Overview
+            && self.result_group() == Some(ArtifactGroup::Processes)
+            && let Some(pid) = record
+                .map(|r| r.record.text("PID"))
+                .filter(|p| p.parse::<u64>().is_ok())
+        {
+            content = content.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .mb_2()
+                    .child(
+                        Button::new("scan-selected-process-memory")
+                            .small()
+                            .label("Analyse Process Memory")
+                            .disabled(self.installation.is_none() || self.busy.is_some())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.scan_application_memory(Some(pid.clone()), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("dump-process-files")
+                            .small()
+                            .label("Dump Files")
+                            .disabled(self.installation.is_none() || self.busy.is_some())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.collect_process_files(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("find-process-file-handles")
+                            .small()
+                            .label("Find file handles")
+                            .disabled(self.installation.is_none() || self.busy.is_some())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.collect_process_handles(window, cx)
+                            })),
+                    ),
+            );
+        }
         match self.detail {
             DetailTab::Handles => {
                 content = content.child(self.render_handles(cx));
@@ -221,6 +263,7 @@ impl Workspace {
             DetailTab::Overview => {
                 if let Some(record) = record {
                     let browser = self.result_group() == Some(ArtifactGroup::Web);
+                    let application = self.result_group() == Some(ArtifactGroup::Applications);
                     let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
                     if matches!(
                         record.record.text("Kind").as_str(),
@@ -231,6 +274,15 @@ impl Workspace {
                                 .small()
                                 .ghost()
                                 .label("View URL bytes")
+                                .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
+                        );
+                    }
+                    if application {
+                        actions = actions.child(
+                            Button::new("view-application-text-bytes")
+                                .small()
+                                .ghost()
+                                .label("View text bytes")
                                 .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
                         );
                     }
@@ -284,8 +336,32 @@ impl Workspace {
                                 .unwrap_or(priority.len())
                         });
                     }
+                    if application {
+                        let priority = [
+                            "PID",
+                            "Application",
+                            "Text",
+                            "Kind",
+                            "Process",
+                            "Virtual address",
+                            "Dump offset",
+                            "Encoding",
+                        ];
+                        ordered.sort_by_key(|(name, _)| {
+                            priority
+                                .iter()
+                                .position(|key| key == name)
+                                .unwrap_or(priority.len())
+                        });
+                    }
                     for (i, (name, value)) in ordered.into_iter().enumerate() {
-                        let text = display_value(value);
+                        let text = if application && name.as_str() == "Text" {
+                            display_value(value)
+                                .replace("\r\n", "\n")
+                                .replace('\r', "\n")
+                        } else {
+                            display_value(value)
+                        };
                         let parent = self
                             .relations
                             .parent
