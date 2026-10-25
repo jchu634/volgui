@@ -653,3 +653,101 @@ fn native_search_runs_without_engine_and_remains_exportable() {
             .contains("memory forensics")
     );
 }
+
+#[test]
+fn quarantined_profile_keeps_an_entry_blocks_opening_and_other_files_are_parsed() {
+    let (_temp, mut case, _engine) = setup();
+    let dump = save(&mut case, 0, DUMP_FILES, vec![], json!([]));
+    let directory = case.run_dir(&dump.id);
+    fs::create_dir_all(&directory).unwrap();
+    let missing = directory.join("file.quarantined.dat");
+    fs::write(
+        directory.join("stdout.json"),
+        br#"[{"File output":"file.quarantined.dat"}]"#,
+    )
+    .unwrap();
+    fs::write(
+        directory.join("session.json"),
+        br#"{"windows":[{"tabs":[{"index":1,"entries":[{"url":"https://example.org/healthy"}]}]}]}"#,
+    )
+    .unwrap();
+    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = investigation::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    let rows = outcome.table.unwrap().rows;
+    assert!(
+        rows.iter()
+            .any(|r| r.text("URL") == "https://example.org/healthy")
+    );
+    let blocked = rows
+        .iter()
+        .find(|r| r.text("Kind") == "Unavailable artifact")
+        .unwrap();
+    assert_eq!(blocked.text("Status"), "Potential malware / unavailable");
+    assert_eq!(blocked.fields["Opening blocked"], true);
+    assert!(
+        volgui::extracted_files::list(&directory)
+            .unwrap()
+            .contains(&missing)
+    );
+    fs::write(&missing, b"restored bytes").unwrap();
+    assert!(HexPage::read(&missing, 0).is_err());
+    assert!(database_page(&missing, None, 0).is_err());
+    assert!(volgui::extracted_files::open_artifact(&missing).is_err());
+    assert!(
+        volgui::extracted_files::open(std::path::Path::new("must-not-launch"), &missing)
+            .unwrap_err()
+            .contains("Opening is blocked")
+    );
+    fs::remove_file(directory.join("stdout.json")).unwrap();
+    fs::remove_file(&missing).unwrap();
+    assert!(
+        volgui::extracted_files::list(&directory)
+            .unwrap()
+            .contains(&missing)
+    );
+}
+
+#[test]
+fn missing_browser_memory_dump_is_retained_as_a_blocked_finding() {
+    let (_temp, mut case, _engine) = setup();
+    save(
+        &mut case,
+        0,
+        "windows.pslist.PsList",
+        vec![],
+        json!([{"PID":42,"ImageFileName":"chrome.exe"}]),
+    );
+    let dump = save(
+        &mut case,
+        0,
+        "windows.memmap.Memmap",
+        vec!["--pid".into(), "42".into(), "--dump".into()],
+        json!([]),
+    );
+    fs::create_dir_all(case.run_dir(&dump.id)).unwrap();
+    let run = investigation::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = investigation::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed);
+    let rows = outcome.table.unwrap().rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text("Kind"), "Unavailable artifact");
+    assert_eq!(rows[0].text("Source run"), dump.id);
+    assert!(
+        HexPage::read(&case.run_dir(&dump.id).join("pid.42.dmp"), 0)
+            .unwrap_err()
+            .contains("Opening is blocked")
+    );
+}

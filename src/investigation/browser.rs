@@ -63,9 +63,17 @@ pub(super) fn analyze(
                 path.file_name().unwrap_or_default().to_string_lossy()
             ));
             let mut head = [0; 16];
-            let size = File::open(&path)
-                .and_then(|mut f| f.read(&mut head))
-                .map_err(|e| e.to_string())?;
+            let size = match extracted_files::open_artifact(&path)
+                .and_then(|mut f| f.read(&mut head).map_err(|e| e.to_string()))
+            {
+                Ok(size) => size,
+                Err(error) => {
+                    let warning = blocked_artifact(directory, &source.id, &path, &error);
+                    rows.push(warning);
+                    warnings.push(format!("{}: {error}", path.display()));
+                    continue;
+                }
+            };
             let first = rows.len();
             let result = if head[..size].starts_with(b"SQLite format 3\0") {
                 history(&path, &mut rows, cancel)
@@ -184,6 +192,19 @@ pub(super) fn analyze(
         warnings.join("\n")
     );
     Ok((table(rows), message))
+}
+
+pub(super) fn blocked_artifact(directory: &Path, source: &str, path: &Path, error: &str) -> Record {
+    let persisted = extracted_files::block_artifact(path, error);
+    record(json!({
+        "Kind": "Unavailable artifact",
+        "Status": "Potential malware / unavailable",
+        "Opening blocked": true,
+        "Source run": source,
+        "Source file": path.strip_prefix(directory).unwrap_or(path).display().to_string(),
+        "Observation": format!("{error}. The artifact may have been quarantined, deleted or denied access. Malware is not confirmed by this error."),
+        "Block record": persisted.err().unwrap_or_default(),
+    }))
 }
 
 pub(super) fn browser_name(path: &str) -> &'static str {

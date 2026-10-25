@@ -455,7 +455,15 @@ pub(super) fn analyze(
         let path = output.join(&filename);
         progress(format!("Scanning {} PID {pid}", process.browser));
         let result: Result<_, String> = (|| {
-            let mut file = File::open(&path).map_err(|e| e.to_string())?;
+            let mut file = match crate::extracted_files::open_artifact(&path) {
+                Ok(file) => file,
+                Err(error) => {
+                    rows.push(browser::blocked_artifact(
+                        directory, &source.id, &path, &error,
+                    ));
+                    return Err(error);
+                }
+            };
             let total = file.metadata().map_err(|e| e.to_string())?.len();
             let (map, rejected) =
                 regions(Table::read(&output.join("stdout.json"))?, &filename, total)?;

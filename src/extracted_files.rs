@@ -14,6 +14,38 @@ use crate::{
 
 pub const DUMP_FILES: &str = "windows.dumpfiles.DumpFiles";
 
+const BLOCKED_SUFFIX: &str = ".volgui-blocked";
+
+fn blocked_marker(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(BLOCKED_SUFFIX);
+    PathBuf::from(name)
+}
+
+/// Keep a durable record even if antivirus removes the recovered bytes.
+pub fn block_artifact(path: &Path, reason: &str) -> Result<(), String> {
+    fs::write(blocked_marker(path), reason).map_err(|e| e.to_string())
+}
+
+pub fn ensure_openable(path: &Path) -> Result<(), String> {
+    if blocked_marker(path)
+        .try_exists()
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Potential malware / unavailable artifact. Opening is blocked.".into());
+    }
+    Ok(())
+}
+
+pub fn open_artifact(path: &Path) -> Result<fs::File, String> {
+    ensure_openable(path)?;
+    fs::File::open(path).map_err(|error| {
+        let reason = format!("Potential malware / unavailable artifact: {error}");
+        let _ = block_artifact(path, &reason);
+        reason
+    })
+}
+
 pub const HEX_PAGE_SIZE: u64 = 256;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -83,7 +115,7 @@ impl HexPage {
             .collect()
     }
     pub fn read(path: &Path, offset: u64) -> Result<Self, String> {
-        let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut file = open_artifact(path)?;
         let total = file.metadata().map_err(|e| e.to_string())?.len();
         let offset = offset.min(total.saturating_sub(1)) / HEX_PAGE_SIZE * HEX_PAGE_SIZE;
         file.seek(SeekFrom::Start(offset))
@@ -252,8 +284,20 @@ pub fn list(directory: &Path) -> Result<Vec<PathBuf>, String> {
     fn visit(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
-            let kind = entry.file_type()?;
             let path = entry.path();
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(error) => {
+                    let _ = block_artifact(&path, &error.to_string());
+                    files.push(path);
+                    continue;
+                }
+            };
+            if path.to_string_lossy().ends_with(BLOCKED_SUFFIX) {
+                let name = path.as_os_str().to_string_lossy();
+                files.push(PathBuf::from(name.trim_end_matches(BLOCKED_SUFFIX)));
+                continue;
+            }
             if kind.is_dir() {
                 visit(root, &path, files)?;
             } else if kind.is_file()
@@ -270,7 +314,24 @@ pub fn list(directory: &Path) -> Result<Vec<PathBuf>, String> {
     }
     let mut files = Vec::new();
     visit(directory, directory, &mut files).map_err(|e| e.to_string())?;
+    // Volatility retains output names even when antivirus has removed their bytes.
+    if let Ok(table) = crate::volatility::Table::read(&directory.join("stdout.json")) {
+        for row in table.rows {
+            let name = row.text("File output");
+            if (name.starts_with("file.") || name.starts_with("pid."))
+                && Path::new(&name).components().count() == 1
+                && matches!(
+                    Path::new(&name).components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+                && !matches!(name.as_str(), "stdout.json" | "stderr.log")
+            {
+                files.push(directory.join(name));
+            }
+        }
+    }
     files.sort();
+    files.dedup();
     Ok(files)
 }
 
@@ -297,6 +358,7 @@ pub fn imhex() -> Option<PathBuf> {
 }
 
 pub fn open(executable: &Path, file: &Path) -> Result<(), String> {
+    let _ = open_artifact(file)?;
     let file = file.canonicalize().map_err(|e| e.to_string())?;
     Command::new(executable)
         .arg(imhex_path(&file))

@@ -427,6 +427,13 @@ impl Workspace {
                                 content = content.child(div().text_sm().child("ImHex was not found. Install it in its default location or add it to PATH to open files here."));
                             }
                             for (i, file) in files.iter().cloned().enumerate() {
+                                if !file.is_file() || volgui::extracted_files::ensure_openable(&file).is_err() {
+                                    content = content.child(div().py_1().text_sm().child(format!(
+                                        "{} — Potential malware / unavailable. Opening blocked.",
+                                        file.strip_prefix(&directory).unwrap_or(&file).display()
+                                    )));
+                                    continue;
+                                }
                                 let source = file.clone();
                                 let hex_file = file.clone();
                                 let hex_files = files.clone();
@@ -559,7 +566,11 @@ impl Workspace {
                             Button::new("bookmark")
                                 .xsmall()
                                 .ghost()
-                                .icon(IconName::Bookmark)
+                                .icon(if marked {
+                                    Icon::default().data(include_bytes!("../../assets/icons/bookmark-filled.svg"))
+                                } else {
+                                    Icon::new(IconName::Bookmark)
+                                })
                                 .selected(marked)
                                 .tooltip(if marked {
                                     "Remove bookmark"
