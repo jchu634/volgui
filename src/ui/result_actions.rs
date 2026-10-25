@@ -75,6 +75,9 @@ impl Workspace {
             return;
         };
         self.remember_location(cx);
+        if run.plugin == volgui::analysis::APPLICATION {
+            self.browser_group = ArtifactGroup::Applications;
+        }
         if run.plugin == volgui::analysis::APPLICATION
             && let Ok(pid) = volgui::analysis::application::target_pid(&run.arguments)
         {

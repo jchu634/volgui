@@ -1,16 +1,115 @@
 use super::*;
 
 impl Workspace {
+    fn search_history_dropdown(&self, process: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut history = Vec::new();
+        if let Some(case) = &self.case {
+            for run in case.document.runs.iter().rev().filter(|run| {
+                Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                    && run.plugin
+                        == if process {
+                            volgui::analysis::APPLICATION
+                        } else {
+                            volgui::analysis::STRINGS
+                        }
+            }) {
+                let value = if process {
+                    volgui::analysis::application::target_pid(&run.arguments)
+                        .ok()
+                        .map(|pid| pid.to_string())
+                } else {
+                    run.arguments.first().cloned()
+                };
+                if let Some(value) = value.filter(|value| !value.is_empty()) {
+                    if !history.contains(&value) {
+                        history.push(value);
+                    }
+                }
+            }
+        }
+        let weak = cx.entity().downgrade();
+        Button::new(if process {
+            "pid-search-history"
+        } else {
+            "string-search-history"
+        })
+        .small()
+        .ghost()
+        .dropdown_caret(true)
+        .tooltip("Previous searches")
+        .disabled(history.is_empty())
+        .dropdown_menu(move |mut menu, _, _| {
+            for value in &history {
+                let value = value.clone();
+                let weak = weak.clone();
+                menu = menu.item(PopupMenuItem::new(value.clone()).on_click(
+                    move |_, window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            if process {
+                                let saved = this.case.as_ref().and_then(|case| {
+                                    case.document.runs.iter().rev().find(|run| {
+                                        Some(&run.evidence_id) == this.selected_evidence.as_ref()
+                                            && run.plugin == volgui::analysis::APPLICATION
+                                            && run.status == RunStatus::Completed
+                                            && volgui::analysis::application::target_pid(&run.arguments)
+                                                .is_ok_and(|pid| pid.to_string() == value)
+                                    }).map(|run| run.id.clone())
+                                });
+                                if let Some(id) = saved {
+                                    this.select_run(id, window, cx);
+                                    return;
+                                }
+                            }
+                            let input = if process {
+                                &this.application_pid
+                            } else {
+                                &this.string_needle
+                            };
+                            input
+                                .update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+                            cx.notify();
+                        });
+                    },
+                ));
+            }
+            menu
+        })
+    }
+
     pub(in crate::ui) fn render_investigation_tools(&self, cx: &mut Context<Self>) -> Div {
         let mut tools = div().flex().flex_col().gap_2().px_3().py_2();
         match self.result_group() {
             Some(ArtifactGroup::Applications) => {
-                tools = tools.child(div().flex().flex_wrap().items_center().gap_2()
+                tools = tools.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
                         .child("PID")
-                        .child(Input::new(&self.application_pid).id("application-memory-pid").aria_label("Process ID to scan").small().w(px(150.)))
-                        .child(Button::new("scan-application-memory").small().primary().label("Scan process memory")
-                            .disabled(self.evidence().is_none() || self.busy.is_some() || self.installation.is_none())
-                            .on_click(cx.listener(|this, _, window, cx| this.scan_application_memory(None,window,cx)))));
+                        .child(
+                            Input::new(&self.application_pid)
+                                .id("application-memory-pid")
+                                .aria_label("Process ID to scan")
+                                .small()
+                                .w(px(150.)),
+                        )
+                        .child(self.search_history_dropdown(true, cx))
+                        .child(
+                            Button::new("scan-application-memory")
+                                .small()
+                                .primary()
+                                .label("Scan")
+                                .disabled(
+                                    self.evidence().is_none()
+                                        || self.busy.is_some()
+                                        || self.installation.is_none(),
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.scan_application_memory(None, window, cx)
+                                })),
+                        ),
+                );
             }
             Some(ArtifactGroup::Web) => {
                 tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches.\n Memory findings may include stale strings and do not alone prove a visit."))
@@ -22,8 +121,9 @@ impl Workspace {
                 tools = tools.child(div().text_xs().child("Search the selected evidence file for a literal string in UTF-8, UTF-16LE and UTF-16BE. Results include byte offsets and context. Maximum 10,000 matches per analysis."))
                     .child(div().flex().items_center().gap_2()
                         .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w(px(360.)))
+                        .child(self.search_history_dropdown(false, cx))
                         .child(Checkbox::new("string-ignore-case").label("Ignore ASCII case").checked(self.string_ignore_case).on_click(cx.listener(|this,checked,_,cx| { this.string_ignore_case = *checked; cx.notify(); })))
-                        .child(Button::new("run-global-search").small().label("Search evidence").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
+                        .child(Button::new("run-global-search").small().label("Search").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
             }
             Some(ArtifactGroup::Registry) => {
                 let child = self

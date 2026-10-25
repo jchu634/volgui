@@ -415,7 +415,11 @@ impl Render for HexEditor {
                 entity.update(cx, |this, cx| {
                     let (range, top) = {
                         let mut state = this.scroll.0.borrow_mut();
-                        state.bounds = bounds;
+                        let viewport = this.horizontal.viewport_bounds();
+                        state.bounds = Bounds::from_corners(
+                            point(viewport.left(), bounds.top()),
+                            point(viewport.right(), bounds.bottom()),
+                        );
                         state.viewport.height = f64::from(f32::from(bounds.size.height));
                         let top = state.viewport.top;
                         state.viewport.set_top(top);
