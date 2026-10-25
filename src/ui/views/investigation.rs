@@ -5,7 +5,7 @@ impl Workspace {
         let mut tools = div().flex().flex_col().gap_2().px_3().py_2();
         match self.result_group() {
             Some(ArtifactGroup::Web) => {
-                tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches. Memory findings may include stale strings and do not alone prove a visit. Process dumps can use several GB."))
+                tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches.\n Memory findings may include stale strings and do not alone prove a visit."))
                     .child(div().flex().items_center().child(Button::new("recover-analyze-browser").small().label("Start analysis")
                         .disabled(self.is_working() || self.browser_recovery_pending || self.installation.is_none())
                         .on_click(cx.listener(|this, _, window, cx| this.recover_and_analyze_browser(window, cx)))));

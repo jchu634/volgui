@@ -1,3 +1,4 @@
+mod dedup;
 pub(super) mod memory;
 mod search;
 
@@ -190,7 +191,7 @@ pub(super) fn analyze(
         ));
     }
     let message = format!(
-        "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
+        "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Matching memory searches and query prefixes are grouped under the longest query within each process, source, endpoint and query origin. Search variants retain the original URLs, addresses and counts; Grouped occurrences totals those counts. Prefix grouping does not establish which queries were submitted. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
         rows.len(),
         warnings.join("\n")
     );

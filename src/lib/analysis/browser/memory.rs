@@ -487,10 +487,8 @@ pub(in crate::analysis) fn analyze(
                 "PID {pid}: stopped at {MAX_PROCESS_URLS} unique URLs"
             ));
         }
+        let mut process_rows = Vec::new();
         for (url, hit) in hits {
-            if rows.len() >= browser::MAX_ROWS {
-                break;
-            }
             let search = hit.complete.then(|| browser::search_terms(&url)).flatten();
             let parsed_url = url::Url::parse(&url).map_err(|e| e.to_string())?;
             let parameters: Vec<_> = if hit.complete {
@@ -521,8 +519,14 @@ pub(in crate::analysis) fn analyze(
                     json!(super::search::query_origin(&parsed_url)),
                 );
             }
-            rows.push(row);
+            process_rows.push(row);
         }
+        super::dedup::memory_searches(&mut process_rows);
+        rows.extend(
+            process_rows
+                .into_iter()
+                .take(browser::MAX_ROWS.saturating_sub(rows.len())),
+        );
     }
     Ok(parsed)
 }

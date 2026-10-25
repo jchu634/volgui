@@ -362,6 +362,14 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
         let mut bytes = format!("{address}\0{address}\0").into_bytes();
         if pid == 42 {
             bytes.extend_from_slice(b"https://www.search.com/api/clk_ad?q=what%20is%20gluten\0");
+            for terms in ["w", "what", "what+is", "what+is+glu"] {
+                bytes.extend_from_slice(
+                    format!("https://www.search.com/web?q={terms}\0").as_bytes(),
+                );
+            }
+            bytes.extend_from_slice(
+                b"https://www.search.com/web?q=what+is+gluten&tracking=variant\0",
+            );
         }
         let filename = format!("pid.{pid}.dmp");
         let dump = save(
@@ -416,6 +424,8 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
     assert_eq!(edge.text("Process role"), "Renderer");
     assert_eq!(edge.text("Virtual address"), "0x10000");
     assert_eq!(edge.fields["Occurrences"], 2);
+    assert_eq!(edge.fields["Grouped occurrences"], 7);
+    assert_eq!(edge.fields["Search variants"].as_array().unwrap().len(), 6);
     assert!(!edge.fields.contains_key("Time (UTC)"));
     let contextual = rows
         .iter()
@@ -460,6 +470,7 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
         })
         .unwrap();
     assert!(csv.contains("what is gluten") && csv.contains("Tor Browser"));
+    assert!(csv.contains("Search variants") && csv.contains("tracking=variant"));
     assert_eq!(reopened.document.evidence.len(), 2);
 }
 

@@ -52,6 +52,17 @@ byte delimiter was found; adjacent text can still be present in memory strings.
 Query origin flags known automated Edge annotation URLs. Other query URLs retain
 an unknown origin, so decoded terms are not presented as proof of typed input.
 
+Memory searches with the same decoded terms or a shorter query prefix are grouped
+under the longest query for the same PID, source dump, search endpoint and query
+origin. Different query extensions remain separate. Tracking parameters and URL
+encoding differences do not create extra rows. This grouping is case-sensitive
+and does not establish which queries were submitted. Search variants in the
+details retain every grouped URL, address, offset, encoding and occurrence count.
+Occurrences counts the displayed URL; Grouped occurrences totals all variants.
+History visits, saved tabs and non-search URLs retain their existing records.
+Run Start analysis again to apply grouping to previously saved findings; completed
+process dumps are reused.
+
 Session tabs describe a saved session snapshot. A historical session file, stale
 cache variant or closed browser can still contain these records. They do not prove
 which tabs were open at capture time, and arbitrary URL strings are not classified
