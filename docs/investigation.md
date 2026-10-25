@@ -4,6 +4,32 @@ Select a memory image in the sidebar before using these tools. Results belong to
 that evidence capture. Application analyses appear in the same queue and case
 history as Volatility jobs, and their findings support bookmarks and CSV export.
 
+## File and document recovery
+
+Choose **File and document recovery** in New analysis to prepare file contents
+before browsing. It collects missing FileScan and available Process handles
+inventories, then attempts each distinct file object. Existing completed attempts
+are reused. Each extraction keeps its own queue entry and diagnostics, so a large
+capture can take time to process. FileScan, Dump files and Process handles are
+basic analyses.
+
+The report retains the source run and row, extraction run and recovery status.
+Open recovered contents with the Sidebar to inspect hex, decoded text or SQLite
+tables, or use Save as to export a cache variant. Recovery can produce partial
+contents and does not guarantee that a document is complete.
+
+**Show unavailable files** in the Files and Processes tree headers reveals failed,
+uncached and unsupported Windows file objects. These are hidden by default.
+Untested files stay visible until an extraction establishes their status.
+Directory pseudo-files such as `$Directory` and `$I30` directory-index streams
+are always omitted from these trees. Original records remain in the case.
+
+Use **Retry extraction** in record details to retry a selected file. For older
+captures whose unlabelled FileScan offsets are physical, pass `--physical` to the
+recovery analysis or switch the selected file's offset button. Explicit virtual
+and physical address columns take precedence. Status is matched by evidence,
+address space and file-object address, rather than by path.
+
 ## Browser activity
 
 1. Choose **Browser activity**, then **Start analysis**. VolGUI

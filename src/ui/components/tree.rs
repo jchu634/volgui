@@ -78,6 +78,24 @@ impl Workspace {
                                 })),
                         )
                     })
+                    .when(
+                        matches!(group, ArtifactGroup::Files | ArtifactGroup::Processes),
+                        |header| {
+                            header.child(
+                                Checkbox::new("show-unavailable-files")
+                                    .xsmall()
+                                    .label("Show unavailable files")
+                                    .checked(self.show_unavailable_files)
+                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                        this.show_unavailable_files = *checked;
+                                        this.selection_epoch += 1;
+                                        this.tree_cursor = None;
+                                        this.result_tree = ResultTree::default();
+                                        this.start_query(cx);
+                                    })),
+                            )
+                        },
+                    )
                     .child(
                         Button::new("tree-expand-all")
                             .xsmall()
@@ -181,6 +199,11 @@ impl Workspace {
             .pl(px(8. + depth as f32 * 18.))
             .pr(px(20.))
             .text_xs()
+            .when(
+                id.and_then(|id| self.file_recovery_states.get(&id))
+                    .is_some_and(|state| state.unavailable()),
+                |row| row.text_color(cx.theme().muted_foreground),
+            )
             .cursor_pointer()
             .bg(if selected {
                 cx.theme().accent

@@ -26,17 +26,7 @@ impl Workspace {
                     })),
             );
         }
-        if self
-            .case
-            .as_ref()
-            .zip(self.selected.as_ref())
-            .is_some_and(|(case, record)| {
-                volgui::extracted_files::completed_dump(case, record, self.file_offset_physical)
-                    .is_some()
-            })
-        {
-            return div();
-        }
+        let attempted = self.selected_file_dump().is_some();
         let prefix = "details";
         let target = self.selected.as_ref().and_then(|record| {
             let run = self
@@ -67,6 +57,7 @@ impl Workspace {
                         .tooltip("Click to switch. FileScan uses virtual offsets on Windows 10 and later, physical offsets on older Windows.")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.file_offset_physical = !this.file_offset_physical;
+                            this.start_query(cx);
                             this.reset_hex();
                             if this.content_sidebar_visible { this.load_hex(cx); }
                             cx.notify();
@@ -76,7 +67,11 @@ impl Workspace {
         actions.child(
             Button::new(key("dump-selected-file", prefix))
                 .small()
-                .label("Dump file")
+                .label(if attempted {
+                    "Retry extraction"
+                } else {
+                    "Dump file"
+                })
                 .disabled(!available)
                 .tooltip(if available {
                     "Extract only this file from memory"

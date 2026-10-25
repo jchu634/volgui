@@ -127,7 +127,11 @@ impl Workspace {
         let mut content = div().flex().flex_col().gap_2().text_sm();
         match &self.hex_view {
             HexView::Idle => {
-                content = content.child("No sidebar view is available for this content.");
+                content = content.child(if matches!(self.result_group(), Some(ArtifactGroup::Files | ArtifactGroup::Processes)) {
+                    "Cached contents have not been recovered. Use Dump file in record details, or choose File and document recovery in New analysis."
+                } else {
+                    "No sidebar view is available for this content."
+                });
             }
             HexView::Loading => {
                 content = content.child("Loading file contents...");

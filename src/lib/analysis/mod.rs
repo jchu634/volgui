@@ -1,6 +1,7 @@
 //! Application analyses use the case queue and record store, just like engine jobs.
 pub mod application;
 mod browser;
+pub mod files;
 mod process_memory;
 pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod network;
@@ -22,9 +23,10 @@ pub const BROWSER: &str = "volgui.browser.Activity";
 pub const APPLICATION: &str = "volgui.application.Memory";
 pub const STRINGS: &str = "volgui.strings.Search";
 pub const NETWORK: &str = "volgui.network.Investigation";
+pub const FILES: &str = "volgui.files.Recovery";
 
 pub fn is_native(plugin: &str) -> bool {
-    matches!(plugin, BROWSER | APPLICATION | STRINGS | NETWORK)
+    matches!(plugin, BROWSER | APPLICATION | STRINGS | NETWORK | FILES)
 }
 
 pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Result<Run, String> {
@@ -37,6 +39,9 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
     }
     if plugin == APPLICATION {
         application::validate(&arguments)?;
+    }
+    if plugin == FILES {
+        files::physical_offset(&arguments)?;
     }
     if plugin == NETWORK && !arguments.is_empty() {
         return Err("Network investigation does not accept custom arguments".into());
@@ -80,6 +85,7 @@ pub fn execute(
             APPLICATION => application::analyze(directory, document, run, cancel, &progress),
             STRINGS => strings::search(&evidence.path, &run.arguments, cancel, &progress),
             NETWORK => network::analyze(directory, document, run, cancel, &progress),
+            FILES => files::analyze(directory, document, run, cancel, &progress),
             _ => Err("Unknown application analysis".into()),
         }
     })();

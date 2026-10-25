@@ -100,6 +100,14 @@ enum HexView {
     },
     Error(String),
 }
+struct QueryResult {
+    index: ResultIndex,
+    rows: Vec<StoredRecord>,
+    tree: ResultTree,
+    file_states: HashMap<i64, volgui::analysis::files::RecoveryState>,
+    recovery: Option<volgui::analysis::files::RecoveryIndex>,
+}
+
 enum Event {
     Opened(std::result::Result<Case, String>),
     Validated(std::result::Result<Installation, String>),
@@ -113,10 +121,7 @@ enum Event {
     ),
     FileActionCompleted(PathBuf, std::result::Result<String, String>),
     ImHexLocated(Option<PathBuf>),
-    Indexed(
-        u64,
-        std::result::Result<(ResultIndex, Vec<StoredRecord>, ResultTree), String>,
-    ),
+    Indexed(u64, std::result::Result<QueryResult, String>),
     NetworkLoaded(
         u64,
         std::result::Result<Option<volgui::network::Graph>, String>,
@@ -197,6 +202,9 @@ pub struct Workspace {
     selection_epoch: u64,
     browser_group: ArtifactGroup,
     show_file_handles: bool,
+    show_unavailable_files: bool,
+    file_recovery_states: HashMap<i64, volgui::analysis::files::RecoveryState>,
+    file_recovery: Option<volgui::analysis::files::RecoveryIndex>,
     result_scroll: UniformListScrollHandle,
     result_table: Entity<TableState<components::result_data_table::ResultTable>>,
     analysis_table: Entity<TableState<components::analysis_data_table::AnalysisTable>>,
@@ -481,6 +489,9 @@ impl Workspace {
             selection_epoch: 0,
             browser_group: ArtifactGroup::Processes,
             show_file_handles: true,
+            show_unavailable_files: false,
+            file_recovery_states: HashMap::new(),
+            file_recovery: None,
             result_scroll: UniformListScrollHandle::default(),
             result_table,
             analysis_table,
@@ -841,7 +852,7 @@ impl Workspace {
                             }
                         }
                     } else if self.scope.is_empty() || self.scope.contains(&id) {
-                        self.select_run(id, window, cx);
+                        self.select_run(id.clone(), window, cx);
                     } else if self.result_group() == Some(ArtifactGroup::Processes)
                         && self.case.as_ref().is_some_and(|case| {
                             case.document.runs.iter().any(|run| {
@@ -856,6 +867,17 @@ impl Workspace {
                             })
                         })
                     {
+                        self.start_query(cx);
+                    }
+                    if matches!(
+                        self.result_group(),
+                        Some(ArtifactGroup::Files | ArtifactGroup::Processes)
+                    ) && self.case.as_ref().is_some_and(|case| {
+                        case.document.runs.iter().any(|run| {
+                            run.id == id && run.plugin == volgui::extracted_files::DUMP_FILES
+                        })
+                    }) {
+                        self.tree_cursor = None;
                         self.start_query(cx);
                     }
                 }
@@ -908,7 +930,15 @@ impl Workspace {
                     }
                     self.loading = false;
                     match result {
-                        Ok((index, rows, tree)) => {
+                        Ok(QueryResult {
+                            index,
+                            rows,
+                            tree,
+                            file_states,
+                            recovery,
+                        }) => {
+                            self.file_recovery_states = file_states;
+                            self.file_recovery = recovery;
                             self.index = index;
                             self.result_tree = tree;
                             self.tree_cursor = None;
@@ -1010,6 +1040,7 @@ impl Workspace {
                                 && self.selected_evidence.as_ref() != Some(&evidence)
                             {
                                 self.selected_evidence = Some(evidence);
+                                self.file_offset_physical = false;
                                 self.artifact_choices.clear();
                                 self.sync_os();
                             }
@@ -1058,6 +1089,7 @@ impl Workspace {
                     if epoch != self.hex_epoch {
                         continue;
                     }
+                    let failed_read = result.is_err();
                     self.hex_view = match result {
                         Ok((files, page)) => {
                             let offset = if self.result_group() == Some(ArtifactGroup::Applications)
@@ -1093,6 +1125,14 @@ impl Workspace {
                         }
                         Err(error) => HexView::Error(error),
                     };
+                    if failed_read
+                        && matches!(
+                            self.result_group(),
+                            Some(ArtifactGroup::Files | ArtifactGroup::Processes)
+                        )
+                    {
+                        self.start_query(cx);
+                    }
                     if self.content_encoding == volgui::extracted_files::ContentEncoding::Sqlite {
                         self.set_content_encoding(self.content_encoding, cx);
                     }

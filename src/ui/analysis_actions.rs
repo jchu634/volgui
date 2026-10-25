@@ -14,6 +14,8 @@ impl Workspace {
         thread::spawn(move || {
             let result = if plugin == volgui::analysis::APPLICATION {
                 Ok(volgui::analysis::application::HELP.into())
+            } else if plugin == volgui::analysis::FILES {
+                Ok("Collects FileScan and available file handles, attempts each distinct file object and records recovery outcomes. Cached contents may be partial. Use --physical only for older captures whose unlabelled FileScan offsets are physical. Other options are not accepted.".into())
             } else if plugin == volgui::analysis::NETWORK {
                 Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. No raw memory string scan or payload configuration recovery is performed. Use Global string search or Process Memory separately for memory searches. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
             } else if plugin == volgui::analysis::BROWSER
@@ -290,7 +292,7 @@ impl Workspace {
                 let files = volgui::extracted_files::list(&directory)
                     .map_err(|error| format!("Could not list extracted files: {error}"))?;
                 if files.is_empty() {
-                    return Err("No cached file contents could be extracted from memory. See Run details for diagnostics.".into());
+                    return Ok("No cached contents were recovered. This file is hidden when Show unavailable files is off. Run details retain the extraction diagnostics.".into());
                 }
                 if let Some(executable) = executable {
                     for file in &files {
@@ -396,7 +398,10 @@ impl Workspace {
             };
             let application_pending = case.document.runs[i].plugin == volgui::analysis::APPLICATION
                 && case.document.runs[i].message == volgui::analyses::APPLICATION_RECOVERY_PENDING;
+            let files_pending = case.document.runs[i].plugin == volgui::analysis::FILES
+                && case.document.runs[i].message == volgui::analysis::files::PENDING;
             if application_pending
+                || files_pending
                 || case.document.runs[i].plugin == volgui::analysis::BROWSER
                     && case.document.runs[i].message == volgui::analyses::BROWSER_RECOVERY_PENDING
             {
@@ -409,6 +414,8 @@ impl Workspace {
                         engine,
                         &case.document.runs[i],
                     )
+                } else if files_pending {
+                    volgui::analyses::prepare_file_recovery(case, engine, &case.document.runs[i])
                 } else {
                     volgui::analyses::prepare_browser_recovery(case, engine, &case.document.runs[i])
                 };
@@ -416,8 +423,9 @@ impl Workspace {
                     Ok(runs) => {
                         let previous = case.document.runs.clone();
                         case.document.runs[i].message.clear();
-                        let count = runs.len().saturating_sub(usize::from(application_pending));
-                        if application_pending {
+                        let replace = application_pending || files_pending;
+                        let count = runs.len().saturating_sub(usize::from(replace));
+                        if replace {
                             case.document.runs.splice(i..=i, runs);
                         } else {
                             case.document.runs.splice(i..i, runs);

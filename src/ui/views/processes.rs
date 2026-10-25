@@ -25,6 +25,17 @@ impl Workspace {
                         .truncate()
                         .child(node.label.clone()),
                 )
+                .when_some(
+                    id.and_then(|id| self.file_recovery_states.get(&id)),
+                    |row, state| {
+                        row.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(state.label()),
+                        )
+                    },
+                )
                 .when_some(id, |row, id| {
                     row.child(
                         Button::new(("show-handle-in-files", i))

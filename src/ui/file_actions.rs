@@ -3,6 +3,24 @@ use super::*;
 use volgui::extracted_files::{self, HexPage};
 
 impl Workspace {
+    pub(super) fn selected_file_dump(&self) -> Option<&volgui::case::Run> {
+        let case = self.case.as_ref()?;
+        let record = self.selected.as_ref()?;
+        if let Some(recovery) = self
+            .file_recovery
+            .as_ref()
+            .and_then(|index| index.recovery(record, self.file_offset_physical))
+            && let Some(run) = case
+                .document
+                .runs
+                .iter()
+                .find(|run| run.id == recovery.run_id && run.status == RunStatus::Completed)
+        {
+            return Some(run);
+        }
+        extracted_files::completed_dump(case, record, self.file_offset_physical)
+    }
+
     pub(super) fn locate_imhex(&self) {
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -17,13 +35,7 @@ impl Workspace {
             .runs
             .iter()
             .find(|run| Some(&run.id) == self.selected_run.as_ref())?;
-        let run = self
-            .selected
-            .as_ref()
-            .and_then(|record| {
-                extracted_files::completed_dump(case, record, self.file_offset_physical)
-            })
-            .unwrap_or(run);
+        let run = self.selected_file_dump().unwrap_or(run);
         Some((case.run_dir(&run.id), run.status))
     }
 
@@ -195,8 +207,7 @@ impl Workspace {
             return;
         }
         let directory = self.case.as_ref().and_then(|case| {
-            let record = self.selected.as_ref()?;
-            let run = extracted_files::completed_dump(case, record, self.file_offset_physical)?;
+            let run = self.selected_file_dump()?;
             Some(case.run_dir(&run.id))
         });
         let Some(directory) = directory else {
@@ -208,12 +219,21 @@ impl Workspace {
         let tx = self.tx.clone();
         thread::spawn(move || {
             let result = (|| {
-                let files = extracted_files::list(&directory)?;
-                let path = files
-                    .first()
-                    .ok_or("No cached file contents could be extracted from memory.")?;
-                let page = HexPage::read(path, 0)?;
-                Ok((files, page))
+                let files: Vec<_> = extracted_files::listing(&directory)?
+                    .into_iter()
+                    .filter(|file| file.available)
+                    .map(|file| file.path)
+                    .collect();
+                let mut error =
+                    "No cached file contents could be extracted from memory.".to_string();
+                for path in &files {
+                    match HexPage::read(path, 0) {
+                        Ok(page) if page.total > 0 => return Ok((files, page)),
+                        Ok(_) => {}
+                        Err(reason) => error = reason,
+                    }
+                }
+                Err(error)
             })();
             let _ = tx.send(Event::HexLoaded(epoch, result));
         });

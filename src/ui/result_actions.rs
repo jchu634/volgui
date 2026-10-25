@@ -39,6 +39,7 @@ impl Workspace {
         self.artifact_choices.clear();
         self.artifact_open = None;
         self.selected_evidence = Some(id);
+        self.file_offset_physical = false;
         self.sync_os();
         self.selected = None;
         self.selected_row = None;
@@ -97,6 +98,7 @@ impl Workspace {
         if Some(&run.evidence_id) != self.selected_evidence.as_ref() {
             self.artifact_choices.clear();
             self.selected_evidence = Some(run.evidence_id.clone());
+            self.file_offset_physical = false;
             self.sync_os();
         }
         let open_memory = run.plugin == volgui::analysis::APPLICATION
@@ -150,6 +152,8 @@ impl Workspace {
         self.index = ResultIndex::default();
         self.result_tree = ResultTree::default();
         self.row_cache.clear();
+        self.file_recovery_states.clear();
+        self.file_recovery = None;
         self.detail = DetailTab::Overview;
         self.reset_hex();
         self.handles = None;
@@ -181,6 +185,13 @@ impl Workspace {
         };
         let query = self.active_query(cx);
         let group = self.result_group();
+        let file_context = self
+            .case
+            .as_ref()
+            .filter(|_| matches!(group, Some(ArtifactGroup::Files | ArtifactGroup::Processes)))
+            .map(|case| (case.directory.clone(), case.document.clone()));
+        let physical = self.file_offset_physical;
+        let show_unavailable = self.show_unavailable_files;
         let file_runs: Vec<_> = if group == Some(ArtifactGroup::Processes) && self.show_file_handles
         {
             self.group_runs(ArtifactGroup::Files)
@@ -211,9 +222,25 @@ impl Workspace {
                 return;
             }
             let result = store.query(&query).and_then(|mut index| {
+                let recovery = file_context
+                    .as_ref()
+                    .map(|(directory, document)| {
+                        volgui::analysis::files::RecoveryIndex::load(directory, document)
+                    })
+                    .transpose()?;
+                let mut file_states = HashMap::new();
                 let tree = match group {
                     Some(ArtifactGroup::Processes) => {
-                        let files = store.tree_entries(&file_runs)?;
+                        let mut files = store.tree_entries(&file_runs)?;
+                        if let Some(recovery) = &recovery {
+                            (files, file_states) = volgui::analysis::files::filter_entries(
+                                &store,
+                                recovery,
+                                files,
+                                physical,
+                                show_unavailable,
+                            )?;
+                        }
                         let file_matches = store.query(&Query {
                             runs: file_runs,
                             text: query.text.clone(),
@@ -241,7 +268,19 @@ impl Workspace {
                         tree
                     }
                     Some(ArtifactGroup::Files) => {
-                        ResultTree::files(store.tree_entries(&query.runs)?, &index.ids)
+                        let mut files = store.tree_entries(&query.runs)?;
+                        if let Some(recovery) = &recovery {
+                            (files, file_states) = volgui::analysis::files::filter_entries(
+                                &store,
+                                recovery,
+                                files,
+                                physical,
+                                show_unavailable,
+                            )?;
+                        }
+                        let visible: HashSet<_> = files.iter().map(|entry| entry.id).collect();
+                        index.ids.retain(|id| visible.contains(id));
+                        ResultTree::files(files, &index.ids)
                     }
                     Some(ArtifactGroup::Registry) => {
                         ResultTree::registry(store.registry_entries(&query.runs)?, &index.ids)
@@ -263,7 +302,13 @@ impl Workspace {
                     ids.push(*id);
                 }
                 let rows = store.fetch_enriched(&ids)?;
-                Ok((index, rows, tree))
+                Ok(QueryResult {
+                    index,
+                    rows,
+                    tree,
+                    file_states,
+                    recovery,
+                })
             });
             let _ = tx.send(Event::Indexed(epoch, result));
             if group == Some(ArtifactGroup::Network) {
@@ -378,7 +423,6 @@ impl Workspace {
         self.handles = None;
         self.handles_loading = false;
         self.handle_epoch += 1;
-        self.file_offset_physical = false;
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         self.selected = Some(Arc::new(record));

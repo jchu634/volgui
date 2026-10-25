@@ -23,7 +23,25 @@ impl Workspace {
                 .size_4()
                 .flex_shrink_0(),
             )
-            .child(div().min_w_0().truncate().child(node.label.clone()))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .child(node.label.clone()),
+            )
+            .when_some(
+                node.record_id
+                    .and_then(|id| self.file_recovery_states.get(&id)),
+                |row, state| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(state.label()),
+                    )
+                },
+            )
             .into_any_element()
     }
 }

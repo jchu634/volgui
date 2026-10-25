@@ -32,6 +32,8 @@ Run the basic **Process handles** analysis on Windows to show file handles benea
 
 The **Sidebar** toggle opens a resizable pane beside the result view. It displays recovered bytes as hex, UTF-8, UTF-16LE or UTF-16BE, or lets you inspect SQLite tables and rows. **Extract and view hex** queues extraction if contents have not been dumped yet. Extraction completion keeps the current tree open. Multiple cache variants can be inspected separately.
 
+The basic **File and document recovery** analysis collects file inventories and attempts recovery before browsing. **Show unavailable files** in Files and Processes reveals confirmed uncached, failed and unsupported Windows file objects. Untested files remain visible. Directory pseudo-files such as `$Directory` are omitted automatically. Saved recovery outcomes retain their source and extraction diagnostics. See [file recovery](docs/investigation.md#file-and-document-recovery).
+
 **Browser activity** recovers Edge, Firefox and Tor URLs and searches from browser process memory with PID, process role and source addresses. It also parses cached profile history and session files. Search parsing supports thirteen providers, including Search, DuckDuckGo, YouTube and Yandex. Memory strings, file handle owners and recorded history retain their distinct evidence meanings. **Registry** loads hive keys and typed values with targeted PrintKey jobs. **Global string search** scans the selected evidence file directly, including UTF-16 strings, and saves byte offsets and context. Browser and string findings support the existing bookmarks, CSV export, diagnostics and case history.
 
 The title bar contains Back, File and View menus, and New analysis beside the window controls. Workspace and Case info are available from View.

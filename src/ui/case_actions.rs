@@ -53,6 +53,7 @@ impl Workspace {
         self.query_epoch.fetch_add(1, Ordering::Relaxed);
         self.selection_epoch += 1;
         self.selected_evidence = case.document.evidence.first().map(|e| e.id.clone());
+        self.file_offset_physical = false;
         let path = case.directory.join(volgui::case::DATABASE);
         self.case = Some(case);
         self.handles = None;

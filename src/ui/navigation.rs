@@ -21,6 +21,7 @@ pub(super) struct Location {
     network_sidebar_page: usize,
     network_offset: Point<Pixels>,
     content_sidebar_visible: bool,
+    file_offset_physical: bool,
 }
 
 impl Workspace {
@@ -45,6 +46,7 @@ impl Workspace {
             network_sidebar_page: self.network_sidebar_page,
             network_offset: self.network_scroll.offset(),
             content_sidebar_visible: self.content_sidebar_visible,
+            file_offset_physical: self.file_offset_physical,
         };
         if self.back_stack.last().is_some_and(|last| {
             last.view == location.view
@@ -100,6 +102,7 @@ impl Workspace {
         self.network_sidebar_page = location.network_sidebar_page;
         self.network_scroll.set_offset(location.network_offset);
         self.content_sidebar_visible = location.content_sidebar_visible;
+        self.file_offset_physical = location.file_offset_physical;
         self.result_tree = ResultTree::default();
         self.row_cache.clear();
         self.result_scroll = UniformListScrollHandle::default();
