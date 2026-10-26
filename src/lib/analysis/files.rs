@@ -207,7 +207,9 @@ impl RecoveryIndex {
         let Some((plugin, _)) = self.plugins.get(&record.run_id) else {
             return RecoveryState::Untested;
         };
-        if plugin == super::FILES && record.record.text("Kind") == "Referenced executable path" {
+        if matches!(plugin.as_str(), super::FILES | super::FILE_PATHS)
+            && record.record.text("Kind") == "Referenced executable path"
+        {
             return RecoveryState::Referenced;
         }
         if plugin == DUMP_FILES {
@@ -428,5 +430,19 @@ pub(super) fn analyze(
         references.len()
     ));
     rows.extend(references);
+    Ok((super::table(rows), message))
+}
+
+/// One streaming read of the evidence, independent of inventories and extraction.
+pub(super) fn path_references(
+    path: &Path,
+    cancel: &AtomicBool,
+    progress: &impl Fn(String),
+) -> Result<(Table, String), String> {
+    let rows = paths::scan(path, cancel, progress)?;
+    let message = format!(
+        "Found {} executable path references in the evidence bytes. References do not establish file presence, recoverability, or maliciousness. No file contents were extracted.",
+        rows.len()
+    );
     Ok((super::table(rows), message))
 }

@@ -26,13 +26,14 @@ pub const APPLICATION: &str = "volgui.application.Memory";
 pub const STRINGS: &str = "volgui.strings.Search";
 pub const NETWORK: &str = "volgui.network.Investigation";
 pub const FILES: &str = "volgui.files.Recovery";
+pub const FILE_PATHS: &str = "volgui.files.PathReferences";
 pub const DOWNLOADS: &str = "volgui.downloads.Investigation";
 pub const QUARANTINE: &str = "volgui.quarantine.Investigation";
 
 pub fn is_native(plugin: &str) -> bool {
     matches!(
         plugin,
-        BROWSER | APPLICATION | STRINGS | NETWORK | FILES | DOWNLOADS | QUARANTINE
+        BROWSER | APPLICATION | STRINGS | NETWORK | FILES | FILE_PATHS | DOWNLOADS | QUARANTINE
     )
 }
 
@@ -51,6 +52,9 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
     }
     if plugin == FILES {
         files::physical_offset(&arguments)?;
+    }
+    if plugin == FILE_PATHS && !arguments.is_empty() {
+        return Err("Executable path discovery does not accept custom arguments".into());
     }
     if plugin == NETWORK && !arguments.is_empty() {
         return Err("Network investigation does not accept custom arguments".into());
@@ -103,6 +107,7 @@ pub fn execute(
             STRINGS => strings::search(&evidence.path, &run.arguments, cancel, &progress),
             NETWORK => network::analyze(directory, document, run, cancel, &progress),
             FILES => files::analyze(directory, document, run, cancel, &progress),
+            FILE_PATHS => files::path_references(&evidence.path, cancel, &progress),
             DOWNLOADS => downloads::analyze(directory, document, run, cancel, &progress),
             QUARANTINE => quarantine::analyze(directory, document, run, cancel, &progress),
             _ => Err("Unknown application analysis".into()),

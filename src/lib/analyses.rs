@@ -193,6 +193,7 @@ pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -
 /// Bulk file recovery and other generic artifact shortcuts remain extended.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
+        crate::analysis::FILE_PATHS => "Executable path discovery",
         crate::analysis::NETWORK => "Network investigation and correlation",
         crate::analysis::DOWNLOADS => "Download and execution investigation",
         crate::analysis::QUARANTINE => "Quarantined threats and execution investigation",
@@ -238,6 +239,10 @@ pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
         Plugin {
             id: crate::analysis::DOWNLOADS.into(),
             description: crate::analysis::downloads::HELP.into(),
+        },
+        Plugin {
+            id: crate::analysis::FILE_PATHS.into(),
+            description: "Executable path discovery. Scan evidence bytes once for Windows executable paths in UTF-8, UTF-16LE and UTF-16BE, including paths missing from FileScan. Show references in Files and documents with evidence offsets. One job, no prerequisites or file extraction. Path references alone do not prove file presence or execution. Maximum 10,000 paths. No custom arguments.".into(),
         },
         Plugin {
             id: crate::analysis::FILES.into(),
@@ -749,6 +754,9 @@ impl AnalysisDraft {
                 let arguments =
                     parse_arguments(self.arguments.get(id).map(String::as_str).unwrap_or(""))
                         .map_err(|error| format!("{id}: {error}"))?;
+                if id == crate::analysis::FILE_PATHS {
+                    return crate::analysis::prepare(evidence, id, arguments);
+                }
                 engine.prepare(evidence, id, arguments, directory)
             })
             .collect()

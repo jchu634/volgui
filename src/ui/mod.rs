@@ -1021,18 +1021,18 @@ impl Workspace {
                     {
                         self.scope = self.group_runs(ArtifactGroup::Quarantine);
                         self.start_query(cx);
-                    } else if self.result_group() == Some(ArtifactGroup::Network)
-                        && self.scope_label == ArtifactGroup::Network.label()
+                    } else if let Some(group @ (ArtifactGroup::Network | ArtifactGroup::Files)) =
+                        self.result_group()
+                        && self.scope_label == group.label()
                         && self.case.as_ref().is_some_and(|case| {
                             case.document.runs.iter().any(|run| {
                                 run.id == id
                                     && Some(&run.evidence_id) == self.selected_evidence.as_ref()
-                                    && ArtifactGroup::for_plugin(&run.plugin)
-                                        == ArtifactGroup::Network
+                                    && ArtifactGroup::for_plugin(&run.plugin) == group
                             })
                         })
                     {
-                        self.scope = self.group_runs(ArtifactGroup::Network);
+                        self.scope = self.group_runs(group);
                         self.start_query(cx);
                     } else if self.scope.contains(&id)
                         || self.result_group() == Some(ArtifactGroup::Processes)

@@ -53,7 +53,8 @@ impl Workspace {
                 Ok(volgui::analysis::downloads::HELP.into())
             } else if plugin == volgui::analysis::QUARANTINE {
                 Ok(volgui::analysis::quarantine::HELP.into())
-            } else if plugin == volgui::analysis::BROWSER
+            } else if plugin == volgui::analysis::FILE_PATHS
+                || plugin == volgui::analysis::BROWSER
                 || plugin == volgui::analyses::REGISTRY_ALL
             {
                 Ok(

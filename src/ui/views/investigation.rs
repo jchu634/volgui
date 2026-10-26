@@ -94,6 +94,19 @@ impl Workspace {
             .px_3()
             .py_2();
         match self.result_group() {
+            Some(ArtifactGroup::Files) => {
+                let pending = self.case.as_ref().is_some_and(|case| {
+                    case.document.runs.iter().any(|run| {
+                        Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                            && run.plugin == volgui::analysis::FILE_PATHS
+                            && matches!(run.status, RunStatus::Queued | RunStatus::Running)
+                    })
+                });
+                tools = tools.child(div().text_xs().child("Discover executable paths missing from file inventories with one scan of the evidence. Results appear as Path reference only. File contents are not extracted."))
+                    .child(div().flex().items_center().child(app_button("discover-file-paths").small().label("Discover executable paths")
+                        .disabled(self.is_working() || self.evidence().is_none() || pending)
+                        .on_click(cx.listener(|this, _, window, cx| this.confirm_repeat_analysis(volgui::analysis::FILE_PATHS, Self::discover_file_paths, window, cx)))));
+            }
             Some(ArtifactGroup::Quarantine) => {
                 tools = tools.child(div().text_xs().child("Isolation targets recorded during other analyses appear automatically, including interrupted scans. Start analysis explicitly to collect quarantine evidence from the capture. Defender metadata identifies threats when cached; other antivirus folders remain candidates. Select a finding for process matches, download origins and source records."))
                     .child(div().flex().flex_wrap().items_center().gap_2()

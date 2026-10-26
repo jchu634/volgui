@@ -2,6 +2,23 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn discover_file_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self
+            .evidence()
+            .ok_or_else(|| "Select evidence first".to_string())
+            .and_then(|evidence| analysis::prepare(evidence, analysis::FILE_PATHS, vec![]));
+        match result {
+            Ok(run) => {
+                self.queue_investigation(vec![run], window, cx);
+                self.choose_group(ArtifactGroup::Files, window, cx);
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
     pub(super) fn confirm_repeat_analysis(
         &mut self,
         plugin: &str,

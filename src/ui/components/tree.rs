@@ -91,9 +91,10 @@ impl Workspace {
             .min_w_0()
             .min_h_0()
             .child(self.render_results_toolbar(cx))
-            .when(group == ArtifactGroup::Registry, |view| {
-                view.child(self.render_investigation_tools(cx))
-            })
+            .when(
+                matches!(group, ArtifactGroup::Registry | ArtifactGroup::Files),
+                |view| view.child(self.render_investigation_tools(cx)),
+            )
             .child(
                 div()
                     .flex()

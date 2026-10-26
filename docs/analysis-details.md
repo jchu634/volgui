@@ -59,6 +59,8 @@ Windows recovery consumes `windows.filescan.FileScan` and available `windows.han
 
 Individual extraction uses `windows.dumpfiles.DumpFiles` for the source file object and address space. Bulk `volgui.files.Recovery` collects missing `windows.filescan.FileScan` and available `windows.handles.Handles`, then requests a distinct `windows.dumpfiles.DumpFiles` extraction for each eligible object. Compatible completed extractions can be reused.
 
+**Discover executable paths** in Files and documents runs `volgui.files.PathReferences`. It reads the evidence once for Windows `.exe` paths in UTF-8, UTF-16LE and UTF-16BE, without FileScan prerequisites or extraction jobs. This analysis is also available as **Executable path discovery** in the basic analysis chooser. Findings appear in the file tree as **Path reference only**, including when Show unavailable files is off, with evidence offsets and encoding retained in their records. Use this to find executable references when bulk recovery would queue too many jobs.
+
 ### Data processing
 
 Associate extraction outcomes by evidence, address space and object address. Retain original source records, extraction runs and diagnostics. A recovered output takes precedence over an unsuccessful retry. Unknown recovery status remains distinct from confirmed empty, failed or unsupported extraction. Multiple cache variants remain distinct, and recovered contents may be partial.
