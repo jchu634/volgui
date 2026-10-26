@@ -2,6 +2,45 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn refresh_passive_quarantine(&mut self) {
+        let Some(case) = &self.case else { return };
+        self.passive_quarantine_epoch += 1;
+        let epoch = self.passive_quarantine_epoch;
+        let directory = case.directory.clone();
+        let document = case.document.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = analysis::quarantine::passive_runs(&directory, &document);
+            let _ = tx.send(Event::PassiveQuarantinePrepared(epoch, directory, result));
+        });
+    }
+
+    pub(super) fn analyze_quarantine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let case = self.case.as_ref().ok_or("Open a case first")?;
+            let Some(engine) = self.installation.as_ref() else {
+                return analysis::prepare(evidence, analysis::QUARANTINE, vec![])
+                    .map(|run| vec![run]);
+            };
+            let mut draft = AnalysisDraft::new(evidence);
+            draft.selected.insert(analysis::QUARANTINE.into());
+            draft.prepare_in_case(engine, evidence, case)
+        })();
+        match result {
+            Ok(runs) => {
+                let report = runs.last().map(|r| r.id.clone());
+                self.queue_investigation(runs, window, cx);
+                if let Some(report) = report {
+                    self.select_run(report, window, cx);
+                }
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
     pub(super) fn analyze_downloads(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| {
             let evidence = self.evidence().ok_or("Select evidence first")?;

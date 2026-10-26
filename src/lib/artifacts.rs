@@ -42,6 +42,7 @@ pub enum ArtifactGroup {
     Files,
     Web,
     Downloads,
+    Quarantine,
     Applications,
     Strings,
     Registry,
@@ -53,11 +54,12 @@ pub enum ArtifactGroup {
     Other,
 }
 impl ArtifactGroup {
-    pub const BROWSER: [Self; 8] = [
+    pub const BROWSER: [Self; 9] = [
         Self::Processes,
         Self::Network,
         Self::Files,
         Self::Downloads,
+        Self::Quarantine,
         Self::Web,
         Self::Applications,
         Self::Registry,
@@ -78,6 +80,7 @@ impl ArtifactGroup {
             Self::Files => "Files and documents",
             Self::Web => "Browser activity",
             Self::Downloads => "Download investigation",
+            Self::Quarantine => "Quarantined threats",
             Self::Applications => "Process Memory",
             Self::Strings => "Global string search",
             Self::Registry => "Registry",
@@ -96,6 +99,9 @@ impl ArtifactGroup {
         }
         if plugin == crate::analysis::DOWNLOADS {
             return Self::Downloads;
+        }
+        if plugin == crate::analysis::QUARANTINE {
+            return Self::Quarantine;
         }
         if plugin == crate::analysis::NETWORK {
             return Self::Network;

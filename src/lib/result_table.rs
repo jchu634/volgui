@@ -44,6 +44,9 @@ impl Column {
             "createtime" | "exittime" | "created" | "modified" | "accesstime" => 240.,
             "process" | "target" | "source" => 220.,
             "path" => 300.,
+            "originalpath" | "quarantinepath" | "downloadurl" => 300.,
+            "quarantinedat" => 240.,
+            "executionevidence" | "originevidence" | "evidencestatus" => 280.,
             "text" => 320.,
             _ => 180.,
         }
@@ -125,6 +128,19 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
             ("Remote IP", &["Remote IP"]),
             ("Remote port", &["Remote port"]),
             ("Match basis", &["Match basis"]),
+        ],
+        Some(ArtifactGroup::Quarantine) => &[
+            ("Scope", &["Scope"]),
+            ("Antivirus", &["Antivirus"]),
+            ("Evidence status", &["Evidence status"]),
+            ("Threat", &["Threat"]),
+            ("Filename", &["Filename"]),
+            ("Original path", &["Original path"]),
+            ("Quarantined at", &["Quarantined at"]),
+            ("Execution evidence", &["Execution evidence"]),
+            ("PID", &["PID"]),
+            ("Origin evidence", &["Origin evidence"]),
+            ("Download URL", &["URL"]),
         ],
         Some(ArtifactGroup::Applications) => &[
             ("PID", &["PID"]),
@@ -389,5 +405,4 @@ mod tests {
             assert_eq!(cell_text(value), value);
         }
     }
-
 }

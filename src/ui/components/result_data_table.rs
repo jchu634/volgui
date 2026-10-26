@@ -256,7 +256,7 @@ impl TableDelegate for ResultTable {
         let filterable = weak.upgrade().is_some_and(|workspace| {
             matches!(
                 workspace.read(cx).result_group(),
-                Some(ArtifactGroup::Web | ArtifactGroup::Downloads)
+                Some(ArtifactGroup::Web | ArtifactGroup::Downloads | ArtifactGroup::Quarantine)
             )
         }) && matches!(
             column.key.as_str(),
@@ -268,6 +268,11 @@ impl TableDelegate for ResultTable {
                 | "Filename"
                 | "Remote IP"
                 | "Remote port"
+                | "Scope"
+                | "Antivirus"
+                | "Evidence status"
+                | "Execution evidence"
+                | "Origin evidence"
         );
         let header = div()
             .flex()

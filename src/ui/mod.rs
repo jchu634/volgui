@@ -14,7 +14,7 @@ mod views;
 
 use gpui_kit::{
     assets::IconName,
-    base::{Button as ActionButton, Link as TextLink, SelectableText},
+    base::{Link as TextLink, SelectableText},
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt,
         button::{Button, ButtonVariants},
@@ -110,11 +110,17 @@ struct QueryResult {
 
 enum Event {
     Opened(std::result::Result<Case, String>),
+    Rescanned(Case, std::result::Result<PathBuf, String>),
     Validated(std::result::Result<Installation, String>),
     Imported(Vec<std::result::Result<Evidence, String>>),
     Verified(String, std::result::Result<Evidence, String>),
     Progress(String),
     Finished(String, Outcome),
+    PassiveQuarantinePrepared(
+        u64,
+        PathBuf,
+        std::result::Result<Vec<volgui::case::Run>, String>,
+    ),
     FilesListed(
         u64,
         std::result::Result<Vec<volgui::extracted_files::ExtractedFile>, String>,
@@ -248,15 +254,13 @@ pub struct Workspace {
     application_text_scroll: ScrollHandle,
     string_ignore_case: bool,
     registry_key: Entity<InputState>,
-    artifact_open: Option<ArtifactGroup>,
-    artifact_choices: HashMap<ArtifactGroup, BTreeSet<String>>,
-    analysis_group_filter: Option<ArtifactGroup>,
     analysis_collapsed_groups: std::collections::HashSet<ArtifactGroup>,
     sidebar_visible: bool,
     busy: Option<Busy>,
     running: HashMap<String, Busy>,
     queue_paused: bool,
     browser_recovery_pending: bool,
+    passive_quarantine_epoch: u64,
     batch_total: usize,
     batch_finished: usize,
     tx: Sender<Event>,
@@ -268,7 +272,7 @@ pub struct Workspace {
     plugin_os: OperatingSystem,
     analysis_drafts: Vec<AnalysisDraft>,
     analysis_active: usize,
-    show_extended: bool,
+    show_advanced: bool,
     allow_previous_plugins: bool,
     analysis_error: Option<String>,
     query: Entity<InputState>,
@@ -573,15 +577,13 @@ impl Workspace {
                 window,
                 cx,
             ),
-            artifact_open: None,
-            artifact_choices: HashMap::new(),
-            analysis_group_filter: None,
             analysis_collapsed_groups: std::collections::HashSet::new(),
             sidebar_visible: true,
             busy: None,
             running: HashMap::new(),
             queue_paused: false,
             browser_recovery_pending: false,
+            passive_quarantine_epoch: 0,
             batch_total: 0,
             batch_finished: 0,
             tx,
@@ -593,7 +595,7 @@ impl Workspace {
             plugin_os: OperatingSystem::Windows,
             analysis_drafts: Vec::new(),
             analysis_active: 0,
-            show_extended: false,
+            show_advanced: false,
             allow_previous_plugins: false,
             analysis_error: None,
             query,
@@ -715,6 +717,24 @@ impl Workspace {
         while let Ok(event) = self.rx.try_recv() {
             changed = true;
             match event {
+                Event::Rescanned(case, result) => {
+                    self.busy = None;
+                    self.use_case(case, window, cx);
+                    match result {
+                        Ok(backup) => {
+                            self.batch_total = self
+                                .case
+                                .as_ref()
+                                .map_or(0, |case| case.document.runs.len());
+                            self.message = format!(
+                                "Case rebuilt for rescan. Previous case saved to {}",
+                                backup.display()
+                            );
+                            self.start_next(window, cx);
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
                 Event::FilesListed(epoch, result) => {
                     if epoch == self.file_listing_epoch
                         && self.detail == DetailTab::Files
@@ -723,6 +743,9 @@ impl Workspace {
                         && let Some(listing) = &mut self.file_listing
                     {
                         listing.result = Some(result);
+                    }
+                    if epoch == self.file_listing_epoch {
+                        self.refresh_passive_quarantine();
                     }
                 }
                 Event::FileActionCompleted(directory, result) => {
@@ -734,6 +757,42 @@ impl Workspace {
                         match result {
                             Ok(message) => self.message = message,
                             Err(error) => self.error = Some(error),
+                        }
+                        self.refresh_passive_quarantine();
+                    }
+                }
+                Event::PassiveQuarantinePrepared(epoch, directory, result) => {
+                    if epoch != self.passive_quarantine_epoch
+                        || !self
+                            .case
+                            .as_ref()
+                            .is_some_and(|case| case.directory == directory)
+                    {
+                        continue;
+                    }
+                    match result {
+                        Ok(mut runs) => {
+                            if let Some(case) = &self.case {
+                                runs.retain(|candidate| {
+                                    !case.document.runs.iter().any(|r| {
+                                        r.evidence_id == candidate.evidence_id
+                                            && r.plugin == candidate.plugin
+                                            && (r.arguments == candidate.arguments
+                                                || matches!(
+                                                    r.status,
+                                                    RunStatus::Queued | RunStatus::Running
+                                                ))
+                                    })
+                                });
+                            }
+                            if !runs.is_empty() {
+                                self.queue_investigation(runs, window, cx);
+                            }
+                        }
+                        Err(error) => {
+                            self.error = Some(format!(
+                                "Could not refresh passive isolation findings: {error}"
+                            ))
                         }
                     }
                 }
@@ -824,7 +883,6 @@ impl Workspace {
                         }
                     }
                     if !added.is_empty() {
-                        self.artifact_choices.clear();
                         self.query_epoch.fetch_add(1, Ordering::Relaxed);
                         self.selection_epoch += 1;
                         self.selected = None;
@@ -889,6 +947,11 @@ impl Workspace {
                                 }
                             }
                         }
+                    } else if self.result_group() == Some(ArtifactGroup::Quarantine)
+                        && self.scope_label == ArtifactGroup::Quarantine.label()
+                    {
+                        self.scope = self.group_runs(ArtifactGroup::Quarantine);
+                        self.start_query(cx);
                     } else if self.result_group() == Some(ArtifactGroup::Network)
                         && self.scope_label == ArtifactGroup::Network.label()
                         && self.case.as_ref().is_some_and(|case| {
@@ -902,21 +965,20 @@ impl Workspace {
                     {
                         self.scope = self.group_runs(ArtifactGroup::Network);
                         self.start_query(cx);
-                    } else if self.scope.contains(&id) {
-                        self.start_query(cx);
-                    } else if self.result_group() == Some(ArtifactGroup::Processes)
-                        && self.case.as_ref().is_some_and(|case| {
-                            case.document.runs.iter().any(|run| {
-                                run.id == id
-                                    && Some(&run.evidence_id) == self.selected_evidence.as_ref()
-                                    && matches!(
-                                        run.plugin.as_str(),
-                                        "windows.handles.Handles"
-                                            | "linux.lsof.Lsof"
-                                            | "mac.lsof.Lsof"
-                                    )
+                    } else if self.scope.contains(&id)
+                        || self.result_group() == Some(ArtifactGroup::Processes)
+                            && self.case.as_ref().is_some_and(|case| {
+                                case.document.runs.iter().any(|run| {
+                                    run.id == id
+                                        && Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                                        && matches!(
+                                            run.plugin.as_str(),
+                                            "windows.handles.Handles"
+                                                | "linux.lsof.Lsof"
+                                                | "mac.lsof.Lsof"
+                                        )
+                                })
                             })
-                        })
                     {
                         self.start_query(cx);
                     }
@@ -930,6 +992,9 @@ impl Workspace {
                     }) {
                         self.tree_cursor = None;
                         self.start_query(cx);
+                    }
+                    if saved {
+                        self.refresh_passive_quarantine();
                     }
                 }
                 Event::NetworkLoaded(epoch, result) => {
@@ -1092,7 +1157,6 @@ impl Workspace {
                             {
                                 self.selected_evidence = Some(evidence);
                                 self.file_offset_physical = false;
-                                self.artifact_choices.clear();
                                 self.sync_os();
                             }
                             self.view = View::Workspace;

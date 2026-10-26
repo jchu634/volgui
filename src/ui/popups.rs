@@ -1,10 +1,9 @@
-// Renders artifact pickers and the analysis queue.
+// Renders artifact navigation and the analysis queue.
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum PanelKind {
     Queue,
-    Artifact(ArtifactGroup),
 }
 pub(super) struct PopupPanel {
     workspace: WeakEntity<Workspace>,
@@ -29,7 +28,6 @@ impl Render for PopupPanel {
         self.workspace
             .update(cx, |workspace, cx| match self.kind {
                 PanelKind::Queue => workspace.render_queue(cx),
-                PanelKind::Artifact(group) => workspace.render_artifact_picker(group, cx),
             })
             .unwrap_or_else(|_| div().into_any_element())
     }
@@ -46,174 +44,28 @@ impl Workspace {
             .or_insert_with(|| PopupPanel::new(cx.entity().downgrade(), kind, cx))
             .clone()
     }
-    pub(super) fn artifact_plugins(&self, group: ArtifactGroup) -> Vec<volgui::volatility::Plugin> {
-        let os = self
-            .evidence()
-            .map(|e| e.operating_system)
-            .filter(|o| *o != OperatingSystem::Unknown)
-            .unwrap_or(self.plugin_os);
-        self.installation
-            .as_ref()
-            .map(|engine| {
-                chooser_plugins(&engine.plugins, os, true, "")
-                    .into_iter()
-                    .filter(|p| ArtifactGroup::for_plugin(&p.id) == group)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
     pub(super) fn render_artifact_shortcut(
         &self,
         group: ArtifactGroup,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let available = !self.group_runs(group).is_empty();
-        let selected = self.view == View::Workspace && self.result_group() == Some(group);
-        let label = if available {
-            format!("{} · {}", group.label(), self.group_count(group))
-        } else {
-            group.label().into()
-        };
-        let panel = self.popup_panel(PanelKind::Artifact(group), cx);
-        let dropdown = Popover::new(key("artifact-actions", group.label()))
-            .anchor(Anchor::BottomLeft)
-            .open(self.artifact_open == Some(group))
-            .on_open_change(cx.listener(move |this, open, _, cx| {
-                this.artifact_open = if *open { Some(group) } else { None };
-                this.analysis_error = None;
-                cx.notify();
-            }))
-            .trigger(
-                app_button(key("artifact-dropdown", group.label()))
-                    .ghost()
-                    .accessibility_label(format!("Related analyses for {}", group.label()))
-                    .xsmall()
-                    .icon(IconName::ChevronDown)
-                    .tooltip("Related analyses"),
-            )
-            .content(move |_, _, _| panel.clone());
-        div()
-            .flex()
-            .items_center()
+        app_button(key("shortcut", group.label()))
+            .self_start()
             .w_full()
-            .rounded_md()
-            .when(selected, |row| row.bg(cx.theme().accent))
+            .ghost()
+            .small()
+            .accessibility_label(group.label())
+            .selected(self.view == View::Workspace && self.result_group() == Some(group))
             .child(
-                ActionButton::new(key("shortcut", group.label()))
-                    .accessibility_label(format!("Open matching {} results", group.label()))
-                    .h(px(30.))
-                    .px_2()
-                    .rounded_md()
-                    .self_center()
-                    .flex_1()
-                    .min_w_0()
-                    .selected(selected)
-                    .hover(|style| style.bg(cx.theme().muted))
-                    .text_color(if available {
-                        cx.theme().foreground
-                    } else {
-                        cx.theme().muted_foreground
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_start()
-                            .gap_2()
-                            .child(Icon::new(Self::group_icon(group)).size_4())
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_left()
-                                    .truncate()
-                                    .child(label),
-                            ),
-                    )
-                    .justify_start()
-                    .disabled(!available)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.artifact_open = None;
-                        this.choose_group(group, window, cx);
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .w_full()
+                    .child(Icon::new(Self::group_icon(group)).size_4())
+                    .child(group.label()),
             )
-            .child(dropdown)
-            .into_any_element()
-    }
-    fn prepare_artifact_selection(&mut self, group: ArtifactGroup, all: bool) -> bool {
-        let Some(evidence) = self.evidence() else {
-            return false;
-        };
-        let mut draft = AnalysisDraft::new(evidence);
-        draft.selected = if all {
-            self.artifact_plugins(group)
-                .into_iter()
-                .map(|p| p.id)
-                .collect()
-        } else {
-            self.artifact_choices
-                .get(&group)
-                .cloned()
-                .unwrap_or_default()
-        };
-        self.analysis_drafts = vec![draft];
-        self.analysis_active = 0;
-        self.plugin = None;
-        true
-    }
-    fn render_artifact_picker(&self, group: ArtifactGroup, cx: &mut Context<Self>) -> AnyElement {
-        let plugins = self.artifact_plugins(group);
-        let choices = self
-            .artifact_choices
-            .get(&group)
-            .cloned()
-            .unwrap_or_default();
-        let count = choices.len();
-        let mut list = div()
-            .id("artifact-plugin-options")
-            .flex()
-            .flex_col()
-            .gap_2()
-            .max_h(px(280.))
-            .overflow_y_scrollbar();
-        for plugin in &plugins {
-            let id = plugin.id.clone();
-            list = list.child(
-                Checkbox::new(key("artifact-plugin", &id))
-                    .label(id.clone())
-                    .checked(choices.contains(&id))
-                    .on_change(cx.listener(move |this, checked, _, cx| {
-                        let choices = this.artifact_choices.entry(group).or_default();
-                        if *checked {
-                            choices.insert(id.clone());
-                        } else {
-                            choices.remove(&id);
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        let blocked = self.busy.is_some() || plugins.is_empty();
-        div().w(px(440.)).p_3().flex().flex_col().gap_3()
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(group.label()))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Choose analyses to populate this artifact. Each checked analysis adds a separate job."))
-            .when(plugins.is_empty(),|panel|panel.child(div().text_sm().child("No matching analyses in the configured installation. Check the evidence OS and engine settings.")))
-            .child(list)
-            .child(div().flex().gap_2()
-                .child(app_button("artifact-queue-selected").small().primary().label(format!("Queue selected ({count})")).disabled(blocked || count==0).on_click(cx.listener(move|this,_,window,cx|{
-                    if this.prepare_artifact_selection(group,false) { this.queue_analyses(window,cx); if this.analysis_error.is_none(){this.artifact_open=None;} }
-                })))
-                .child(app_button("artifact-queue-all").small().label(format!("Queue all ({})",plugins.len())).disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
-                    if this.prepare_artifact_selection(group,true) {this.queue_analyses(window,cx);if this.analysis_error.is_none(){this.artifact_open=None;}}
-                }))))
-            .child(app_button("artifact-review-options").small().label("Review selection and options...").disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
-                let selected=this.artifact_choices.get(&group).cloned().unwrap_or_default();
-                this.artifact_open=None;
-                this.open_analysis_dialog(this.selected_evidence.iter().cloned().collect(),window,cx);
-                if let Some(draft)=this.analysis_drafts.first_mut(){draft.selected=selected;}
-                this.analysis_group_filter=Some(group);this.show_extended=true;cx.notify();
-            })))
+            .on_click(cx.listener(move |this, _, window, cx| this.choose_group(group, window, cx)))
             .into_any_element()
     }
     fn render_queue(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -297,6 +149,7 @@ impl Workspace {
                             let status = run.status.label();
                             div()
                                 .flex()
+                                .w_full()
                                 .items_center()
                                 .gap_2()
                                 .h(px(32.))
@@ -317,6 +170,7 @@ impl Workspace {
                                         .gap_2()
                                         .child(
                                             div()
+                                                .flex_1()
                                                 .min_w_0()
                                                 .text_sm()
                                                 .truncate()
@@ -342,7 +196,6 @@ impl Workspace {
                                                 )
                                             },
                                         )
-                                        .child(div().flex_1())
                                         .child(
                                             div()
                                                 .text_xs()

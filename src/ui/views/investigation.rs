@@ -94,6 +94,14 @@ impl Workspace {
             .px_3()
             .py_2();
         match self.result_group() {
+            Some(ArtifactGroup::Quarantine) => {
+                tools = tools.child(div().text_xs().child("Isolation targets recorded during other analyses appear automatically, including interrupted scans. Start analysis explicitly to collect quarantine evidence from the capture. Defender metadata identifies threats when cached; other antivirus folders remain candidates. Select a finding for process matches, download origins and source records."))
+                    .child(div().flex().flex_wrap().items_center().gap_2()
+                        .child(app_button("investigate-quarantine").small().primary().label(if self.installation.is_some() { "Start analysis" } else { "Analyze collected evidence" })
+                            .tooltip("Collect quarantine metadata with the configured engine, or analyze existing case records when no engine is configured.")
+                            .disabled(self.is_working() || self.evidence().is_none())
+                            .on_click(cx.listener(|this, _, window, cx| this.analyze_quarantine(window, cx)))));
+            }
             Some(ArtifactGroup::Downloads) => {
                 tools = tools.child(div().text_xs().child("Start with a website or filename. Select a finding to follow download origins, process evidence and remote connections. Filename matches and residual bytes are candidates; a port alone does not identify a reverse shell."))
                     .child(div().flex().flex_wrap().w_full().min_w_0().items_center().gap_2()

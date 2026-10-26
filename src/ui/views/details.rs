@@ -419,8 +419,9 @@ impl Workspace {
                     let browser = self.result_group() == Some(ArtifactGroup::Web);
                     let application = self.result_group() == Some(ArtifactGroup::Applications);
                     let downloads = self.result_group() == Some(ArtifactGroup::Downloads);
-                    let mut actions = div().flex().items_center().gap_2().mb_2();
-                    if downloads {
+                    let quarantine = self.result_group() == Some(ArtifactGroup::Quarantine);
+                    let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+                    if downloads || quarantine {
                         if let Some(pid) = record.record.fields.get("PID").and_then(|v| v.as_u64())
                         {
                             let network_pid = pid.to_string();
@@ -585,6 +586,40 @@ impl Workspace {
                             "Interpretation",
                             "CreateTime",
                             "ExitTime",
+                            "Sources",
+                        ];
+                        ordered.sort_by_key(|(name, _)| {
+                            priority
+                                .iter()
+                                .position(|key| key == name)
+                                .unwrap_or(priority.len())
+                        });
+                    }
+                    if quarantine {
+                        let priority = [
+                            "Scope",
+                            "Evidence status",
+                            "Antivirus",
+                            "Threat",
+                            "Filename",
+                            "Original path",
+                            "Quarantine path",
+                            "Quarantined at",
+                            "Local output",
+                            "Blocked reason",
+                            "Source analysis",
+                            "Source status",
+                            "Analysis diagnostics",
+                            "Execution evidence",
+                            "PID",
+                            "Match basis",
+                            "CreateTime",
+                            "ExitTime",
+                            "Origin evidence",
+                            "Website URL",
+                            "URL",
+                            "Recovery details",
+                            "Interpretation",
                             "Sources",
                         ];
                         ordered.sort_by_key(|(name, _)| {

@@ -17,23 +17,14 @@ impl Workspace {
             })
             .map(|r| r.id.clone())
             // The report is a complete source snapshot. Older interpretations remain in history.
-            .take(if group == ArtifactGroup::Downloads {
-                1
-            } else {
-                usize::MAX
-            })
+            .take(
+                if matches!(group, ArtifactGroup::Downloads | ArtifactGroup::Quarantine) {
+                    1
+                } else {
+                    usize::MAX
+                },
+            )
             .collect()
-    }
-    pub(super) fn group_count(&self, group: ArtifactGroup) -> usize {
-        let ids = self.group_runs(group);
-        self.case.as_ref().map_or(0, |c| {
-            c.document
-                .runs
-                .iter()
-                .filter(|r| ids.contains(&r.id))
-                .map(|r| r.row_count)
-                .sum()
-        })
     }
     pub(super) fn select_evidence(
         &mut self,
@@ -42,8 +33,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.remember_location(cx);
-        self.artifact_choices.clear();
-        self.artifact_open = None;
         self.selected_evidence = Some(id);
         self.file_offset_physical = false;
         self.sync_os();
@@ -66,11 +55,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.remember_location(cx);
-        if ArtifactGroup::BROWSER.contains(&group) {
-            self.browser_group = group;
-        }
+        self.browser_group = group;
         let runs = self.group_runs(group);
         self.set_scope(runs, group.label().into(), window, cx);
+        if group == ArtifactGroup::Quarantine {
+            self.refresh_passive_quarantine();
+        }
     }
     pub(super) fn select_run(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(run) = self
@@ -102,7 +92,6 @@ impl Workspace {
                 .update(cx, |input, cx| input.set_value(path, window, cx));
         }
         if Some(&run.evidence_id) != self.selected_evidence.as_ref() {
-            self.artifact_choices.clear();
             self.selected_evidence = Some(run.evidence_id.clone());
             self.file_offset_physical = false;
             self.sync_os();
@@ -114,6 +103,8 @@ impl Workspace {
             volgui::analysis::application::target_pid(&run.arguments)
                 .map(|pid| format!("Process memory · PID {pid}"))
                 .unwrap_or_else(|_| "Process Memory".into())
+        } else if run.plugin == volgui::analysis::QUARANTINE {
+            ArtifactGroup::Quarantine.label().into()
         } else {
             run.plugin
         };
@@ -178,7 +169,7 @@ impl Workspace {
         Query {
             filters: if matches!(
                 self.result_group(),
-                Some(ArtifactGroup::Web | ArtifactGroup::Downloads)
+                Some(ArtifactGroup::Web | ArtifactGroup::Downloads | ArtifactGroup::Quarantine)
             ) {
                 self.column_filters.clone()
             } else {

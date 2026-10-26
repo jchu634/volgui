@@ -78,7 +78,6 @@ impl Workspace {
         self.batch_total = 0;
         self.batch_finished = 0;
         self.view = View::Workspace;
-        self.artifact_choices.clear();
         self.message = "Case opened".into();
         window.set_window_title("VolGUI");
         if let Err(e) = self.settings.remember(path) {
@@ -101,6 +100,7 @@ impl Workspace {
             self.select_run(id, window, cx);
         }
         self.back_stack.clear();
+        self.refresh_passive_quarantine();
     }
     pub(super) fn sync_os(&mut self) {
         if let Some(os) = self

@@ -1,5 +1,46 @@
 # Validation
 
+## Quarantined threats validation
+
+`cargo run --locked --example seed_quarantine -- <new-case-directory>` creates a
+benign native UI fixture with confirmed synthetic Defender metadata, folder
+candidates, process and origin matches, and a separately labelled local output.
+
+`cargo test --locked --no-default-features --features test-engine --test quarantine`
+checks encrypted Defender metadata recovery, source navigation references, process
+and origin match limits, capture boundaries, deferred queue expansion, cancellation,
+local blocked output separation, filtering, export and reopening. Parser unit tests
+also reject truncated sections, invalid sizes and checksum failures.
+
+To check an independently collected Defender Entries metadata file:
+
+```powershell
+$env:VOLGUI_TEST_DEFENDER_ENTRY = 'C:\Evidence\DefenderEntry'
+cargo test --locked --no-default-features --features test-engine --test quarantine independently_captured_defender_metadata -- --ignored
+```
+
+In a Windows capture, choose **Quarantined threats > Start analysis**. Confirm the
+Scope filter separates **Memory capture** from **Local computer**. Select confirmed
+Defender metadata and inspect original path, threat, quarantine time, execution
+evidence and origin. Open each source and return with Back. Known folders from other
+products must remain candidates. Empty cache recovery must not appear as local
+antivirus blocking. Local blocked records include their stored reason and never
+claim a confirmed antivirus cause. Recovery depends on cache pages in the capture.
+
+The Investigation artifacts shortcuts have no counts or dropdowns. Their analyses
+remain available under New analysis, including Show extended analyses.
+
+Passive isolation checks run automatically when a case opens and after analyses
+finish or file access records a blocked output. No quarantine scan is required.
+For a fixture with no pre-existing quarantine report, append `--passive-only` to
+the seed command above, then open that case in the app.
+Open an existing case containing failed or cancelled antivirus-related jobs and
+confirm they appear with source status and diagnostics. An unknown target remains
+unknown. Repeat opening the view and reopening the case to check unchanged
+findings do not queue duplicate reports. A fresh blocked output should update the
+view without hiding capture findings from an earlier explicit analysis. Passive
+updates also work with an offline capture and do not disable explicit collection.
+
 ## Download investigation validation
 
 ```powershell

@@ -2,6 +2,37 @@
 use super::*;
 
 impl Workspace {
+    pub(super) fn rescan_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_working() || self.has_queued() {
+            self.analysis_error =
+                Some("Finish or cancel queued and running analyses before rescanning".into());
+            cx.notify();
+            return;
+        }
+        let Some(engine) = self.installation.clone() else {
+            self.analysis_error = Some("Configure analysis engine in settings".into());
+            cx.notify();
+            return;
+        };
+        let Some(mut case) = self.case.take() else {
+            return;
+        };
+        let cancel = self.start("Backing up and rebuilding case for rescan");
+        self.query_epoch.fetch_add(1, Ordering::Relaxed);
+        self.selection_epoch += 1;
+        self.handle_epoch += 1;
+        self.reset_file_listing();
+        self.reset_hex();
+        self.browser_recovery_pending = false;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = case.rescan(&engine, &cancel);
+            let _ = tx.send(Event::Rescanned(case, result));
+        });
+        window.close_dialog(cx);
+        cx.notify();
+    }
+
     pub(super) fn plugin_help(&mut self, cx: &mut Context<Self>) {
         if self.is_working() {
             return;
@@ -20,6 +51,8 @@ impl Workspace {
                 Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. No raw memory string scan or payload configuration recovery is performed. Use Global string search or Process Memory separately for memory searches. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
             } else if plugin == volgui::analysis::DOWNLOADS {
                 Ok(volgui::analysis::downloads::HELP.into())
+            } else if plugin == volgui::analysis::QUARANTINE {
+                Ok(volgui::analysis::quarantine::HELP.into())
             } else if plugin == volgui::analysis::BROWSER
                 || plugin == volgui::analyses::REGISTRY_ALL
             {
@@ -156,6 +189,7 @@ impl Workspace {
                     && draft.selected.iter().any(|id| {
                         case.document.runs.iter().any(|run| {
                             run.status.blocks_plugin_selection()
+                                && !volgui::analysis::quarantine::is_passive(run)
                                 && run.evidence_id == draft.evidence_id
                                 && &run.plugin == id
                         })
@@ -408,9 +442,12 @@ impl Workspace {
                 && case.document.runs[i].message == volgui::analysis::files::PENDING;
             let downloads_pending = case.document.runs[i].plugin == volgui::analysis::DOWNLOADS
                 && case.document.runs[i].message == volgui::analysis::downloads::PENDING;
+            let quarantine_pending = case.document.runs[i].plugin == volgui::analysis::QUARANTINE
+                && case.document.runs[i].message == volgui::analysis::quarantine::PENDING;
             if application_pending
                 || files_pending
                 || downloads_pending
+                || quarantine_pending
                 || case.document.runs[i].plugin == volgui::analysis::BROWSER
                     && case.document.runs[i].message == volgui::analyses::BROWSER_RECOVERY_PENDING
             {
@@ -419,6 +456,12 @@ impl Workspace {
                 };
                 let prepared = if application_pending {
                     volgui::analyses::prepare_application_recovery(
+                        case,
+                        engine,
+                        &case.document.runs[i],
+                    )
+                } else if quarantine_pending {
+                    volgui::analyses::prepare_quarantine_recovery(
                         case,
                         engine,
                         &case.document.runs[i],
@@ -438,7 +481,10 @@ impl Workspace {
                     Ok(runs) => {
                         let previous = case.document.runs.clone();
                         case.document.runs[i].message.clear();
-                        let replace = application_pending || files_pending || downloads_pending;
+                        let replace = application_pending
+                            || files_pending
+                            || downloads_pending
+                            || quarantine_pending;
                         let count = runs.len().saturating_sub(usize::from(replace));
                         if replace {
                             case.document.runs.splice(i..=i, runs);
@@ -482,7 +528,9 @@ impl Workspace {
                 .iter()
                 .find(|e| e.id == case.document.runs[i].evidence_id)
                 .unwrap();
-            if let Err(e) = evidence.check_metadata() {
+            if !volgui::analysis::quarantine::is_passive(&case.document.runs[i])
+                && let Err(e) = evidence.check_metadata()
+            {
                 self.file_dumps.remove(&case.document.runs[i].id);
                 case.document.runs[i].status = RunStatus::Failed;
                 case.document.runs[i].message = e.clone();

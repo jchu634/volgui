@@ -6,6 +6,7 @@ pub mod files;
 mod process_memory;
 pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod network;
+pub mod quarantine;
 pub mod registry;
 pub mod strings;
 
@@ -26,11 +27,12 @@ pub const STRINGS: &str = "volgui.strings.Search";
 pub const NETWORK: &str = "volgui.network.Investigation";
 pub const FILES: &str = "volgui.files.Recovery";
 pub const DOWNLOADS: &str = "volgui.downloads.Investigation";
+pub const QUARANTINE: &str = "volgui.quarantine.Investigation";
 
 pub fn is_native(plugin: &str) -> bool {
     matches!(
         plugin,
-        BROWSER | APPLICATION | STRINGS | NETWORK | FILES | DOWNLOADS
+        BROWSER | APPLICATION | STRINGS | NETWORK | FILES | DOWNLOADS | QUARANTINE
     )
 }
 
@@ -38,7 +40,9 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
     if !is_native(plugin) {
         return Err("Unknown application analysis".into());
     }
-    evidence.check_metadata()?;
+    if plugin != QUARANTINE || !quarantine::passive_arguments(&arguments) {
+        evidence.check_metadata()?;
+    }
     if plugin == STRINGS {
         strings::validate(&arguments)?;
     }
@@ -53,6 +57,9 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
     }
     if plugin == DOWNLOADS && !arguments.is_empty() {
         return Err("Download investigation does not accept custom arguments".into());
+    }
+    if plugin == QUARANTINE && !arguments.is_empty() && !quarantine::passive_arguments(&arguments) {
+        return Err("Quarantine investigation does not accept custom arguments".into());
     }
     Ok(Run {
         id: uuid::Uuid::new_v4().to_string(),
@@ -87,7 +94,9 @@ pub fn execute(
             .iter()
             .find(|e| e.id == run.evidence_id)
             .ok_or("Evidence is no longer available")?;
-        evidence.check_metadata()?;
+        if !quarantine::is_passive(run) {
+            evidence.check_metadata()?;
+        }
         match run.plugin.as_str() {
             BROWSER => browser::analyze(directory, document, run, cancel, &progress),
             APPLICATION => application::analyze(directory, document, run, cancel, &progress),
@@ -95,6 +104,7 @@ pub fn execute(
             NETWORK => network::analyze(directory, document, run, cancel, &progress),
             FILES => files::analyze(directory, document, run, cancel, &progress),
             DOWNLOADS => downloads::analyze(directory, document, run, cancel, &progress),
+            QUARANTINE => quarantine::analyze(directory, document, run, cancel, &progress),
             _ => Err("Unknown application analysis".into()),
         }
     })();

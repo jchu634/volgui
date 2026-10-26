@@ -34,6 +34,14 @@ fn error(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+fn archive_error(path: &Path, name: &str, error: io::Error) -> String {
+    let reason = format!("Could not archive {name}: {error}");
+    if matches!(error.raw_os_error(), Some(225 | 226)) {
+        let _ = block(path, &reason);
+    }
+    reason
+}
+
 fn sql_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
@@ -184,7 +192,7 @@ impl ObjectStore {
             }
             let mut source = BufReader::with_capacity(
                 1024 * 1024,
-                File::open(&path).map_err(|e| e.to_string())?,
+                File::open(&path).map_err(|e| archive_error(&path, &name, e))?,
             );
             let before = source.get_ref().metadata().map_err(|e| e.to_string())?;
             let mut manifest = Vec::with_capacity(manifest_length(before.len())?);
@@ -197,7 +205,7 @@ impl ObjectStore {
                 while count < buffer.len() {
                     let n = source
                         .read(&mut buffer[count..])
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| archive_error(&path, &name, e))?;
                     if n == 0 {
                         break;
                     }
@@ -625,25 +633,28 @@ pub fn block(path: &Path, reason: &str) -> Result<bool> {
     };
     // A handled case path must never create a sidecar marker as a fallback.
     // Busy connections and sharing violations remain retryable.
-    let permanent = if let Some(blob) = stored_blob(path)? {
-        reason.contains("Stored file SHA-256 mismatch")
-            || reason.contains("Stored file size mismatch")
-            || blob.path.try_exists().is_ok_and(|exists| !exists)
-    } else if stored_hash(path)?.is_some() {
-        [
-            "manifest",
-            "Stored chunk SHA-256 mismatch",
-            "Corrupt stored chunk",
-            "Invalid chunk bounds",
-            "Complete file SHA-256 mismatch",
-        ]
-        .iter()
-        .any(|message| reason.contains(message))
-            || root.join(PACK).try_exists().is_ok_and(|exists| !exists)
-    } else {
-        !matches!(name.as_str(), "stdout.json" | "stderr.log")
-            && path.try_exists().is_ok_and(|exists| !exists)
-    };
+    let antivirus = !matches!(name.as_str(), "stdout.json" | "stderr.log")
+        && (reason.contains("(os error 225)") || reason.contains("(os error 226)"));
+    let permanent = antivirus
+        || if let Some(blob) = stored_blob(path)? {
+            reason.contains("Stored file SHA-256 mismatch")
+                || reason.contains("Stored file size mismatch")
+                || blob.path.try_exists().is_ok_and(|exists| !exists)
+        } else if stored_hash(path)?.is_some() {
+            [
+                "manifest",
+                "Stored chunk SHA-256 mismatch",
+                "Corrupt stored chunk",
+                "Invalid chunk bounds",
+                "Complete file SHA-256 mismatch",
+            ]
+            .iter()
+            .any(|message| reason.contains(message))
+                || root.join(PACK).try_exists().is_ok_and(|exists| !exists)
+        } else {
+            !matches!(name.as_str(), "stdout.json" | "stderr.log")
+                && path.try_exists().is_ok_and(|exists| !exists)
+        };
     if !permanent {
         return Ok(true);
     }
