@@ -1,5 +1,5 @@
 use super::*;
-use volgui::network::{Endpoint, Entry, Filter, Overview, Selection, service};
+use volgui::network::{Endpoint, Entry, Filter, Overview, Selection, common_service, service};
 
 const ENTRIES_PER_PAGE: usize = 40;
 const PORTS_PER_PEER: usize = 12;
@@ -813,7 +813,10 @@ impl Workspace {
         let endpoints = [&entry.local, &entry.remote]
             .into_iter()
             .flatten()
-            .map(Endpoint::label)
+            .map(|endpoint| match common_service(endpoint.port) {
+                Some(service) => format!("{} ({service})", endpoint.label()),
+                None => endpoint.label(),
+            })
             .collect::<Vec<_>>();
         if !endpoints.is_empty() {
             card = card.child(div().child(endpoints.join(" ↔ ")));

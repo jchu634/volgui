@@ -459,8 +459,16 @@ impl Graph {
 
 /// Common assignments are investigation hints, not identification of the actual service.
 pub fn service(port: Option<u16>) -> &'static str {
-    match port {
+    common_service(port).unwrap_or(match port {
         Some(0) => "Unspecified port",
+        None => "Port not recovered",
+        _ => "No common service assignment",
+    })
+}
+
+/// Common port assignments, when known, without a fallback description.
+pub fn common_service(port: Option<u16>) -> Option<&'static str> {
+    Some(match port {
         Some(21) => "FTP control",
         Some(22) => "SSH",
         Some(23) => "Telnet",
@@ -479,7 +487,6 @@ pub fn service(port: Option<u16>) -> &'static str {
         Some(3306) => "MySQL",
         Some(3389) => "Remote Desktop",
         Some(5985 | 5986) => "WinRM",
-        None => "Port not recovered",
-        _ => "No common service assignment",
-    }
+        _ => return None,
+    })
 }
