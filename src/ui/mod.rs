@@ -9,6 +9,7 @@ mod investigation_actions;
 mod navigation;
 mod popups;
 mod result_actions;
+mod scroll_state;
 mod shell;
 mod views;
 
@@ -26,7 +27,7 @@ use gpui_kit::{
         popover::Popover,
         progress::ProgressCircle,
         resizable::{h_resizable, resizable_panel, v_resizable},
-        scroll::{ScrollableElement, Scrollbar, ScrollbarMode},
+        scroll::{Scrollbar, ScrollbarMode},
         table::{
             Column as DataColumn, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
         },
@@ -67,7 +68,7 @@ enum View {
     Bookmarks,
     CaseInfo,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DetailTab {
     Overview,
     Raw,
@@ -180,6 +181,7 @@ impl Drop for Busy {
 }
 
 pub struct Workspace {
+    scroll_state: scroll_state::SessionScroll,
     settings: Settings,
     installation: Option<Installation>,
     case: Option<Case>,
@@ -235,7 +237,6 @@ pub struct Workspace {
     result_viewport_width: Pixels,
     analysis_table: Entity<TableState<components::analysis_data_table::AnalysisTable>>,
     database_table: Entity<TableState<components::database_data_table::DatabaseTable>>,
-    details_scroll: ScrollHandle,
     queue_scroll: UniformListScrollHandle,
     relations_scroll: UniformListScrollHandle,
     column_widths: HashMap<String, Pixels>,
@@ -531,6 +532,7 @@ impl Workspace {
             }),
         ];
         let mut this = Self {
+            scroll_state: scroll_state::SessionScroll::default(),
             engine_path: field(
                 settings.executable.display().to_string(),
                 "Path to vol.exe, vol-rs.exe or its installation directory",
@@ -600,7 +602,6 @@ impl Workspace {
             result_viewport_width: px(0.),
             analysis_table,
             database_table,
-            details_scroll: ScrollHandle::default(),
             queue_scroll: UniformListScrollHandle::default(),
             relations_scroll: UniformListScrollHandle::default(),
             column_widths: HashMap::new(),

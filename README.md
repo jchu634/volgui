@@ -25,6 +25,8 @@ Download the Windows application from [Releases](https://github.com/jchu634/volg
 
 Recovered files can be inspected as hex, text or read-only SQLite tables. Findings retain source references and support CSV export and bookmarks. Recovery depends on the bytes present in the capture; a filename match, memory string or recovered configuration does not by itself prove execution or a connection.
 
+Scroll positions are remembered while switching views and using Back during a session. Closing the application or switching cases resets them.
+
 The specialized recovery workflows currently require Windows evidence. Available engine plugins also supply Linux and macOS artifact views. See [Analysis Details](docs/analysis-details.md) for the plugins and recovery processing behind each analysis.
 
 ## Documentation

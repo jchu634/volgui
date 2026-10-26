@@ -368,7 +368,9 @@ impl Workspace {
                 .child(Input::new(&self.arguments).id("plugin-arguments").aria_label("Plugin arguments").small())
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Options are saved separately for each analysis. Select its checkbox to include it in the queue."))
                 .child(app_button("load-options").small().label("Load options").disabled(self.is_working()).on_click(cx.listener(|this,_,_,cx| this.plugin_help(cx))))
-                .child(div().id("plugin-help").flex_1().min_h_0().overflow_y_scroll().text_xs().font_family("Consolas").child(self.plugin_help.clone())));
+                .child(div().id("plugin-help").flex_1().min_h_0().overflow_y_scroll()
+                    .track_scroll(&self.scroll_state.area(scroll_state::ScrollArea::PluginHelp(self.plugin.clone())))
+                    .text_xs().font_family("Consolas").child(self.plugin_help.clone())));
         }
         page.child(
             div()

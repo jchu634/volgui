@@ -431,6 +431,9 @@ impl Workspace {
                     .min_w_0()
                     .flex_shrink_0()
                     .overflow_x_scroll()
+                    .track_scroll(&self.scroll_state.area(
+                        scroll_state::ScrollArea::NetworkNavigation(self.selected_evidence.clone()),
+                    ))
                     .px_3()
                     .py_1()
                     .child(navigation),
@@ -457,6 +460,11 @@ impl Workspace {
             body = body.child(div().p_4().child("Loading network entries..."));
         } else if self.network_table_view {
             self.sync_network_table(overview.indices.clone(), cx);
+            self.restore_table_scroll(
+                scroll_state::ResultTableKind::Network,
+                &self.network_table,
+                cx,
+            );
             body = body.child(
                 div()
                     .id("network-table")

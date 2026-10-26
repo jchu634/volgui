@@ -328,6 +328,10 @@ impl Workspace {
 
     pub(in crate::ui) fn render_details(&self, cx: &mut Context<Self>) -> AnyElement {
         let record = self.selected.as_ref();
+        let details_scroll = self.scroll_state.area(scroll_state::ScrollArea::Details(
+            record.map(|record| record.id),
+            self.detail,
+        ));
         let marked = self
             .case
             .as_ref()
@@ -380,7 +384,7 @@ impl Workspace {
         }
         let mut content = div()
             .id("artifact-details-scroll")
-            .track_scroll(&self.details_scroll)
+            .track_scroll(&details_scroll)
             .overflow_scroll()
             .p_3()
             .size_full();
@@ -1061,8 +1065,8 @@ impl Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(div().size_full().child(content))
-                    .child(Scrollbar::vertical(&self.details_scroll).mode(ScrollbarMode::Always))
-                    .child(Scrollbar::horizontal(&self.details_scroll).mode(ScrollbarMode::Always)),
+                    .child(Scrollbar::vertical(&details_scroll).mode(ScrollbarMode::Always))
+                    .child(Scrollbar::horizontal(&details_scroll).mode(ScrollbarMode::Always)),
             )
             .into_any_element()
     }

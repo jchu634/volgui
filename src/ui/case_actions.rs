@@ -50,6 +50,8 @@ impl Workspace {
             self.error = Some(error);
             return;
         }
+        self.reset_scroll_state(cx);
+        self.back_stack.clear();
         self.query_epoch.fetch_add(1, Ordering::Relaxed);
         self.selection_epoch += 1;
         self.selected_evidence = case.document.evidence.first().map(|e| e.id.clone());

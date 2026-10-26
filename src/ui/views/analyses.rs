@@ -4,16 +4,13 @@ use super::*;
 impl Workspace {
     pub(in crate::ui) fn render_analyses(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut page = div()
-            .id("analyses")
-            .flex_1()
-            .overflow_y_scrollbar()
             .p_5()
             .flex()
             .flex_col()
             .gap_3()
             .child(div().text_xl().child("Analysis history"));
         let Some(case) = &self.case else {
-            return page.into_any_element();
+            return self.scroll_state.page(scroll_state::ScrollArea::Analyses, page);
         };
         if self.queue_paused {
             page = page.child(
@@ -139,6 +136,6 @@ impl Workspace {
                     .child(actions),
             );
         }
-        page.into_any_element()
+        self.scroll_state.page(scroll_state::ScrollArea::Analyses, page)
     }
 }

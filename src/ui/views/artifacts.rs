@@ -195,6 +195,7 @@ impl Workspace {
             _ => {}
         }
         self.sync_result_table(cx);
+        self.restore_table_scroll(scroll_state::ResultTableKind::Results, &self.result_table, cx);
         let workspace = cx.entity().downgrade();
         div()
             .flex()

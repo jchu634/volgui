@@ -4,9 +4,6 @@ use super::*;
 impl Workspace {
     pub(in crate::ui) fn render_bookmarks(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut page = div()
-            .id("bookmarks-page")
-            .flex_1()
-            .overflow_y_scrollbar()
             .p_5()
             .flex()
             .flex_col()
@@ -70,6 +67,6 @@ impl Workspace {
                 );
             }
         }
-        page.into_any_element()
+        self.scroll_state.page(scroll_state::ScrollArea::Bookmarks, page)
     }
 }

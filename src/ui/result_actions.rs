@@ -158,6 +158,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.remember_result_scroll(cx);
         let was_application = self.result_group() == Some(ArtifactGroup::Applications);
         self.network = volgui::network::Graph::default();
         *self.network_cache.borrow_mut() = Default::default();
@@ -196,6 +197,7 @@ impl Workspace {
         self.query_due = None;
         self.result_scroll = UniformListScrollHandle::default();
         self.reset_result_table(cx);
+        self.prepare_result_scroll(None);
         self.start_query(cx);
         cx.notify();
     }
@@ -512,7 +514,6 @@ impl Workspace {
             self.load_hex(cx);
         }
         self.raw_expanded.clear();
-        self.details_scroll.set_offset(Point::default());
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
         if let Some(pid) = self.selected.as_ref().and_then(|r| {
