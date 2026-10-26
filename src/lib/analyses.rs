@@ -250,7 +250,7 @@ pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
         },
         Plugin {
             id: crate::analysis::NETWORK.into(),
-            description: "Collect available Windows sockets, processes, command lines, console history and handles. Correlate SMB shares and explicit connection commands in collected records. Credentials are read only when present in a network drive command. Also recovers structurally validated Meterpreter TCP configurations from acquisition bytes. Does not search raw memory for credentials or arbitrary connection strings. Findings retain source record provenance or acquisition offsets.".into(),
+            description: "Collect available Windows sockets, processes, command lines, console history and handles. Correlate SMB shares and explicit connection commands in collected records. Credentials are read only when present in a network drive command. Recover validated Meterpreter TCP configurations and separately labelled incomplete configuration candidates. Compare payload UUIDs and session GUIDs; acquisition bytes alone do not establish process ownership or successful connections. Does not search raw memory for credentials or arbitrary connection strings. Findings retain source record provenance or acquisition offsets.".into(),
         },
         Plugin {
             id: crate::analysis::APPLICATION.into(),
