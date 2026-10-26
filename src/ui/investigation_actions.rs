@@ -530,7 +530,21 @@ impl Workspace {
             )
         })();
         match result {
-            Ok(run) => self.queue_investigation(vec![run], window, cx),
+            Ok(run) => {
+                let id = run.id.clone();
+                self.queue_investigation(vec![run], window, cx);
+                if dump_files
+                    && self.case.as_ref().is_some_and(|case| case.document.runs.iter().any(|run| run.id == id))
+                    && let Some(record) = &self.selected
+                {
+                    self.file_dumps.insert(id, FileDumpRequest {
+                        record_id: record.id,
+                        selection_epoch: self.selection_epoch,
+                        executable: None,
+                        show_hex: self.content_sidebar_visible,
+                    });
+                }
+            }
             Err(error) => {
                 self.error = Some(error);
                 cx.notify();

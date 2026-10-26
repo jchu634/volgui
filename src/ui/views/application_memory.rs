@@ -190,7 +190,7 @@ impl Workspace {
             HexView::Error(error) => {
                 decoded = decoded.child(error.clone());
             }
-            HexView::Idle => {
+            HexView::Idle | HexView::NeedsMemory => {
                 decoded = decoded.child("Decoded bytes will appear beside the hex view.");
             }
         }
@@ -243,7 +243,7 @@ impl Workspace {
             return editor.clone().into_any_element();
         }
         let message = match &self.hex_view {
-            HexView::Idle => "Enter a PID and scan its memory, or select a recovered fragment.",
+            HexView::Idle | HexView::NeedsMemory => "Enter a PID and scan its memory, or select a recovered fragment.",
             HexView::Loading => "Loading process memory...",
             HexView::Error(error) => error.as_str(),
             HexView::Ready { .. } => "Preparing hex editor...",

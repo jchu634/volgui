@@ -94,6 +94,7 @@ enum HexView {
     #[default]
     Idle,
     Loading,
+    NeedsMemory,
     Ready {
         files: Vec<PathBuf>,
         page: volgui::extracted_files::HexPage,
@@ -147,6 +148,7 @@ enum Event {
         std::result::Result<(Vec<PathBuf>, volgui::extracted_files::HexPage), String>,
     ),
     MemoryScanDumpNeeded(u64, String, u64),
+    MemoryScanLoadAvailable(u64),
     BrowserPrepared(std::result::Result<Vec<volgui::case::Run>, String>),
     HandlesLoaded(
         u64,
@@ -1264,6 +1266,11 @@ impl Workspace {
                     Ok(p) => self.message = format!("Exported {}", p.display()),
                     Err(e) => self.error = Some(format!("Export failed: {e}")),
                 },
+                Event::MemoryScanLoadAvailable(epoch) => {
+                    if epoch == self.hex_epoch {
+                        self.hex_view = HexView::NeedsMemory;
+                    }
+                }
                 Event::MemoryScanDumpNeeded(epoch, evidence_id, pid) => {
                     if epoch != self.hex_epoch {
                         continue;

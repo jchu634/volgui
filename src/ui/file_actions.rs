@@ -18,7 +18,21 @@ impl Workspace {
         {
             return Some(run);
         }
-        extracted_files::completed_dump(case, record, self.file_offset_physical)
+        extracted_files::completed_dump(case, record, self.file_offset_physical).or_else(|| {
+            let source = case.document.runs.iter().find(|run| run.id == record.run_id)?;
+            if ArtifactGroup::for_plugin(&source.plugin) != ArtifactGroup::Processes {
+                return None;
+            }
+            let pid = ["PID", "Pid", "pid"].iter()
+                .map(|key| record.record.text(key))
+                .find(|pid| pid.parse::<u64>().is_ok())?;
+            case.document.runs.iter().rev().find(|run| {
+                run.plugin == extracted_files::DUMP_FILES
+                    && run.evidence_id == source.evidence_id
+                    && run.status == RunStatus::Completed
+                    && run.arguments == ["--pid", pid.as_str()]
+            })
+        })
     }
 
     pub(super) fn locate_imhex(&self) {
@@ -272,10 +286,10 @@ impl Workspace {
                     let _ = tx.send(Event::MemoryScanDumpNeeded(epoch, evidence_id, pid));
                     return;
                 }
-                Ok(volgui::memory_scan::Content::NeedsDump { .. }) => Err(
-                    "Use View surrounding memory to collect the process bytes for this result."
-                        .into(),
-                ),
+                Ok(volgui::memory_scan::Content::NeedsDump { .. }) => {
+                    let _ = tx.send(Event::MemoryScanLoadAvailable(epoch));
+                    return;
+                }
                 Err(error) => Err(error),
             };
             let _ = tx.send(Event::HexLoaded(epoch, result));

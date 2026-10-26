@@ -146,11 +146,46 @@ impl Workspace {
         let mut content = div().flex().flex_col().gap_2().text_sm();
         match &self.hex_view {
             HexView::Idle => {
-                content = content.child(if matches!(self.result_group(), Some(ArtifactGroup::Files | ArtifactGroup::Processes)) {
-                    "Cached contents have not been recovered. Use Dump file in record details, or choose File and document recovery in New analysis."
+                if matches!(self.result_group(), Some(ArtifactGroup::Files | ArtifactGroup::Processes)) {
+                    let file_target = self.selected.as_ref().and_then(|record| {
+                        let source = self.case.as_ref()?.document.runs.iter()
+                            .find(|run| run.id == record.run_id)?;
+                        volgui::extracted_files::FileDumpTarget::from_record(&source.plugin, &record.record)
+                    }).is_some();
+                    let process_target = self.result_group() == Some(ArtifactGroup::Processes)
+                        && self.selected.as_ref().is_some_and(|record| {
+                            ["PID", "Pid", "pid"].iter().any(|key| record.record.text(key).parse::<u64>().is_ok())
+                        });
+                    let available = (file_target || process_target)
+                        && self.busy.is_none()
+                        && self.installation.as_ref().is_some_and(|engine| {
+                            engine.plugins.iter().any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
+                        });
+                    content = content.child(
+                        app_button("dump-load-sidebar-files")
+                            .small()
+                            .label("Dump and Load files")
+                            .disabled(!available)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if file_target {
+                                    this.dump_file(false, true, window, cx);
+                                } else {
+                                    this.collect_process_files(window, cx);
+                                }
+                            })),
+                    );
                 } else {
-                    "No sidebar view is available for this content."
-                });
+                    content = content.child("No sidebar view is available for this content.");
+                }
+            }
+            HexView::NeedsMemory => {
+                content = content.child(
+                    app_button("load-scan-memory")
+                        .small()
+                        .label("Load memory")
+                        .disabled(self.loading)
+                        .on_click(cx.listener(|this, _, _, cx| this.view_memory_scan(cx))),
+                );
             }
             HexView::Loading => {
                 content = content.child(if self.memory_scan_dump.is_some() {
