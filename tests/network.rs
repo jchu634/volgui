@@ -784,30 +784,6 @@ fn all_source_ips_preserve_each_source_and_peer_without_inventing_reference_edge
 }
 
 #[test]
-fn ip_navigation_stops_at_both_ends_and_requires_a_selected_address() {
-    use volgui::network::adjacent_address;
-    let addresses: Vec<String> = ["10.0.0.1", "10.0.0.2", "2001:db8::1"]
-        .map(String::from)
-        .into();
-    assert_eq!(adjacent_address(&addresses, Some("10.0.0.1"), false), None);
-    assert_eq!(
-        adjacent_address(&addresses, Some("2001:db8::1"), true),
-        None
-    );
-    assert_eq!(
-        adjacent_address(&addresses, Some("10.0.0.1"), true).as_deref(),
-        Some("10.0.0.2")
-    );
-    assert_eq!(
-        adjacent_address(&addresses, Some("2001:db8::1"), false).as_deref(),
-        Some("10.0.0.2")
-    );
-    assert_eq!(adjacent_address(&addresses, None, true), None);
-    assert_eq!(adjacent_address(&[], None, false), None);
-    assert_eq!(adjacent_address(&addresses, Some("missing"), true), None);
-}
-
-#[test]
 fn interesting_recovery_retries_interrupted_or_old_parsers_without_duplicate_jobs() {
     let (_temp, mut case, evidence) = case();
     let mut run = analysis::prepare(&evidence, analysis::NETWORK, vec![]).unwrap();

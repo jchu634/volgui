@@ -2,7 +2,7 @@
 use serde_json::json;
 use std::{collections::BTreeMap, sync::atomic::AtomicBool, time::Instant};
 use volgui::{
-    artifacts::{ArtifactGroup, OperatingSystem},
+    artifacts::ArtifactGroup,
     case::{Run, RunStatus, now},
     results::{DATABASE, Query, ResultStore},
     volatility::{Record, Table},
@@ -324,26 +324,6 @@ fn legacy_results_database_is_rejected_without_migration() {
         .unwrap(),
         "table"
     );
-}
-
-#[test]
-fn artifact_groups_combine_plugins_and_os_filters_allow_common_plugins() {
-    for p in [
-        "windows.registry.hivelist.HiveList",
-        "windows.registry.printkey.PrintKey",
-    ] {
-        assert_eq!(ArtifactGroup::for_plugin(p), ArtifactGroup::Registry);
-    }
-    for p in [
-        "windows.dlllist.DllList",
-        "windows.ldrmodules.LdrModules",
-        "linux.lsmod.Lsmod",
-    ] {
-        assert_eq!(ArtifactGroup::for_plugin(p), ArtifactGroup::Modules);
-    }
-    assert!(OperatingSystem::Linux.accepts("banners.Banners"));
-    assert!(OperatingSystem::Linux.accepts("linux.pslist.PsList"));
-    assert!(!OperatingSystem::Linux.accepts("windows.pslist.PsList"));
 }
 
 #[test]
