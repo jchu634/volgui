@@ -223,6 +223,7 @@ pub struct Workspace {
     tree_table: Entity<TableState<components::tree_data_table::TreeTable>>,
     tree_viewport_width: Pixels,
     result_table: Entity<TableState<components::result_data_table::ResultTable>>,
+    result_viewport_width: Pixels,
     analysis_table: Entity<TableState<components::analysis_data_table::AnalysisTable>>,
     database_table: Entity<TableState<components::database_data_table::DatabaseTable>>,
     details_scroll: ScrollHandle,
@@ -468,9 +469,15 @@ impl Workspace {
                     }
                     TableEvent::ColumnWidthsChanged(widths) => {
                         this.column_fit_epoch.fetch_add(1, Ordering::Relaxed);
-                        for (column, width) in this.result_columns().iter().zip(widths) {
-                            this.column_widths.insert(column.key.clone(), *width);
-                        }
+                        // Keep automatic widths until that column is actually resized.
+                        let changed: Vec<_> = this
+                            .result_columns()
+                            .iter()
+                            .zip(widths)
+                            .filter(|(column, width)| this.column_width(column) != **width)
+                            .map(|(column, width)| (column.key.clone(), *width))
+                            .collect();
+                        this.column_widths.extend(changed);
                         cx.notify();
                     }
                     _ => {}
@@ -579,6 +586,7 @@ impl Workspace {
             tree_table,
             tree_viewport_width: px(1100.),
             result_table,
+            result_viewport_width: px(0.),
             analysis_table,
             database_table,
             details_scroll: ScrollHandle::default(),

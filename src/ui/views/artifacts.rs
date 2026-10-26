@@ -1,5 +1,6 @@
 // Renders artifact results and record details.
 use super::*;
+use gpui_kit::base::ElementExt as _;
 
 impl Workspace {
     pub(in crate::ui) fn supports_content_sidebar(&self) -> bool {
@@ -41,7 +42,20 @@ impl Workspace {
         self.column_widths
             .get(&column.key)
             .copied()
-            .unwrap_or(px(column.default_width()))
+            .unwrap_or_else(|| {
+                let default = px(column.default_width());
+                if self.result_group() == Some(ArtifactGroup::Strings) && column.key == "Context" {
+                    let other_widths: Pixels = self
+                        .result_columns()
+                        .iter()
+                        .filter(|column| column.key != "Context")
+                        .map(|column| self.column_width(column))
+                        .sum();
+                    (self.result_viewport_width - px(2.) - other_widths).max(default)
+                } else {
+                    default
+                }
+            })
     }
     pub(in crate::ui) fn fit_column(
         &mut self,
@@ -181,6 +195,7 @@ impl Workspace {
             _ => {}
         }
         self.sync_result_table(cx);
+        let workspace = cx.entity().downgrade();
         div()
             .flex()
             .flex_col()
@@ -198,9 +213,25 @@ impl Workspace {
                     .min_h_0()
                     .min_w_0()
                     .child(
-                        DataTable::new(&self.result_table)
-                            .small()
-                            .header_row_height(px(32.)),
+                        div()
+                            .size_full()
+                            .child(
+                                DataTable::new(&self.result_table)
+                                    .small()
+                                    .header_row_height(px(32.)),
+                            )
+                            .on_prepaint(move |bounds, _, cx| {
+                                cx.defer(move |cx| {
+                                    let _ = workspace.update(cx, |this, cx| {
+                                        if (this.result_viewport_width - bounds.size.width).abs()
+                                            >= px(1.)
+                                        {
+                                            this.result_viewport_width = bounds.size.width;
+                                            cx.notify();
+                                        }
+                                    });
+                                });
+                            }),
                     ),
             )
             .into_any_element()

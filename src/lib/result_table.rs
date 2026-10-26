@@ -40,6 +40,7 @@ impl Column {
             "threads" => 88.,
             "protocol" => 96.,
             "browser" => 112.,
+            "encoding" => 112.,
             "type" => 152.,
             "createtime" | "exittime" | "created" | "modified" | "accesstime" => 240.,
             "process" | "target" | "source" => 220.,
