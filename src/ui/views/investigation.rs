@@ -158,8 +158,8 @@ impl Workspace {
             }
             Some(ArtifactGroup::Strings) => {
                 tools = tools.child(div().text_xs().child("Search the selected evidence file for a literal string in UTF-8, UTF-16LE and UTF-16BE. Results include byte offsets and context. Maximum 10,000 matches per analysis."))
-                    .child(div().flex().items_center().gap_2()
-                        .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w(px(360.)))
+                    .child(div().flex().flex_wrap().w_full().min_w_0().items_center().gap_2()
+                        .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w_full().max_w(px(360.)).min_w_0())
                         .child(self.search_history_dropdown(false, cx))
                         .child(Checkbox::new("string-ignore-case").label("Ignore ASCII case").checked(self.string_ignore_case).on_click(cx.listener(|this,checked,_,cx| { this.string_ignore_case = *checked; cx.notify(); })))
                         .child(app_button("run-global-search").small().label("Search").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));

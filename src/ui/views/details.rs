@@ -9,7 +9,7 @@ impl Workspace {
             };
             let executable = self.imhex_path.clone();
             let file = page.path.clone();
-            return div().flex().items_center().mb_2().child(
+            return div().flex().flex_shrink_0().items_center().child(
                 app_button("hex-open-imhex")
                     .small()
                     .label("Open in ImHex")

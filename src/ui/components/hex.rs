@@ -18,7 +18,6 @@ impl Workspace {
                     div()
                         .px_3()
                         .py_2()
-                        .child(self.render_file_actions(true, cx))
                         .child(self.render_content_controls(files, &page.path, cx)),
                 )
                 .child(div().flex_1().min_h_0().min_w_0().child(editor.clone()))
@@ -36,7 +35,6 @@ impl Workspace {
                         .overflow_scroll()
                         .track_scroll(&self.hex_scroll)
                         .p_3()
-                        .child(self.render_file_actions(true, cx))
                         .child(self.render_hex(cx)),
                 )
                 .child(Scrollbar::vertical(&self.hex_scroll).mode(ScrollbarMode::Always))
@@ -78,7 +76,7 @@ impl Workspace {
         selected_path: &std::path::Path,
         cx: &mut Context<Self>,
     ) -> Div {
-        let mut encodings = div().flex().flex_wrap().gap_1();
+        let mut encodings = div().flex().flex_1().min_w_0().flex_wrap().gap_1();
         for (i, encoding) in volgui::extracted_files::ContentEncoding::ALL
             .into_iter()
             .enumerate()
@@ -137,7 +135,16 @@ impl Workspace {
             .gap_2()
             .min_w_0()
             .overflow_hidden()
-            .child(encodings)
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .child(encodings)
+                    .child(self.render_file_actions(true, cx)),
+            )
             .child(choices)
     }
 
