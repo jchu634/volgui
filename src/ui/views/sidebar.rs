@@ -9,6 +9,7 @@ impl Workspace {
             ArtifactGroup::Files => IconName::Folder,
             ArtifactGroup::Web => IconName::Network,
             ArtifactGroup::Downloads => IconName::Search,
+            ArtifactGroup::Quarantine => IconName::Shield,
             ArtifactGroup::Applications => IconName::Layers,
             ArtifactGroup::Strings => IconName::Search,
             ArtifactGroup::Registry => IconName::Database,
@@ -92,6 +93,7 @@ impl Workspace {
             if matches!(
                 group,
                 ArtifactGroup::Downloads
+                    | ArtifactGroup::Quarantine
                     | ArtifactGroup::Web
                     | ArtifactGroup::Applications
                     | ArtifactGroup::Registry

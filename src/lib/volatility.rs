@@ -581,6 +581,7 @@ impl Record {
             "Process",
             "Name",
             "FileName",
+            "Filename",
             "Variable",
             "URL",
             "Context",
@@ -675,12 +676,6 @@ impl Table {
                 return Err("Result hierarchy exceeds 100 levels".into());
             }
             for node in nodes {
-                if rows.len() >= 1_000_000 {
-                    return Err(
-                        "Result exceeds one million records. Use plugin filters to narrow output."
-                            .into(),
-                    );
-                }
                 let Value::Object(mut object) = node else {
                     return Err("Expected an artifact object".into());
                 };

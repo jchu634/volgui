@@ -16,7 +16,7 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
-rusqlite = { version = "0.38", features = ["bundled", "hooks", "functions"] }
+rusqlite = { version = "0.38", features = ["bundled", "hooks", "functions", "backup"] }
 url = "2"
 lz4_flex = "0.11"
 memchr = "2"

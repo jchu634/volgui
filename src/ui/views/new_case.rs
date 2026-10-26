@@ -65,14 +65,30 @@ impl Workspace {
                         )
                     })
                     .child(
-                        app_button("create-case")
-                            .primary()
-                            .w(px(150.))
-                            .label("Create case")
-                            .disabled(!self.can_switch())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.create_case(window, cx)),
-                            ),
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                app_button("create-case")
+                                    .primary()
+                                    .w(px(150.))
+                                    .label("Create case")
+                                    .disabled(!self.can_switch())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.create_case(window, cx)
+                                    })),
+                            )
+                            .when(self.welcome_open, |row| {
+                                row.child(
+                                    app_button("welcome-back")
+                                        .label("Back")
+                                        .disabled(!self.can_switch())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.navigate(View::Workspace, cx);
+                                        })),
+                                )
+                            }),
                     ),
             )
             .into_any_element()

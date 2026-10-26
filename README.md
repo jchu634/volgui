@@ -16,6 +16,7 @@ Download the Windows application from [Releases](https://github.com/jchu634/volg
 | Network | Socket graph and table, endpoint details, command correlation and validated Meterpreter TCP configuration recovery. |
 | Files | Directory trees, per-file extraction, recovery status and recovered content inspection. Bulk file recovery is an extended analysis. |
 | Download investigation | Download origins, filename-based execution candidates, residual process candidates and related socket records, with separate evidence labels. |
+| Quarantined threats | Defender quarantine metadata, known antivirus folder candidates, process matches and download origins. Local blocked outputs have a separate scope. |
 | Browser activity | URLs and searches from browser process memory, recovered history and saved sessions. |
 | Process Memory | Text recovery for a chosen PID, source addresses, match navigation and a virtualized hex reader. |
 | Registry | Hive/key trees and typed values, with targeted or recursive PrintKey collection. |

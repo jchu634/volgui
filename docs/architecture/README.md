@@ -4,6 +4,7 @@
 - [Analysis queue and background persistence](analysis-queue-design.md)
 - [Application memory and shared investigation services](application-memory-design.md)
 - [Download investigation](download-investigation-design.md)
+- [Quarantined threats](quarantine-design.md)
 - [File recovery and process file integration](file-recovery-design.md)
 - [Network investigation](network-design.md)
 - [Virtual hex editor](hex-editor-design.md)

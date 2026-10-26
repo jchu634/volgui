@@ -86,9 +86,6 @@ impl Workspace {
         self.selection_epoch += 1;
         self.relation_epoch += 1;
         self.view = location.view;
-        if self.selected_evidence != location.evidence {
-            self.artifact_choices.clear();
-        }
         self.selected_evidence = location.evidence;
         self.scope = location.scope;
         self.scope_label = location.scope_label;
@@ -164,8 +161,6 @@ impl Workspace {
         self.inflight.clear();
         self.relations = ProcessRelations::default();
         self.analysis_drafts.clear();
-        self.artifact_choices.clear();
-        self.artifact_open = None;
         self.queue_open = false;
         self.batch_total = 0;
         self.batch_finished = 0;

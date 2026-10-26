@@ -18,6 +18,8 @@ use crate::{artifacts::OperatingSystem, results::ResultStore};
 
 #[path = "case/persistence.rs"]
 mod persistence;
+#[path = "case/rescan.rs"]
+mod rescan;
 pub use persistence::SaveCheckpoint;
 
 pub type Result<T> = std::result::Result<T, String>;

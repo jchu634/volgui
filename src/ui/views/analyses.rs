@@ -71,7 +71,7 @@ impl Workspace {
                                     );
                                 }
                                 this.allow_previous_plugins = true;
-                                this.show_extended = basic_label(&run.plugin).is_none();
+                                this.show_advanced = basic_label(&run.plugin).is_none();
                                 this.focus_plugin(run.plugin, window, cx);
                             }
                         })),

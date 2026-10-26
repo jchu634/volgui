@@ -15,18 +15,23 @@ use crate::{
 /// Recovery parsers wait for preceding dumps and block later jobs until complete.
 pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<usize> {
     let running = runs.iter().filter(|run| run.status == RunStatus::Running);
-    if running.clone().count() >= limit.get()
-        || running.clone().any(|run| is_recovery_analysis(&run.plugin))
-    {
+    if running.clone().count() >= limit.get() || running.clone().any(is_recovery_run) {
         return None;
     }
     let index = runs
         .iter()
-        .position(|run| run.status == RunStatus::Queued)?;
-    if is_recovery_analysis(&runs[index].plugin) && running.count() > 0 {
+        .position(|run| {
+            run.status == RunStatus::Queued && crate::analysis::quarantine::is_passive(run)
+        })
+        .or_else(|| runs.iter().position(|run| run.status == RunStatus::Queued))?;
+    if is_recovery_run(&runs[index]) && running.count() > 0 {
         return None;
     }
     Some(index)
+}
+
+fn is_recovery_run(run: &Run) -> bool {
+    !crate::analysis::quarantine::is_passive(run) && is_recovery_analysis(&run.plugin)
 }
 
 fn is_recovery_analysis(plugin: &str) -> bool {
@@ -37,6 +42,7 @@ fn is_recovery_analysis(plugin: &str) -> bool {
             | crate::analysis::NETWORK
             | crate::analysis::FILES
             | crate::analysis::DOWNLOADS
+            | crate::analysis::QUARANTINE
     )
 }
 
@@ -99,6 +105,29 @@ pub fn prepare_application_recovery(
 
 pub const BROWSER_RECOVERY_PENDING: &str =
     "Waiting to prepare browser recovery after prerequisites";
+
+pub fn prepare_quarantine_recovery(
+    case: &Case,
+    engine: &Installation,
+    run: &Run,
+) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let mut document = case.document.clone();
+    if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
+        document.runs.truncate(index);
+    }
+    let mut runs =
+        crate::analysis::quarantine::recovery_runs(&case.directory, &document, evidence, engine)?;
+    let report = runs.last_mut().ok_or("Missing quarantine report")?;
+    report.id = run.id.clone();
+    report.created_at = run.created_at.clone();
+    Ok(runs)
+}
 
 pub fn prepare_download_recovery(
     case: &Case,
@@ -166,6 +195,7 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
         crate::analysis::NETWORK => "Network investigation and correlation",
         crate::analysis::DOWNLOADS => "Download and execution investigation",
+        crate::analysis::QUARANTINE => "Quarantined threats and execution investigation",
         crate::analysis::BROWSER => "Browser recovery and analysis",
         "windows.info.Info" => "System information",
         REGISTRY_ALL => "All registry subkeys",
@@ -201,6 +231,10 @@ pub const REGISTRY_ALL: &str = "windows.registry.AllSubkeys";
 pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
     let mut catalog = plugins.to_vec();
     catalog.extend([
+        Plugin {
+            id: crate::analysis::QUARANTINE.into(),
+            description: crate::analysis::quarantine::HELP.into(),
+        },
         Plugin {
             id: crate::analysis::DOWNLOADS.into(),
             description: crate::analysis::downloads::HELP.into(),
@@ -278,6 +312,12 @@ pub fn queue_retries_with_engine(
                 }
                 if previous.plugin == crate::analysis::DOWNLOADS {
                     run.message = crate::analysis::downloads::PENDING.into();
+                }
+                if previous.plugin == crate::analysis::QUARANTINE
+                    && engine.is_some()
+                    && !crate::analysis::quarantine::is_passive(previous)
+                {
+                    run.message = crate::analysis::quarantine::PENDING.into();
                 }
                 return Ok(run);
             }
@@ -395,11 +435,13 @@ impl AnalysisDraft {
         let network = ordinary.selected.remove(crate::analysis::NETWORK);
         let files = ordinary.selected.remove(crate::analysis::FILES);
         let downloads = ordinary.selected.remove(crate::analysis::DOWNLOADS);
+        let quarantine = ordinary.selected.remove(crate::analysis::QUARANTINE);
         let registry = ordinary.selected.remove(REGISTRY_ALL);
         for id in [
             crate::analysis::BROWSER,
             crate::analysis::NETWORK,
             crate::analysis::DOWNLOADS,
+            crate::analysis::QUARANTINE,
             REGISTRY_ALL,
         ] {
             if self.selected.contains(id)
@@ -570,6 +612,35 @@ impl AnalysisDraft {
             let mut report =
                 crate::analysis::prepare(evidence, crate::analysis::DOWNLOADS, vec![])?;
             report.message = crate::analysis::downloads::PENDING.into();
+            runs.push(report);
+        }
+        if quarantine {
+            if self.os != OperatingSystem::Windows {
+                return Err("Quarantine investigation requires Windows evidence".into());
+            }
+            for plugin in crate::analysis::quarantine::SOURCES {
+                if engine.plugins.iter().any(|p| p.id == *plugin)
+                    && !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                        r.evidence_id == evidence.id
+                            && r.plugin == *plugin
+                            && r.arguments.is_empty()
+                            && matches!(
+                                r.status,
+                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            )
+                    })
+                {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            let mut report =
+                crate::analysis::prepare(evidence, crate::analysis::QUARANTINE, vec![])?;
+            report.message = crate::analysis::quarantine::PENDING.into();
             runs.push(report);
         }
         if browser {

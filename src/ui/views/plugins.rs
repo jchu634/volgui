@@ -33,14 +33,13 @@ impl Workspace {
             return;
         }
         self.analysis_active = 0;
-        self.show_extended = false;
+        self.show_advanced = false;
         self.allow_previous_plugins = false;
         self.analysis_collapsed_groups = ArtifactGroup::BROWSER
             .into_iter()
             .chain(ArtifactGroup::SHORTCUTS)
             .collect();
         self.analysis_error = None;
-        self.analysis_group_filter = None;
         self.plugin = None;
         self.plugin_help.clear();
         self.plugin_query
@@ -128,15 +127,12 @@ impl Workspace {
                 .child(app_button("analysis-settings").label("Configure analysis engine").on_click(cx.listener(|this,_,window,cx| this.open_settings(window,cx))))
                 .child(app_button("analysis-later").label("Choose later").on_click(|_,window,cx| window.close_dialog(cx))).into_any_element();
         };
-        let mut plugins = chooser_plugins(
+        let plugins = chooser_plugins(
             &volgui::analyses::application_plugins(&engine.plugins),
             draft.os,
-            self.show_extended,
+            self.show_advanced,
             self.plugin_query.read(cx).value().as_ref(),
         );
-        if let Some(group) = self.analysis_group_filter {
-            plugins.retain(|p| ArtifactGroup::for_plugin(&p.id) == group);
-        }
         let previous: BTreeSet<String> = self
             .case
             .as_ref()
@@ -145,7 +141,9 @@ impl Workspace {
                     .runs
                     .iter()
                     .filter(|run| {
-                        run.status.blocks_plugin_selection() && run.evidence_id == draft.evidence_id
+                        run.status.blocks_plugin_selection()
+                            && run.evidence_id == draft.evidence_id
+                            && !volgui::analysis::quarantine::is_passive(run)
                     })
                     .map(|run| run.plugin.clone())
                     .collect()
@@ -177,36 +175,68 @@ impl Workspace {
                         .flex_1(),
                 )
                 .child(
-                    Checkbox::new("show-extended")
-                        .label("Show extended analyses")
-                        .checked(self.show_extended)
+                    Checkbox::new("show-advanced")
+                        .label("Advanced")
+                        .checked(self.show_advanced)
                         .on_change(cx.listener(|this, value, _, cx| {
-                            this.show_extended = *value;
+                            this.show_advanced = *value;
                             cx.notify();
                         })),
                 ),
         );
-        page = page.child(
-            Checkbox::new("allow-previous-plugins")
-                .label("Allow previously run plugins")
-                .checked(self.allow_previous_plugins)
-                .on_change(cx.listener(|this, value, _, cx| {
-                    this.allow_previous_plugins = *value;
-                    if !*value && let Some(case) = &this.case {
-                        for draft in &mut this.analysis_drafts {
-                            draft.selected.retain(|id| {
-                                !case.document.runs.iter().any(|run| {
-                                    run.status.blocks_plugin_selection()
-                                        && run.evidence_id == draft.evidence_id
-                                        && &run.plugin == id
-                                })
-                            });
-                        }
+        let allow_previous = Checkbox::new("allow-previous-plugins")
+            .label("Allow previously run plugins")
+            .checked(self.allow_previous_plugins)
+            .on_change(cx.listener(|this, value, _, cx| {
+                this.allow_previous_plugins = *value;
+                if !*value && let Some(case) = &this.case {
+                    for draft in &mut this.analysis_drafts {
+                        draft.selected.retain(|id| {
+                            !case.document.runs.iter().any(|run| {
+                                run.status.blocks_plugin_selection()
+                                    && !volgui::analysis::quarantine::is_passive(run)
+                                    && run.evidence_id == draft.evidence_id
+                                    && &run.plugin == id
+                            })
+                        });
                     }
-                    this.analysis_error = None;
-                    cx.notify();
-                })),
+                }
+                this.analysis_error = None;
+                cx.notify();
+            }));
+        page = page.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(allow_previous)
+                .when(self.show_advanced, |row| {
+                    row.child(
+                        app_button("rescan-case")
+                            .small()
+                            .label("Rescan case")
+                            .tooltip("Back up the case, replace its results, and rerun all previous scan configurations. Current checkbox selections are not included.")
+                            .disabled(
+                                self.is_working()
+                                    || self.has_queued()
+                                    || self.case.as_ref().is_none_or(|case| case.document.runs.is_empty()),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| this.rescan_case(window, cx))),
+                    )
+                }),
         );
+        if self.show_advanced {
+            page = page.child(div().text_xs().text_color(cx.theme().muted_foreground)
+                .child("Rescan case rebuilds results for all evidence using previous scan options. A backup keeps the old results, notes and bookmarks."));
+        }
+        if let Some(error) = &self.analysis_error {
+            page = page.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(error.clone()),
+            );
+        }
         let selected = draft.selected.clone();
         let plugin_count = plugins.len();
         // Keep group headers and children in one virtualized list.

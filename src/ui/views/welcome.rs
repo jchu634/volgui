@@ -95,16 +95,6 @@ impl Render for WelcomePanel {
                     } else {
                         workspace.render_welcome(cx)
                     })
-                    .when(workspace.view == View::NewCase, |s| {
-                        s.child(
-                            app_button("welcome-back")
-                                .label("Back")
-                                .disabled(!workspace.can_switch())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.navigate(View::Workspace, cx);
-                                })),
-                        )
-                    })
                     .into_any_element()
             })
             .unwrap_or_else(|_| div().into_any_element())
