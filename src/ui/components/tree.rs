@@ -97,9 +97,8 @@ impl Workspace {
                         },
                     )
                     .child(
-                        Button::new("tree-expand-all")
+                        app_button("tree-expand-all")
                             .xsmall()
-                            .ghost()
                             .label("Expand all")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.result_tree.expand_all(true);
@@ -107,9 +106,8 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("tree-collapse-all")
+                        app_button("tree-collapse-all")
                             .xsmall()
-                            .ghost()
                             .label("Collapse all")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.result_tree.expand_all(false);
@@ -225,9 +223,9 @@ impl Workspace {
                 }
             }))
             .child(if branch {
-                Button::new(("tree-toggle", i))
-                    .xsmall()
+                app_button(("tree-toggle", i))
                     .ghost()
+                    .xsmall()
                     .icon(if expanded {
                         IconName::ChevronDown
                     } else {

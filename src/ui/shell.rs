@@ -44,10 +44,10 @@ impl Render for Workspace {
                         .gap_1()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
-                            Button::new("navigate-back")
+                            app_button("navigate-back")
+                                .ghost()
                                 .accessibility_label("Back")
                                 .xsmall()
-                                .ghost()
                                 .icon(IconName::ArrowLeft)
                                 .tooltip("Back")
                                 .disabled(self.back_stack.is_empty())
@@ -56,7 +56,7 @@ impl Render for Workspace {
                                 ),
                         )
                         .child(
-                            Button::new("file-menu")
+                            app_button("file-menu")
                                 .ghost()
                                 .xsmall()
                                 .label("File")
@@ -66,7 +66,7 @@ impl Render for Workspace {
                                 }),
                         )
                         .child(
-                            Button::new("view-menu")
+                            app_button("view-menu")
                                 .ghost()
                                 .xsmall()
                                 .label("View")
@@ -91,7 +91,7 @@ impl Render for Workspace {
                         .mr_2()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
-                            Button::new("new-analysis")
+                            app_button("new-analysis")
                                 .xsmall()
                                 .primary()
                                 .icon(IconName::Plus)
@@ -169,9 +169,9 @@ impl Render for Workspace {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(
-                Button::new("toggle-sidebar")
-                    .xsmall()
+                app_button("toggle-sidebar")
                     .ghost()
+                    .xsmall()
                     .icon(IconName::PanelLeft)
                     .accessibility_label("Toggle evidence sidebar")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -188,26 +188,11 @@ impl Render for Workspace {
                     .text_color(cx.theme().muted_foreground)
                     .child(self.message.clone()),
             )
-            .child(
-                Button::new("toggle-content-sidebar")
-                    .xsmall()
-                    .ghost()
-                    .label("Sidebar")
-                    .accessibility_label("Toggle supplemental sidebar")
-                    .selected(self.content_sidebar_visible)
-                    .disabled(!case_open || self.view != View::Workspace)
-                    .tooltip(if self.content_sidebar_visible {
-                        "Hide sidebar"
-                    } else {
-                        "Show sidebar"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_content_sidebar(cx))),
-            )
             .when(self.busy.is_some(), |s| {
                 s.child(
-                    Button::new("cancel-work")
-                        .xsmall()
+                    app_button("cancel-work")
                         .ghost()
+                        .xsmall()
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(b) = &this.busy {
@@ -227,9 +212,9 @@ impl Render for Workspace {
                             cx.notify();
                         }))
                         .trigger(
-                            Button::new("queue-indicator")
-                                .xsmall()
+                            app_button("queue-indicator")
                                 .ghost()
+                                .xsmall()
                                 .child(
                                     ProgressCircle::new("queue-progress")
                                         .xsmall()
@@ -255,6 +240,21 @@ impl Render for Workspace {
                         )
                         .content(move |_, _, _| queue_panel.clone()),
                 ),
+            )
+            .child(
+                app_button("toggle-content-sidebar")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::PanelRight)
+                    .accessibility_label("Toggle supplemental sidebar")
+                    .selected(self.content_sidebar_visible)
+                    .disabled(!case_open || self.view != View::Workspace)
+                    .tooltip(if self.content_sidebar_visible {
+                        "Hide sidebar"
+                    } else {
+                        "Show sidebar"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_content_sidebar(cx))),
             );
         div()
             .id("workspace-root")

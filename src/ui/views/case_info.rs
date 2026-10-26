@@ -22,7 +22,7 @@ impl Workspace {
                         .child(case.directory.display().to_string()),
                 )
                 .child(
-                    Button::new("export-report")
+                    app_button("export-report")
                         .small()
                         .w(px(160.))
                         .label("Export case report")
@@ -46,7 +46,7 @@ impl Workspace {
                                 .child(e.sha256.clone()),
                         )
                         .child(
-                            Button::new(key("verify", &id))
+                            app_button(key("verify", &id))
                                 .small()
                                 .w(px(140.))
                                 .label("Verify integrity")

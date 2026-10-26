@@ -28,13 +28,12 @@ impl Workspace {
             }
         }
         let weak = cx.entity().downgrade();
-        Button::new(if process {
+        app_button(if process {
             "pid-search-history"
         } else {
             "string-search-history"
         })
         .small()
-        .ghost()
         .dropdown_caret(true)
         .tooltip("Previous searches")
         .disabled(history.is_empty())
@@ -98,14 +97,14 @@ impl Workspace {
             Some(ArtifactGroup::Downloads) => {
                 tools = tools.child(div().text_xs().child("Start with a website or filename. Select a finding to follow download origins, process evidence and remote connections. Filename matches and residual bytes are candidates; a port alone does not identify a reverse shell."))
                     .child(div().flex().flex_wrap().w_full().min_w_0().items_center().gap_2()
-                        .child(Button::new("investigate-downloads").small().primary().label("Start analysis")
+                        .child(app_button("investigate-downloads").small().primary().label("Start analysis")
                             .disabled(self.is_working() || self.installation.is_none() || self.evidence().is_none())
                             .on_click(cx.listener(|this, _, window, cx| this.analyze_downloads(window,cx))))
-                        .child(Button::new("download-all-findings").small().ghost().label("All findings")
+                        .child(app_button("download-all-findings").small().label("All findings")
                             .on_click(cx.listener(|this,_,_,cx| { this.column_filters.clear();this.start_query(cx); })))
-                        .child(Button::new("download-browser-activity").small().ghost().label("Browser activity")
+                        .child(app_button("download-browser-activity").small().label("Browser activity")
                             .on_click(cx.listener(|this, _, window, cx| this.choose_group(ArtifactGroup::Web,window,cx))))
-                        .child(Button::new("download-network").small().ghost().label("All network connections")
+                        .child(app_button("download-network").small().label("All network connections")
                             .on_click(cx.listener(|this, _, window, cx| this.choose_group(ArtifactGroup::Network,window,cx)))));
             }
             Some(ArtifactGroup::Applications) => {
@@ -125,7 +124,7 @@ impl Workspace {
                         )
                         .child(self.search_history_dropdown(true, cx))
                         .child(
-                            Button::new("scan-application-memory")
+                            app_button("scan-application-memory")
                                 .small()
                                 .primary()
                                 .label("Scan")
@@ -142,7 +141,7 @@ impl Workspace {
             }
             Some(ArtifactGroup::Web) => {
                 tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches.\n Memory findings may include stale strings and do not alone prove a visit."))
-                    .child(div().flex().items_center().child(Button::new("recover-analyze-browser").small().label("Start analysis")
+                    .child(div().flex().items_center().child(app_button("recover-analyze-browser").small().label("Start analysis")
                         .disabled(self.is_working() || self.browser_recovery_pending || self.installation.is_none())
                         .on_click(cx.listener(|this, _, window, cx| this.recover_and_analyze_browser(window, cx)))));
             }
@@ -152,7 +151,7 @@ impl Workspace {
                         .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w(px(360.)))
                         .child(self.search_history_dropdown(false, cx))
                         .child(Checkbox::new("string-ignore-case").label("Ignore ASCII case").checked(self.string_ignore_case).on_click(cx.listener(|this,checked,_,cx| { this.string_ignore_case = *checked; cx.notify(); })))
-                        .child(Button::new("run-global-search").small().label("Search").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
+                        .child(app_button("run-global-search").small().label("Search").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
             }
             Some(ArtifactGroup::Registry) => {
                 let child = self
@@ -171,9 +170,9 @@ impl Workspace {
                     .is_some();
                 tools = tools.child(div().text_xs().child("Expand branches to inspect collected registry keys and values. Select a key and choose Open subkey to collect its contents."))
                     .child(div().flex().flex_wrap().items_center().gap_2()
-                        .child(Button::new("find-registry-hives").small().ghost().label("Find hives").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_source("windows.registry.hivelist.HiveList",window,cx))))
+                        .child(app_button("find-registry-hives").small().label("Find hives").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_source("windows.registry.hivelist.HiveList",window,cx))))
                         .child(Input::new(&self.registry_key).id("registry-key-path").aria_label("Registry key relative to hive root").small().w(px(350.)))
-                        .child(Button::new("registry-open-subkey").small().ghost().label("Open subkey").tooltip("Collect the contents of the selected immediate subkey.").disabled(!child).on_click(cx.listener(|this,_,window,cx| this.browse_registry(true,false,window,cx)))));
+                        .child(app_button("registry-open-subkey").small().label("Open subkey").tooltip("Collect the contents of the selected immediate subkey.").disabled(!child).on_click(cx.listener(|this,_,window,cx| this.browse_registry(true,false,window,cx)))));
             }
             _ => return div(),
         }
@@ -187,7 +186,7 @@ impl Workspace {
                 .flex()
                 .gap_2()
                 .child(
-                    Button::new("collect-process-handles")
+                    app_button("collect-process-handles")
                         .small()
                         .label("Collect handles for this process")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -195,9 +194,8 @@ impl Workspace {
                         })),
                 )
                 .child(
-                    Button::new("refresh-process-handles")
+                    app_button("refresh-process-handles")
                         .small()
-                        .ghost()
                         .label("Refresh")
                         .on_click(cx.listener(|this, _, _, cx| this.load_handles(0, cx))),
                 ),
@@ -223,9 +221,8 @@ impl Workspace {
                 .items_center()
                 .gap_2()
                 .child(
-                    Button::new("handles-previous")
+                    app_button("handles-previous")
                         .xsmall()
-                        .ghost()
                         .label("Previous")
                         .disabled(page.offset == 0)
                         .on_click(
@@ -239,9 +236,8 @@ impl Workspace {
                     page.total
                 ))
                 .child(
-                    Button::new("handles-next")
+                    app_button("handles-next")
                         .xsmall()
-                        .ghost()
                         .label("Next")
                         .disabled(next >= page.total)
                         .on_click(cx.listener(move |this, _, _, cx| this.load_handles(next, cx))),

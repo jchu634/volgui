@@ -511,9 +511,8 @@ impl Render for HexEditor {
                             .w(px(150.)),
                     )
                     .child(
-                        Button::new("hex-editor-go")
+                        app_button("hex-editor-go")
                             .xsmall()
-                            .ghost()
                             .label("Go to offset")
                             .on_click(cx.listener(|this, _, window, cx| this.jump(window, cx))),
                     )
@@ -533,9 +532,8 @@ impl Render for HexEditor {
                         .text_color(cx.theme().danger)
                         .child(error)
                         .child(
-                            Button::new("hex-editor-retry")
+                            app_button("hex-editor-retry")
                                 .xsmall()
-                                .ghost()
                                 .label("Retry")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.blocks.retain(|_, result| result.is_ok());

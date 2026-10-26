@@ -10,7 +10,7 @@ impl Workspace {
             let executable = self.imhex_path.clone();
             let file = page.path.clone();
             return div().flex().items_center().mb_2().child(
-                Button::new("hex-open-imhex")
+                app_button("hex-open-imhex")
                     .small()
                     .label("Open in ImHex")
                     .disabled(executable.is_none())
@@ -47,12 +47,12 @@ impl Workspace {
                 .iter()
                 .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
         }) && self.busy.is_none();
-        let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+        let mut actions = div().flex().items_center().gap_2().mb_2();
         if target.needs_address_space() {
             actions = actions.child(
-                    Button::new(key("file-offset-space", prefix))
+                    app_button(key("file-offset-space", prefix))
                         .small()
-                        .ghost()
+
                         .label(if self.file_offset_physical { "Physical offset" } else { "Virtual offset" })
                         .tooltip("Click to switch. FileScan uses virtual offsets on Windows 10 and later, physical offsets on older Windows.")
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -65,7 +65,7 @@ impl Workspace {
                 );
         }
         actions.child(
-            Button::new(key("dump-selected-file", prefix))
+            app_button(key("dump-selected-file", prefix))
                 .small()
                 .label(if attempted {
                     "Retry extraction"
@@ -89,7 +89,7 @@ impl Workspace {
             return div().child("Select an analysis to view its extracted files.");
         };
         let mut content = div().flex().flex_col().gap_2().child(
-            Button::new("refresh-extracted-files")
+            app_button("refresh-extracted-files")
                 .self_start()
                 .small()
                 .label("Refresh files")
@@ -140,7 +140,7 @@ impl Workspace {
                 .py_1()
                 .child(div().flex_1().text_sm().child(name))
                 .child(
-                    Button::new(("hex-extracted", i))
+                    app_button(("hex-extracted", i))
                         .small()
                         .label("View hex")
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -148,7 +148,7 @@ impl Workspace {
                         })),
                 )
                 .child(
-                    Button::new(("save-extracted", i))
+                    app_button(("save-extracted", i))
                         .small()
                         .label("Save as...")
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -181,7 +181,7 @@ impl Workspace {
         let separator = || div().h_px().w_full().my_2().bg(cx.theme().border);
         let pid = record.text("PID");
         let process = record.text("Process");
-        let mut processes = div().flex().flex_wrap().gap_4().child(field(
+        let mut processes = div().flex().gap_4().child(field(
             "Process",
             if pid.is_empty() {
                 process
@@ -211,7 +211,6 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
                     .gap_4()
                     .child(field("Browser", record.text("Browser")))
                     .child(field("Domain", record.text("Domain"))),
@@ -221,7 +220,6 @@ impl Workspace {
             content = content.child(
                 div()
                     .flex()
-                    .flex_wrap()
                     .gap_4()
                     .child(field("Search engine", record.text("Search engine")))
                     .child(field("Search term", record.text("Search terms"))),
@@ -241,9 +239,8 @@ impl Workspace {
                     .child(field("Source file", source))
                     .when_some(path, |row, path| {
                         row.child(
-                            Button::new("reveal-browser-source")
+                            app_button("reveal-browser-source")
                                 .small()
-                                .ghost()
                                 .label("Show in Explorer")
                                 .on_click(move |_, _, cx| cx.reveal_path(&path)),
                         )
@@ -260,7 +257,6 @@ impl Workspace {
             .is_some_and(|a| a.bookmarked);
         let mut tabs = div()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap_1()
             .px_3()
@@ -290,9 +286,9 @@ impl Workspace {
                 continue;
             }
             tabs = tabs.child(
-                Button::new(id)
-                    .small()
+                app_button(id)
                     .ghost()
+                    .small()
                     .label(label)
                     .selected(self.detail == tab)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -314,9 +310,9 @@ impl Workspace {
             let has_bytes =
                 record.is_some_and(|r| volgui::network::source_offset(&r.record).is_some());
             tabs = tabs.child(
-                Button::new("network-source-bytes")
-                    .small()
+                app_button("network-source-bytes")
                     .ghost()
+                    .small()
                     .label("Source bytes")
                     .selected(self.detail == DetailTab::SourceBytes)
                     .disabled(!has_bytes)
@@ -326,7 +322,10 @@ impl Workspace {
                     })),
             );
         }
-        if matches!(self.detail, DetailTab::Overview | DetailTab::Files) {
+        if matches!(self.detail, DetailTab::Overview | DetailTab::Files)
+            && !(self.detail == DetailTab::Overview
+                && self.result_group() == Some(ArtifactGroup::Processes))
+        {
             content = content.child(self.render_file_actions(false, cx));
         }
         if self.detail == DetailTab::Overview
@@ -338,12 +337,11 @@ impl Workspace {
             content = content.child(
                 div()
                     .flex()
-                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .mb_2()
                     .child(
-                        Button::new("scan-selected-process-memory")
+                        app_button("scan-selected-process-memory")
                             .small()
                             .label("Analyse Process Memory")
                             .disabled(self.installation.is_none() || self.busy.is_some())
@@ -352,7 +350,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("dump-process-files")
+                        app_button("dump-process-files")
                             .small()
                             .label("Dump Files")
                             .disabled(self.installation.is_none() || self.busy.is_some())
@@ -361,7 +359,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("find-process-file-handles")
+                        app_button("find-process-file-handles")
                             .small()
                             .label("Find file handles")
                             .disabled(self.installation.is_none() || self.busy.is_some())
@@ -383,16 +381,16 @@ impl Workspace {
                     let browser = self.result_group() == Some(ArtifactGroup::Web);
                     let application = self.result_group() == Some(ArtifactGroup::Applications);
                     let downloads = self.result_group() == Some(ArtifactGroup::Downloads);
-                    let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+                    let mut actions = div().flex().items_center().gap_2().mb_2();
                     if downloads {
                         if let Some(pid) = record.record.fields.get("PID").and_then(|v| v.as_u64())
                         {
                             let network_pid = pid.to_string();
                             actions = actions
                                 .child(
-                                    Button::new("download-process")
+                                    app_button("download-process")
                                         .small()
-                                        .ghost()
+
                                         .label(format!("Process {pid}"))
                                         .disabled(record.record.text("Execution evidence").starts_with("Residual"))
                                         .tooltip("Open a collected process. Residual process candidates can be inspected using their source bytes.")
@@ -401,9 +399,9 @@ impl Workspace {
                                         })),
                                 )
                                 .child(
-                                    Button::new("download-process-network")
+                                    app_button("download-process-network")
                                         .small()
-                                        .ghost()
+
                                         .label("Network for PID")
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.investigate_pid_network(
@@ -428,9 +426,8 @@ impl Workspace {
                                 if let Some(offset) = source.get("Offset").and_then(|v| v.as_u64())
                                 {
                                     actions = actions.child(
-                                        Button::new(("download-source-bytes", i))
+                                        app_button(("download-source-bytes", i))
                                             .small()
-                                            .ghost()
                                             .label(format!("{role} bytes"))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.open_investigation_bytes(offset, cx)
@@ -444,9 +441,8 @@ impl Workspace {
                                     let run = run.to_string();
                                     let row = source.get("Row").and_then(|v| v.as_u64());
                                     actions = actions.child(
-                                        Button::new(("download-source", i))
+                                        app_button(("download-source", i))
                                             .small()
-                                            .ghost()
                                             .label(format!("{role} source"))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 if let Some(row) = row {
@@ -470,18 +466,16 @@ impl Workspace {
                         "Memory URL" | "Memory search"
                     ) {
                         actions = actions.child(
-                            Button::new("view-browser-url-bytes")
+                            app_button("view-browser-url-bytes")
                                 .small()
-                                .ghost()
                                 .label("View URL bytes")
                                 .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
                         );
                     }
                     if self.result_group() == Some(ArtifactGroup::Strings) {
                         actions = actions.child(
-                            Button::new("view-string-memory")
+                            app_button("view-string-memory")
                                 .small()
-                                .ghost()
                                 .label("View surrounding memory")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.content_encoding =
@@ -492,9 +486,8 @@ impl Workspace {
                     }
                     if application {
                         actions = actions.child(
-                            Button::new("view-application-text-bytes")
+                            app_button("view-application-text-bytes")
                                 .small()
-                                .ghost()
                                 .label("View text bytes")
                                 .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
                         );
@@ -507,9 +500,8 @@ impl Workspace {
                     {
                         let source = source.to_string();
                         actions = actions.child(
-                            Button::new("open-finding-source")
+                            app_button("open-finding-source")
                                 .small()
-                                .ghost()
                                 .label("Open source extraction")
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.select_run(source.clone(), window, cx)
@@ -664,9 +656,9 @@ impl Workspace {
                                         }),
                                 )
                                 .child(
-                                    Button::new(("copy-field", i))
-                                        .xsmall()
+                                    app_button(("copy-field", i))
                                         .ghost()
+                                        .xsmall()
                                         .icon(IconName::Copy)
                                         .tooltip("Copy value")
                                         .on_click(move |_, _, cx| {
@@ -712,9 +704,8 @@ impl Workspace {
                                     .map(|i| {
                                         let child = &children[i];
                                         let id = child.id;
-                                        Button::new(key("child-process", &id.to_string()))
+                                        app_button(key("child-process", &id.to_string()))
                                             .small()
-                                            .ghost()
                                             .justify_start()
                                             .h(px(28.))
                                             .label(format!(
@@ -758,9 +749,8 @@ impl Workspace {
                             .gap_2()
                             .mb_2()
                             .child(
-                                Button::new("toggle-json-expansion")
+                                app_button("toggle-json-expansion")
                                     .xsmall()
-                                    .ghost()
                                     .label(if self.raw_expand_all {
                                         "Collapse all"
                                     } else {
@@ -773,9 +763,8 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                Button::new("copy-json")
+                                app_button("copy-json")
                                     .xsmall()
-                                    .ghost()
                                     .icon(IconName::Copy)
                                     .label("Copy JSON")
                                     .on_click({
@@ -848,9 +837,9 @@ impl Workspace {
                     )
                     .when(record.is_some(), |header| {
                         header.child(
-                            Button::new("bookmark")
-                                .xsmall()
+                            app_button("bookmark")
                                 .ghost()
+                                .xsmall()
                                 .icon(if marked {
                                     Icon::default().data(include_bytes!(
                                         "../../../assets/icons/bookmark-filled.svg"
@@ -905,9 +894,9 @@ impl Workspace {
         if expandable {
             let path = path.to_string();
             row = row.child(
-                Button::new(key("json-toggle", &path))
-                    .xsmall()
+                app_button(key("json-toggle", &path))
                     .ghost()
+                    .xsmall()
                     .icon(if expanded {
                         IconName::ChevronDown
                     } else {

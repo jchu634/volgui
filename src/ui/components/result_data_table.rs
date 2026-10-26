@@ -298,9 +298,9 @@ impl TableDelegate for ResultTable {
                         }
                     })
                     .trigger(
-                        Button::new(key("column-filter", &column))
-                            .xsmall()
+                        app_button(key("column-filter", &column))
                             .ghost()
+                            .xsmall()
                             .icon(IconName::ChevronDown)
                             .selected(active)
                             .tooltip(format!("Filter {label}"))

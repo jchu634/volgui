@@ -89,7 +89,7 @@ impl Workspace {
                 })
                 .map_or_else(|| "Evidence".into(), |e| e.name());
             evidence = evidence.child(
-                Button::new(key("analysis-evidence", &draft.evidence_id))
+                app_button(key("analysis-evidence", &draft.evidence_id))
                     .small()
                     .label(name)
                     .selected(i == self.analysis_active)
@@ -105,7 +105,7 @@ impl Workspace {
             .child(heading("EVIDENCE OS", cx));
         for target in OperatingSystem::TARGETS {
             os = os.child(
-                Button::new(key("os", target.label()))
+                app_button(key("os", target.label()))
                     .small()
                     .label(target.label())
                     .selected(target == draft.os)
@@ -125,8 +125,8 @@ impl Workspace {
             .child(os);
         let Some(engine) = &self.installation else {
             return page.child(div().text_sm().child("Configure analysis engine to choose analyses. The evidence has already been added to the case."))
-                .child(Button::new("analysis-settings").label("Configure analysis engine").on_click(cx.listener(|this,_,window,cx| this.open_settings(window,cx))))
-                .child(Button::new("analysis-later").label("Choose later").on_click(|_,window,cx| window.close_dialog(cx))).into_any_element();
+                .child(app_button("analysis-settings").label("Configure analysis engine").on_click(cx.listener(|this,_,window,cx| this.open_settings(window,cx))))
+                .child(app_button("analysis-later").label("Choose later").on_click(|_,window,cx| window.close_dialog(cx))).into_any_element();
         };
         let mut plugins = chooser_plugins(
             &volgui::analyses::application_plugins(&engine.plugins),
@@ -337,7 +337,7 @@ impl Workspace {
                 .child(div().text_sm().child(id.clone()))
                 .child(Input::new(&self.arguments).id("plugin-arguments").aria_label("Plugin arguments").small())
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Options are saved separately for each analysis. Select its checkbox to include it in the queue."))
-                .child(Button::new("load-options").small().label("Load options").disabled(self.is_working()).on_click(cx.listener(|this,_,_,cx| this.plugin_help(cx))))
+                .child(app_button("load-options").small().label("Load options").disabled(self.is_working()).on_click(cx.listener(|this,_,_,cx| this.plugin_help(cx))))
                 .child(div().id("plugin-help").flex_1().min_h_0().overflow_y_scroll().text_xs().font_family("Consolas").child(self.plugin_help.clone())));
         }
         page.child(
@@ -360,13 +360,13 @@ impl Workspace {
                     self.analysis_drafts.len()
                 )))
                 .child(
-                    Button::new("cancel-analysis-selection")
+                    app_button("cancel-analysis-selection")
                         .small()
                         .label("Choose later")
                         .on_click(|_, window, cx| window.close_dialog(cx)),
                 )
                 .child(
-                    Button::new("confirm-analyses")
+                    app_button("confirm-analyses")
                         .small()
                         .primary()
                         .label(format!("Queue {total} analyses"))

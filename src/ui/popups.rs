@@ -68,6 +68,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let available = !self.group_runs(group).is_empty();
+        let selected = self.view == View::Workspace && self.result_group() == Some(group);
         let label = if available {
             format!("{} · {}", group.label(), self.group_count(group))
         } else {
@@ -83,10 +84,10 @@ impl Workspace {
                 cx.notify();
             }))
             .trigger(
-                Button::new(key("artifact-dropdown", group.label()))
+                app_button(key("artifact-dropdown", group.label()))
+                    .ghost()
                     .accessibility_label(format!("Related analyses for {}", group.label()))
                     .xsmall()
-                    .ghost()
                     .icon(IconName::ChevronDown)
                     .tooltip("Related analyses"),
             )
@@ -95,12 +96,18 @@ impl Workspace {
             .flex()
             .items_center()
             .w_full()
+            .rounded_md()
+            .when(selected, |row| row.bg(cx.theme().accent))
             .child(
                 ActionButton::new(key("shortcut", group.label()))
                     .accessibility_label(format!("Open matching {} results", group.label()))
                     .h(px(30.))
                     .px_2()
                     .rounded_md()
+                    .self_center()
+                    .flex_1()
+                    .min_w_0()
+                    .selected(selected)
                     .hover(|style| style.bg(cx.theme().muted))
                     .text_color(if available {
                         cx.theme().foreground
@@ -113,7 +120,6 @@ impl Workspace {
                             .items_center()
                             .justify_start()
                             .gap_2()
-                            .w_full()
                             .child(Icon::new(Self::group_icon(group)).size_4())
                             .child(
                                 div()
@@ -125,8 +131,6 @@ impl Workspace {
                                     .child(label),
                             ),
                     )
-                    .flex_1()
-                    .min_w_0()
                     .justify_start()
                     .disabled(!available)
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -197,13 +201,13 @@ impl Workspace {
             .when(plugins.is_empty(),|panel|panel.child(div().text_sm().child("No matching analyses in the configured installation. Check the evidence OS and engine settings.")))
             .child(list)
             .child(div().flex().gap_2()
-                .child(Button::new("artifact-queue-selected").small().primary().label(format!("Queue selected ({count})")).disabled(blocked || count==0).on_click(cx.listener(move|this,_,window,cx|{
+                .child(app_button("artifact-queue-selected").small().primary().label(format!("Queue selected ({count})")).disabled(blocked || count==0).on_click(cx.listener(move|this,_,window,cx|{
                     if this.prepare_artifact_selection(group,false) { this.queue_analyses(window,cx); if this.analysis_error.is_none(){this.artifact_open=None;} }
                 })))
-                .child(Button::new("artifact-queue-all").small().label(format!("Queue all ({})",plugins.len())).disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
+                .child(app_button("artifact-queue-all").small().label(format!("Queue all ({})",plugins.len())).disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
                     if this.prepare_artifact_selection(group,true) {this.queue_analyses(window,cx);if this.analysis_error.is_none(){this.artifact_open=None;}}
                 }))))
-            .child(Button::new("artifact-review-options").small().ghost().label("Review selection and options...").disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
+            .child(app_button("artifact-review-options").small().label("Review selection and options...").disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
                 let selected=this.artifact_choices.get(&group).cloned().unwrap_or_default();
                 this.artifact_open=None;
                 this.open_analysis_dialog(this.selected_evidence.iter().cloned().collect(),window,cx);
@@ -363,9 +367,8 @@ impl Workspace {
                                     ),
                                     |row| {
                                         row.child(
-                                            Button::new(key("retry-queued-run", &retry))
+                                            app_button(key("retry-queued-run", &retry))
                                                 .xsmall()
-                                                .ghost()
                                                 .label("Retry")
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
@@ -377,12 +380,12 @@ impl Workspace {
                                 )
                                 .when(!active, |row| {
                                     row.child(
-                                        Button::new(key("remove-queued-run", &remove))
+                                        app_button(key("remove-queued-run", &remove))
+                                            .ghost()
                                             .accessibility_label(
                                                 "Remove finished analysis from queue",
                                             )
                                             .xsmall()
-                                            .ghost()
                                             .icon(IconName::X)
                                             .tooltip("Remove from queue")
                                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -392,10 +395,10 @@ impl Workspace {
                                 })
                                 .when(active, |row| {
                                     row.child(
-                                        Button::new(key("cancel-queued-run", &cancel))
+                                        app_button(key("cancel-queued-run", &cancel))
+                                            .ghost()
                                             .accessibility_label(cancel_label)
                                             .xsmall()
-                                            .ghost()
                                             .icon(IconName::X)
                                             .tooltip("Cancel analysis")
                                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -433,7 +436,7 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .child(
-                        Button::new("queue-history")
+                        app_button("queue-history")
                             .small()
                             .outline()
                             .label("History")
@@ -443,7 +446,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("queue-retry-all-failed")
+                        app_button("queue-retry-all-failed")
                             .small()
                             .outline()
                             .label("Retry all failed")
@@ -455,7 +458,7 @@ impl Workspace {
                     )
                     .child(div().flex_1())
                     .child(
-                        Button::new("queue-clear-failed")
+                        app_button("queue-clear-failed")
                             .small()
                             .outline()
                             .label("Clear failed")
@@ -466,7 +469,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("queue-clear-finished")
+                        app_button("queue-clear-finished")
                             .small()
                             .outline()
                             .label("Clear")

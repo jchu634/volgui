@@ -38,9 +38,8 @@ impl Workspace {
                 )
                 .when_some(id, |row, id| {
                     row.child(
-                        Button::new(("show-handle-in-files", i))
+                        app_button(("show-handle-in-files", i))
                             .xsmall()
-                            .ghost()
                             .label("Show in Files")
                             .disabled(!self.row_cache.contains_key(&id))
                             .on_click(cx.listener(move |this, _, window, cx| {

@@ -1217,3 +1217,8 @@ impl Workspace {
         }
     }
 }
+
+/// Keep action buttons compact, including when placed directly in a column.
+fn app_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id).self_center().flex_shrink_0()
+}

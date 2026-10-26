@@ -23,13 +23,12 @@ impl Workspace {
             &self.network_state
         };
         let weak = cx.entity().downgrade();
-        Button::new(if protocol {
+        app_button(if protocol {
             "network-protocol"
         } else {
             "network-state"
         })
         .small()
-        .ghost()
         .dropdown_caret(true)
         .label(selected.clone().unwrap_or_else(|| {
             if protocol {
@@ -83,9 +82,8 @@ impl Workspace {
     fn network_port(&self, endpoint: Endpoint, id: usize, cx: &mut Context<Self>) -> AnyElement {
         let selected =
             self.network_endpoint.as_ref() == Some(&Selection::Endpoint(endpoint.clone()));
-        Button::new(("network-port", id))
+        app_button(("network-port", id))
             .xsmall()
-            .ghost()
             .selected(selected)
             .label(
                 endpoint
@@ -146,9 +144,8 @@ impl Workspace {
             )
             .child(div().child(address))
             .child(
-                Button::new(("network-focus", id))
+                app_button(("network-focus", id))
                     .xsmall()
-                    .ghost()
                     .label("Switch IP")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -216,7 +213,7 @@ impl Workspace {
                     this.network_scroll.set_offset(Point::default());
                     cx.notify();
                 })))
-            .child(Button::new("network-interesting").small().ghost().label("Interesting Traffic")
+            .child(app_button("network-interesting").small().label("Interesting Traffic")
                 .selected(self.network_interesting)
                 .tooltip("Recovered configurations and commands, SMB and remote administration connections. Recovers missing network findings from the saved inventories and acquisition.")
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_interesting_network(window, cx))));
@@ -231,9 +228,8 @@ impl Workspace {
             ("network-table-view", "Table", true),
         ] {
             navigation = navigation.child(
-                Button::new(id)
+                app_button(id)
                     .small()
-                    .ghost()
                     .label(label)
                     .selected(self.network_table_view == table)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -246,9 +242,8 @@ impl Workspace {
             let previous = volgui::network::adjacent_address(&addresses, focus.as_deref(), false);
             let next = volgui::network::adjacent_address(&addresses, focus.as_deref(), true);
             navigation = navigation.child(
-                Button::new("network-focus-picker")
+                app_button("network-focus-picker")
                     .small()
-                    .ghost()
                     .dropdown_caret(true)
                     .w(px(picker_width))
                     .flex_shrink_0()
@@ -309,9 +304,8 @@ impl Workspace {
                 ("network-next-ip", "Next IP", next),
             ] {
                 navigation = navigation.child(
-                    Button::new(id)
+                    app_button(id)
                         .small()
-                        .ghost()
                         .label(label)
                         .disabled(all_sources || target.is_none())
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -351,7 +345,7 @@ impl Workspace {
                     .flex_shrink_0()
                     .child(filters)
                     .child(
-                        Button::new("network-investigate")
+                        app_button("network-investigate")
                             .small()
                             .label("Analyze network")
                             .flex_shrink_0()
@@ -703,9 +697,8 @@ impl Workspace {
                             .child(format!("{} matching entries", entries.len())),
                     )
                     .child(
-                        Button::new("network-all-entries")
+                        app_button("network-all-entries")
                             .xsmall()
-                            .ghost()
                             .label("Show all entries")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.network_endpoint = None;
@@ -743,9 +736,8 @@ impl Workspace {
                 .gap_2()
                 .p_2()
                 .child(
-                    Button::new("network-entry-prev")
+                    app_button("network-entry-prev")
                         .xsmall()
-                        .ghost()
                         .label("Previous")
                         .disabled(page == 0)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -760,9 +752,8 @@ impl Workspace {
                     entries.len().div_ceil(ENTRIES_PER_PAGE).max(1)
                 )))
                 .child(
-                    Button::new("network-entry-next")
+                    app_button("network-entry-next")
                         .xsmall()
-                        .ghost()
                         .label("Next")
                         .disabled((page + 1) * ENTRIES_PER_PAGE >= entries.len())
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -846,9 +837,8 @@ impl Workspace {
             .items_center()
             .gap_2()
             .child(
-                Button::new(key("network-inspect", &id.to_string()))
+                app_button(key("network-inspect", &id.to_string()))
                     .xsmall()
-                    .ghost()
                     .label("Inspect record")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -858,9 +848,8 @@ impl Workspace {
             );
         if known(&pid) {
             actions = actions.child(
-                Button::new(key("network-process", &id.to_string()))
+                app_button(key("network-process", &id.to_string()))
                     .xsmall()
-                    .ghost()
                     .label(if known(&entry.owner) {
                         format!("{} (PID {})", entry.owner, pid)
                     } else {

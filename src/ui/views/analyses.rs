@@ -17,7 +17,7 @@ impl Workspace {
         };
         if self.queue_paused {
             page = page.child(
-                Button::new("resume-queue")
+                app_button("resume-queue")
                     .label("Retry save and resume queue")
                     .on_click(cx.listener(|this, _, _, cx| {
                         match this.case.as_mut().unwrap().save() {
@@ -33,7 +33,7 @@ impl Workspace {
             let cancel = id.clone();
             let rerun = id.clone();
             let mut actions = div().flex().flex_col().gap_1().child(
-                Button::new(key("inspect", &id))
+                app_button(key("inspect", &id))
                     .small()
                     .label("Inspect")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -42,7 +42,7 @@ impl Workspace {
             );
             if matches!(run.status, RunStatus::Running | RunStatus::Queued) {
                 actions = actions.child(
-                    Button::new(key("cancel", &cancel))
+                    app_button(key("cancel", &cancel))
                         .small()
                         .label("Cancel")
                         .on_click(
@@ -51,7 +51,7 @@ impl Workspace {
                 );
             } else {
                 actions = actions.child(
-                    Button::new(key("rerun", &rerun))
+                    app_button(key("rerun", &rerun))
                         .small()
                         .label("Rerun setup")
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -80,7 +80,7 @@ impl Workspace {
             if matches!(run.status, RunStatus::Failed | RunStatus::Interrupted) {
                 let retry = run.id.clone();
                 actions = actions.child(
-                    Button::new(key("retry-analysis", &retry))
+                    app_button(key("retry-analysis", &retry))
                         .small()
                         .label("Retry")
                         .on_click(cx.listener(move |this, _, window, cx| {

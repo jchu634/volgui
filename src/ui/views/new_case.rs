@@ -42,7 +42,7 @@ impl Workspace {
                                     .aria_label("Folder to create the case in")
                                     .flex_1(),
                             )
-                            .child(Button::new("browse-case").label("Browse").on_click(
+                            .child(app_button("browse-case").label("Browse").on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.choose_path("directory", window, cx)
                                 }),
@@ -65,7 +65,7 @@ impl Workspace {
                         )
                     })
                     .child(
-                        Button::new("create-case")
+                        app_button("create-case")
                             .primary()
                             .w(px(150.))
                             .label("Create case")

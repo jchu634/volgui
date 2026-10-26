@@ -60,7 +60,7 @@ impl Workspace {
                             ),
                         )
                         .child(
-                            Button::new(("open-bookmark", i))
+                            app_button(("open-bookmark", i))
                                 .small()
                                 .label("Open")
                                 .on_click(cx.listener(move |this, _, window, cx| {
