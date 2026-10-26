@@ -113,53 +113,91 @@ impl Workspace {
         if entries.is_empty() {
             return content.child("No extracted files. Select a file-scan result and choose Dump file, or run a dump plugin.");
         }
-        let files: Vec<_> = entries.iter().map(|entry| entry.path.clone()).collect();
-        for (i, entry) in entries.iter().enumerate() {
-            let file = &entry.path;
-            let name = file
-                .strip_prefix(&target.0)
-                .unwrap_or(file)
-                .display()
-                .to_string();
-            if !entry.available {
-                content = content.child(
-                    div()
-                        .py_1()
-                        .text_sm()
-                        .child(format!("{name}: Unavailable artifact. Opening is blocked.")),
-                );
-                continue;
-            }
-            let source = file.clone();
-            let hex_file = file.clone();
-            let hex_files = files.clone();
-            let mut row = div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .py_1()
-                .child(div().flex_1().text_sm().child(name))
-                .child(
-                    app_button(("hex-extracted", i))
-                        .small()
-                        .label("View hex")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_hex_file(hex_files.clone(), hex_file.clone(), 0, cx);
-                        })),
-                )
-                .child(
-                    app_button(("save-extracted", i))
-                        .small()
-                        .label("Save as...")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.export_file(source.clone(), window, cx);
-                        })),
-                );
-            if let Some(sha256) = &entry.sha256 {
-                row = row.child(div().text_xs().child(format!("SHA-256 {sha256}")));
-            }
-            content = content.child(row);
-        }
+        let count = entries.len();
+        let list = uniform_list(
+            "extracted-files-virtual",
+            count,
+            cx.processor(move |this, range: Range<usize>, _, cx| {
+                let Some(listing) = &this.file_listing else {
+                    return Vec::new();
+                };
+                let Some(Ok(entries)) = &listing.result else {
+                    return Vec::new();
+                };
+                range
+                    .filter_map(|i| {
+                        let entry = entries.get(i)?;
+                        let source = entry.path.clone();
+                        let hex_file = source.clone();
+                        let name = source
+                            .strip_prefix(&listing.target.0)
+                            .unwrap_or(&source)
+                            .display()
+                            .to_string();
+                        let mut row = div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .h(px(32.))
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(div().flex_1().min_w_0().truncate().text_sm().child(name));
+                        if !entry.available {
+                            return Some(row.child(div().text_xs().child("Unavailable artifact")));
+                        }
+                        row = row
+                            .child(
+                                app_button(("hex-extracted", i))
+                                    .small()
+                                    .label("View hex")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let files = this
+                                            .file_listing
+                                            .as_ref()
+                                            .and_then(|listing| listing.result.as_ref())
+                                            .and_then(|result| result.as_ref().ok())
+                                            .map(|entries| {
+                                                entries
+                                                    .iter()
+                                                    .filter(|entry| entry.available)
+                                                    .map(|entry| entry.path.clone())
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                        this.open_hex_file(files, hex_file.clone(), 0, cx);
+                                    })),
+                            )
+                            .child(
+                                app_button(("save-extracted", i))
+                                    .small()
+                                    .label("Save as...")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.export_file(source.clone(), window, cx);
+                                    })),
+                            );
+                        if let Some(sha256) = &entry.sha256 {
+                            row = row.child(
+                                div()
+                                    .w(px(180.))
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .child(format!("SHA-256 {sha256}")),
+                            );
+                        }
+                        Some(row)
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .h(px((count as f32 * 32.).min(224.)))
+        .w_full();
+        content = content
+            .min_w_0()
+            .overflow_hidden()
+            .child(div().text_xs().child(format!("{count} extracted files")))
+            .child(list);
         content
     }
 

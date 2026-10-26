@@ -93,29 +93,50 @@ impl Workspace {
                     ),
             );
         }
-        let mut choices = div().flex().flex_wrap().gap_1();
-        for (i, file) in files.iter().enumerate() {
-            let path = file.clone();
-            choices = choices.child(
-                app_button(("hex-cache-file", i))
-                    .xsmall()
-                    .label(
-                        file.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned(),
-                    )
-                    .selected(file == selected_path)
-                    .tooltip(file.display().to_string())
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.read_hex_page(path.clone(), 0, cx)),
-                    ),
-            );
-        }
+        // Keep file navigation bounded so large dumps leave room for the viewer.
+        let selected_path = selected_path.to_path_buf();
+        let choices = uniform_list(
+            "hex-files-virtual",
+            files.len(),
+            cx.processor(move |this, range: Range<usize>, _, cx| {
+                let HexView::Ready { files, .. } = &this.hex_view else {
+                    return Vec::new();
+                };
+                range
+                    .filter_map(|i| {
+                        let file = files.get(i)?;
+                        let path = file.clone();
+                        Some(
+                            div().h(px(28.)).w_full().min_w_0().overflow_hidden().child(
+                                app_button(("hex-cache-file", i))
+                                    .xsmall()
+                                    .w_full()
+                                    .justify_start()
+                                    .label(
+                                        file.file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy()
+                                            .into_owned(),
+                                    )
+                                    .selected(file == &selected_path)
+                                    .tooltip(file.display().to_string())
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.read_hex_page(path.clone(), 0, cx)
+                                    })),
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .h(px((files.len() as f32 * 28.).min(112.)))
+        .w_full();
         div()
             .flex()
             .flex_col()
             .gap_2()
+            .min_w_0()
+            .overflow_hidden()
             .child(encodings)
             .child(choices)
     }

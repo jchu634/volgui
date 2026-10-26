@@ -6,6 +6,14 @@ Build with a current Rust toolchain and the Windows C++ build tools required by 
 cargo build --release
 ```
 
+Windows builds embed `assets/app.ico` as the executable and window icon. It is
+generated from the root `logo.svg`. After changing the logo, regenerate it with
+ImageMagick before building:
+
+```powershell
+magick -background none logo.svg -resize 256x256 -define icon:auto-resize=256,128,64,48,32,24,16 assets/app.ico
+```
+
 ## Manual nightly builds
 
 Once the workflows are on the default branch, open **Actions > Nightly build > Run workflow** on GitHub and select the branch to build. The [nightly workflow](../.github/workflows/nightly.yml) uses stable Rust to build the Windows x86_64 release executable from the committed lockfile.

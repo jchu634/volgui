@@ -27,6 +27,9 @@ default = ["desktop"]
 desktop = []
 test-engine = []
 
+[build-dependencies]
+embed-resource = "3.0.12"
+
 [[bin]]
 name = "volgui"
 path = "src/main.rs"

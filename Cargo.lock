@@ -7239,6 +7239,7 @@ name = "volgui"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "embed-resource",
  "gpui-kit",
  "lz4_flex",
  "memchr",
