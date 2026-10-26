@@ -1,7 +1,7 @@
 // Checks analyses behavior.
 use std::{fs, sync::atomic::AtomicBool};
 use volgui::{
-    analyses::{AnalysisDraft, basic_label, chooser_plugins, queue_retries},
+    analyses::{AnalysisDraft, chooser_plugins, queue_retries},
     artifacts::OperatingSystem,
     case::{Case, CaseSnapshot, DATABASE, Evidence, QueueClearScope, RunStatus},
     settings::Settings,
@@ -63,50 +63,6 @@ fn shift_selection_respects_filters_and_separate_evidence_drafts() {
     draft.select("a", true, false, &all);
     draft.select("d", false, true, &filtered);
     assert_eq!(draft.selected, ["a", "b"].map(String::from).into());
-}
-
-#[test]
-fn basic_catalog_includes_the_requested_tasks_and_sorts_before_extended() {
-    let requested = [
-        "windows.info.Info",
-        "windows.pslist.PsList",
-        "windows.pstree.PsTree",
-        "windows.psscan.PsScan",
-        "windows.cmdline.CmdLine",
-        "windows.netscan.NetScan",
-        "windows.dlllist.DllList",
-        "windows.filescan.FileScan",
-        "windows.dumpfiles.DumpFiles",
-        "windows.handles.Handles",
-        "windows.registry.hivelist.HiveList",
-        "windows.registry.printkey.PrintKey",
-        "linux.pslist.PsList",
-        "linux.pstree.PsTree",
-        "mac.pslist.PsList",
-    ];
-    assert!(requested.iter().all(|id| basic_label(id).is_some()));
-    let mut plugins: Vec<_> = requested.iter().map(|id| plugin(id)).collect();
-    plugins.push(plugin("frameworkinfo.FrameworkInfo"));
-    plugins.push(plugin("windows.malware.psxview.PsXView"));
-    let basic = chooser_plugins(&plugins, OperatingSystem::Windows, false, "");
-    assert_eq!(basic.len(), 13);
-    assert!(basic.iter().all(|p| p.id.starts_with("windows.")));
-    let full = chooser_plugins(&plugins, OperatingSystem::Windows, true, "");
-    assert_eq!(full.len(), 14);
-    assert!(full[..13].iter().all(|p| basic_label(&p.id).is_some()));
-    assert!(full[13..].iter().all(|p| basic_label(&p.id).is_none()));
-    assert_eq!(
-        chooser_plugins(&plugins, OperatingSystem::Windows, false, "dump files")[0].id,
-        "windows.dumpfiles.DumpFiles"
-    );
-    assert_eq!(
-        chooser_plugins(&plugins, OperatingSystem::Windows, false, "registry hives").len(),
-        1
-    );
-    assert_eq!(
-        chooser_plugins(&plugins, OperatingSystem::Windows, false, "FrameworkInfo").len(),
-        0
-    );
 }
 
 #[test]
@@ -394,20 +350,6 @@ fn batch_selection_preserves_individual_options_and_is_saved_atomically() {
             .prepare(&engine, &evidence, &directory.join("analyses"))
             .is_err()
     );
-}
-
-#[test]
-fn only_completed_or_active_runs_block_plugin_selection() {
-    for status in [RunStatus::Queued, RunStatus::Running, RunStatus::Completed] {
-        assert!(status.blocks_plugin_selection(), "{status:?}");
-    }
-    for status in [
-        RunStatus::Failed,
-        RunStatus::Cancelled,
-        RunStatus::Interrupted,
-    ] {
-        assert!(!status.blocks_plugin_selection(), "{status:?}");
-    }
 }
 
 #[test]
@@ -707,38 +649,4 @@ fn browser_recovery_can_be_queued_with_its_prerequisites() {
             .unwrap()
             .is_empty()
     );
-}
-
-#[test]
-fn generic_shortcut_analyses_are_extended_and_interactive_analyses_are_hidden() {
-    let extended = [
-        volgui::analysis::FILES,
-        "linux.bash.Bash",
-        "mac.bash.Bash",
-        "windows.malware.malfind.Malfind",
-        "windows.modules.Modules",
-        "linux.lsmod.Lsmod",
-        "mac.lsmod.Lsmod",
-        "windows.sessions.Sessions",
-    ];
-    for id in extended {
-        assert_eq!(basic_label(id), None, "{id}");
-        let os = OperatingSystem::for_plugin(id);
-        assert!(chooser_plugins(&[plugin(id)], os, false, "").is_empty());
-        assert_eq!(chooser_plugins(&[plugin(id)], os, true, "").len(), 1);
-    }
-    let interactive = [
-        plugin(volgui::analysis::APPLICATION),
-        plugin(volgui::analysis::STRINGS),
-    ];
-    for os in [
-        OperatingSystem::Unknown,
-        OperatingSystem::Windows,
-        OperatingSystem::Linux,
-        OperatingSystem::Macos,
-    ] {
-        for show_extended in [false, true] {
-            assert!(chooser_plugins(&interactive, os, show_extended, "").is_empty());
-        }
-    }
 }

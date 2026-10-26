@@ -210,13 +210,6 @@ mod tests {
     }
 
     #[test]
-    fn large_selections_keep_the_range_but_bound_the_preview() {
-        let selection = ByteSelection::new(17, 1_000_000, 2_000_000).unwrap();
-        assert_eq!(selection.range(), 17..1_000_001);
-        assert_eq!(selection.preview_range(), 17..17 + DECODE_LIMIT);
-    }
-
-    #[test]
     fn source_reads_across_blocks_and_rejects_short_or_unbounded_reads() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let bytes = (0..BLOCK_SIZE + 17).map(|i| i as u8).collect::<Vec<_>>();

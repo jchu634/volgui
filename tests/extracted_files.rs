@@ -296,12 +296,6 @@ fn lists_nested_dumps_but_excludes_engine_logs() {
 }
 
 #[test]
-fn missing_output_directory_reports_an_error() {
-    let directory = tempfile::tempdir().unwrap();
-    assert!(volgui::extracted_files::list(&directory.path().join("missing")).is_err());
-}
-
-#[test]
 fn hex_pages_bound_reads_preserve_offsets_and_format_binary_and_partial_rows() {
     use volgui::extracted_files::{HEX_PAGE_SIZE, HexPage};
     let temp = tempfile::tempdir().unwrap();

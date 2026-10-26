@@ -7,7 +7,7 @@ imports in temporary cases on the capture's volume.
 
 ## Where the time goes
 
-The [analysis worker](../src/ui/analysis_actions.rs) runs these steps in order:
+The [analysis worker](../../src/ui/analysis_actions.rs) runs these steps in order:
 
 1. Wait for the queued run's metadata to become durable.
 2. Launch the CLI, sending stdout and stderr directly to files.
@@ -33,7 +33,7 @@ LZ4 and bundled SQLite at development settings. LZ4's generic compression code
 also instantiates in its caller, so optimizing only the dependency leaves a large
 part of the cost in VolGUI.
 
-[Cargo.toml](../Cargo.toml) now optimizes VolGUI at level 2, and LZ4 and bundled
+[Cargo.toml](../../Cargo.toml) now optimizes VolGUI at level 2, and LZ4 and bundled
 SQLite at level 3 in development builds. Debug assertions and debug information
 remain enabled. GPUI dependencies retain their existing build settings. Release
 settings and the case format are unchanged.

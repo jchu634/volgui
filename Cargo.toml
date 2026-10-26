@@ -27,6 +27,9 @@ default = ["desktop"]
 desktop = []
 test-engine = []
 
+[build-dependencies]
+embed-resource = "3.0.12"
+
 [[bin]]
 name = "volgui"
 path = "src/main.rs"
@@ -38,7 +41,8 @@ path = "tests/support/engine.rs"
 required-features = ["test-engine"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.dev.package.sha2]
 opt-level = 3

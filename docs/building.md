@@ -6,6 +6,14 @@ Build with a current Rust toolchain and the Windows C++ build tools required by 
 cargo build --release
 ```
 
+Windows builds embed `assets/app.ico` as the executable and window icon. It is
+generated from the root `logo.svg`. After changing the logo, regenerate it with
+ImageMagick before building:
+
+```powershell
+magick -background none logo.svg -resize 256x256 -define icon:auto-resize=256,128,64,48,32,24,16 assets/app.ico
+```
+
 ## Manual nightly builds
 
 Once the workflows are on the default branch, open **Actions > Nightly build > Run workflow** on GitHub and select the branch to build. The [nightly workflow](../.github/workflows/nightly.yml) uses stable Rust to build the Windows x86_64 release executable from the committed lockfile.
@@ -32,7 +40,7 @@ Development builds optimize VolGUI's processing code, SHA-256, byte searches,
 LZ4 and the bundled SQLite engine. These paths handle large dumps even while the
 UI is being developed. GPUI keeps its normal development settings. Release builds
 use Cargo's release settings for the whole application. See the
-[analysis performance investigation](analysis-performance.md) for measurements
+[analysis performance investigation](architecture/analysis-performance.md) for measurements
 and a repeatable import benchmark.
 
 Select either executable or its installation directory in Settings. If a directory contains both engines, `vol` takes precedence; select `vol-rs.exe` explicitly to use vol-rs. The existing `--volatility` option accepts either engine.
@@ -41,7 +49,7 @@ Browser and application memory recovery use user-memory-only dumps when the
 selected vol-rs build advertises `--user-memory` in Memmap's help. Select the
 updated CLI and click **Validate and save** to detect support. Older engines use
 full dumps, and existing complete full or scoped dumps remain reusable. Manual
-Memmap jobs retain their requested scope. See [analysis performance](analysis-performance.md#user-memory-collection).
+Memmap jobs retain their requested scope. See [analysis performance](architecture/analysis-performance.md#user-memory-collection).
 
 The executable path can also be supplied by an installer using the `VOLGUI_VOLATILITY` environment variable, or selected in **Settings**. Validated settings persist in `%APPDATA%\VolGUI\settings.json`. `VOLGUI_CONFIG_DIR` overrides that directory for portable installations or testing. No development-specific engine path is compiled into the application.
 
