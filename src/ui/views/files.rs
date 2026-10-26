@@ -14,6 +14,7 @@ impl Workspace {
     ) -> AnyElement {
         let node = &self.result_tree.nodes[i];
         self.artifact_tree_row(i, depth, cx)
+            .child(self.artifact_tree_toggle(i, cx))
             .child(
                 Icon::new(if node.record_id.is_none() {
                     IconName::Folder

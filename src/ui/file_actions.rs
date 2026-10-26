@@ -108,6 +108,7 @@ impl Workspace {
 
     pub(super) fn reset_hex(&mut self) {
         self.hex_epoch += 1;
+        self.memory_scan_dump = None;
         self.hex_view = HexView::Idle;
         self.hex_editor = None;
         self.database_view = None;
@@ -171,6 +172,10 @@ impl Workspace {
 
     pub(super) fn load_hex(&mut self, cx: &mut Context<Self>) {
         self.reset_hex();
+        if self.result_group() == Some(ArtifactGroup::Memory) {
+            self.load_memory_scan_hex(false, cx);
+            return;
+        }
         if self.result_group() == Some(ArtifactGroup::Strings)
             && let Some(record) = &self.selected
             && let Some(offset) = record.record.fields.get("Offset").and_then(|v| v.as_u64())
@@ -235,6 +240,44 @@ impl Workspace {
                 }
                 Err(error)
             })();
+            let _ = tx.send(Event::HexLoaded(epoch, result));
+        });
+        cx.notify();
+    }
+
+    pub(super) fn view_memory_scan(&mut self, cx: &mut Context<Self>) {
+        self.reset_hex();
+        self.content_sidebar_visible = true;
+        self.content_encoding = volgui::extracted_files::ContentEncoding::Hex;
+        self.load_memory_scan_hex(true, cx);
+    }
+
+    fn load_memory_scan_hex(&mut self, collect: bool, cx: &mut Context<Self>) {
+        let (Some(case), Some(selected)) = (&self.case, &self.selected) else {
+            cx.notify();
+            return;
+        };
+        let directory = case.directory.clone();
+        let document = case.document.clone();
+        let selected = selected.clone();
+        self.hex_view = HexView::Loading;
+        let epoch = self.hex_epoch;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = match volgui::memory_scan::content(&directory, &document, &selected) {
+                Ok(volgui::memory_scan::Content::Ready(path, offset)) => {
+                    HexPage::read(&path, offset).map(|page| (vec![path], page))
+                }
+                Ok(volgui::memory_scan::Content::NeedsDump { evidence_id, pid }) if collect => {
+                    let _ = tx.send(Event::MemoryScanDumpNeeded(epoch, evidence_id, pid));
+                    return;
+                }
+                Ok(volgui::memory_scan::Content::NeedsDump { .. }) => Err(
+                    "Use View surrounding memory to collect the process bytes for this result."
+                        .into(),
+                ),
+                Err(error) => Err(error),
+            };
             let _ = tx.send(Event::HexLoaded(epoch, result));
         });
         cx.notify();

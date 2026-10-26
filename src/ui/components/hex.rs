@@ -153,7 +153,11 @@ impl Workspace {
                 });
             }
             HexView::Loading => {
-                content = content.child("Loading file contents...");
+                content = content.child(if self.memory_scan_dump.is_some() {
+                    "Collecting process memory. The hex view will open when the analysis finishes."
+                } else {
+                    "Loading file contents..."
+                });
             }
             HexView::Error(error) => {
                 content = content.child(error.clone()).child(

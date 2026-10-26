@@ -268,6 +268,7 @@ impl Render for Workspace {
                             ArtifactGroup::Processes
                                 | ArtifactGroup::Files
                                 | ArtifactGroup::Registry
+                                | ArtifactGroup::Modules
                         )
                     )
                 {

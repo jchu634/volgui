@@ -107,6 +107,51 @@ fn main() -> Result<(), String> {
         })
         .collect();
     save(&mut case, &evidence_id, "windows.pslist.PsList", processes)?;
+    let modules = (0..200)
+        .map(|i| Record {
+            depth: 0,
+            fields: BTreeMap::from([
+                ("PID".into(), json!(i / 20 + 1)),
+                (
+                    "Process".into(),
+                    json!(format!("test-process-{}.exe", i / 20)),
+                ),
+                (
+                    "Name".into(),
+                    json!(format!("fixture-module-{}.dll", i % 20)),
+                ),
+                (
+                    "Path".into(),
+                    json!(format!(
+                        "C:\\Windows\\System32\\fixture-module-{}.dll",
+                        i % 20
+                    )),
+                ),
+                ("Base".into(), json!(0x7ff000000000_u64 + i * 65536)),
+                ("Size".into(), json!(65536)),
+                ("LoadCount".into(), json!(1)),
+                ("LoadTime".into(), json!("2026-10-24T18:03:09+11:00")),
+            ]),
+        })
+        .collect();
+    save(&mut case, &evidence_id, "windows.dlllist.DllList", modules)?;
+    save(
+        &mut case,
+        &evidence_id,
+        "windows.modules.Modules",
+        vec![Record {
+            depth: 0,
+            fields: BTreeMap::from([
+                ("Name".into(), json!("synthetic-kernel.sys")),
+                (
+                    "Path".into(),
+                    json!("\\SystemRoot\\System32\\drivers\\synthetic-kernel.sys"),
+                ),
+                ("Base".into(), json!(0xfffff80000000000_u64)),
+                ("Size".into(), json!(131072)),
+            ]),
+        }],
+    )?;
     let mut network: Vec<_> = (0..10_000)
         .map(|i| Record {
             depth: 0,

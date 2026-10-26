@@ -338,8 +338,8 @@ fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
         "windows.pslist.PsList",
         r#"[
         {"PID":4,"PPID":0,"ImageFileName":"System"},
-        {"PID":100,"PPID":4,"ImageFileName":"editor.exe"},
-        {"PID":200,"PPID":4,"ImageFileName":"other.exe"}
+        {"PID":100,"PPID":4,"ImageFileName":"editor.exe","SessionId":1,"Threads":7,"Path":"C:\\editor.exe","CreateTime":"2026-10-24T07:03:09Z"},
+        {"PID":200,"PPID":4,"ImageFileName":"other.exe","SessionId":2,"Threads":3,"Path":"C:\\other.exe"}
     ]"#,
     );
     insert(
@@ -396,6 +396,42 @@ fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
         ]
     );
     let editor = tree.visible[1].0;
+    let columns = volgui::result_table::tree_columns(
+        volgui::artifacts::ArtifactGroup::Processes,
+        &store
+            .query(&Query {
+                runs: vec!["processes".into()],
+                ..Default::default()
+            })
+            .unwrap()
+            .columns,
+    );
+    for (file_pos, owner_pos) in [(2, 1), (3, 1), (5, 4)] {
+        let file = tree.visible[file_pos].0;
+        let owner = tree.visible[owner_pos].0;
+        let source = tree.detail_node(file);
+        assert_eq!(source.record_id, tree.nodes[owner].record_id);
+        assert_ne!(source.record_id, tree.nodes[file].record_id);
+        let record = store.fetch(&[source.record_id.unwrap()]).unwrap().remove(0);
+        let values: Vec<_> = columns
+            .iter()
+            .map(|column| column.text(&record.record))
+            .collect();
+        if owner_pos == 1 {
+            assert_eq!(
+                values,
+                [
+                    "100",
+                    "1",
+                    "7",
+                    "C:\\editor.exe",
+                    "07:03:09 (24-10-2026)(+00:00)"
+                ]
+            );
+        } else {
+            assert_eq!(values, ["200", "2", "3", "C:\\other.exe", "N.A."]);
+        }
+    }
     assert!(matches!(
         tree.nodes[tree.visible[2].0].kind,
         volgui::result_tree::TreeNodeKind::File
@@ -504,9 +540,146 @@ fn registry_keys_values_hives_and_search_share_branches() {
             ("SYSTEM", 1),
             ("ControlSet001", 2),
             ("Services", 3),
-            ("Start - REG_DWORD", 4)
+            ("Start", 4)
         ]
     );
     let id = tree.nodes[tree.visible[4].0].record_id.unwrap();
     assert_eq!(store.fetch(&[id]).unwrap()[0].record.text("Data"), "2");
+}
+
+#[test]
+fn modules_group_by_source_process_and_keep_kernel_records_selectable() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "dlls",
+        "windows.dlllist.DllList",
+        r#"[
+        {"PID":100,"Process":"editor.exe","Name":"ntdll.dll","Base":4096},
+        {"PID":100,"Process":"editor.exe","Name":"ntdll.dll","Base":8192},
+        {"PID":200,"Process":"shell.exe","Name":"kernel32.dll","Base":12288}
+    ]"#,
+    );
+    insert(
+        &store,
+        "scan",
+        "windows.ldrmodules.LdrModules",
+        r#"[
+        {"PID":100,"Process":"editor.exe","MappedPath":"C:\\Windows\\ntdll.dll","Base":4096}
+    ]"#,
+    );
+    insert(
+        &store,
+        "kernel",
+        "windows.modules.Modules",
+        r#"[
+        {"Name":"ntoskrnl.exe","Base":65536},
+        {"Name":"driver.sys","Base":131072}
+    ]"#,
+    );
+    let runs = vec!["dlls".into(), "scan".into(), "kernel".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut tree = ResultTree::modules(store.module_entries(&runs).unwrap(), &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("editor.exe", 0),
+            ("ntdll.dll", 1),
+            ("ntdll.dll", 1),
+            ("shell.exe", 0),
+            ("kernel32.dll", 1),
+            ("editor.exe", 0),
+            ("ntdll.dll", 1),
+            ("Kernel modules", 0),
+            ("ntoskrnl.exe", 1),
+            ("driver.sys", 1),
+        ]
+    );
+    let mut ids: Vec<_> = tree
+        .visible
+        .iter()
+        .filter_map(|(i, _)| tree.nodes[*i].record_id)
+        .collect();
+    ids.sort();
+    assert_eq!(ids, index.ids);
+    assert_eq!(store.fetch(&ids).unwrap().len(), 6);
+    let editor = tree.visible[0].0;
+    tree.toggle(editor);
+    assert_eq!(tree.visible.len(), 8);
+    tree.expand_all(false);
+    assert_eq!(tree.visible.len(), 4);
+    tree.expand_all(true);
+    assert_eq!(tree.visible.len(), 10);
+
+    let filtered = store
+        .query(&Query {
+            runs,
+            text: "kernel32".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let tree = ResultTree::modules(
+        store
+            .module_entries(&["dlls".into(), "scan".into(), "kernel".into()])
+            .unwrap(),
+        &filtered.ids,
+    );
+    assert_eq!(labels(&tree), [("shell.exe", 0), ("kernel32.dll", 1)]);
+}
+
+#[test]
+fn module_names_and_pid_aliases_work_without_a_process_inventory() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "libs",
+        "mac.library_list.LibraryList",
+        r#"[
+        {"ProcessID":42,"Path":"/usr/lib/libSystem.dylib"},
+        {"ProcessID":42,"COMM":"terminal","ModuleName":"libobjc.dylib"},
+        {"Pid":"43","ImageFileName":"other","FilePath":"/usr/lib/libc.dylib"},
+        {"PID":null,"Name":"kernel-extension"},
+        {"PID":44,"Name":"","Path":""}
+    ]"#,
+    );
+    insert(
+        &store,
+        "unrelated",
+        "windows.dlllist.DllList",
+        r#"[
+        {"PID":42,"Process":"wrong-capture.exe","Name":"wrong.dll"}
+    ]"#,
+    );
+    let runs = vec!["libs".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let tree = ResultTree::modules(store.module_entries(&runs).unwrap(), &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("terminal", 0),
+            ("libSystem.dylib", 1),
+            ("libobjc.dylib", 1),
+            ("other", 0),
+            ("libc.dylib", 1),
+            ("Kernel modules", 0),
+            ("kernel-extension", 1),
+            ("PID 44", 0),
+            ("Unnamed module", 1),
+        ]
+    );
+    assert_eq!(tree.nodes[tree.visible[0].0].pid.as_deref(), Some("42"));
+    assert_eq!(tree.nodes[tree.visible[3].0].pid.as_deref(), Some("43"));
+    assert!(store.module_entries(&[]).unwrap().is_empty());
 }

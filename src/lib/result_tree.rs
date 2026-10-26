@@ -22,8 +22,18 @@ pub struct RegistryEntry {
 }
 
 #[derive(Clone, Debug)]
+pub struct ModuleEntry {
+    pub id: i64,
+    pub run_id: String,
+    pub pid: Option<String>,
+    pub process: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
 pub enum TreeNodeKind {
     Process,
+    Module,
     File,
     Directory,
     RegistryKey,
@@ -50,6 +60,58 @@ pub struct ResultTree {
 }
 
 impl ResultTree {
+    /// File handle rows display their owning process's metadata, while selection
+    /// and actions continue to use the handle's own record.
+    pub fn detail_node(&self, i: usize) -> &TreeNode {
+        let node = &self.nodes[i];
+        if matches!(node.kind, TreeNodeKind::File)
+            && let Some(parent) = node.parent
+            && matches!(self.nodes[parent].kind, TreeNodeKind::Process)
+        {
+            &self.nodes[parent]
+        } else {
+            node
+        }
+    }
+
+    pub fn modules(entries: Vec<ModuleEntry>, matches: &[i64]) -> Self {
+        let mut tree = Self::default();
+        let mut groups = HashMap::new();
+        for entry in entries {
+            let key = (entry.run_id, entry.pid.clone());
+            let parent = *groups.entry(key).or_insert_with(|| {
+                tree.push_node(TreeNode {
+                    kind: TreeNodeKind::Process,
+                    record_id: None,
+                    label: if !entry.process.is_empty() {
+                        entry.process.clone()
+                    } else if let Some(pid) = &entry.pid {
+                        format!("PID {pid}")
+                    } else {
+                        "Kernel modules".into()
+                    },
+                    pid: entry.pid.clone(),
+                    children: vec![],
+                    parent: None,
+                })
+            });
+            // A later observation may supply the name missing from the first one.
+            if !entry.process.is_empty() {
+                tree.nodes[parent].label = entry.process;
+            }
+            tree.push_node(TreeNode {
+                kind: TreeNodeKind::Module,
+                record_id: Some(entry.id),
+                label: entry.name,
+                pid: entry.pid,
+                children: vec![],
+                parent: Some(parent),
+            });
+        }
+        tree.filter(matches);
+        tree
+    }
+
     pub fn processes(entries: Vec<TreeEntry>, matches: &[i64]) -> Self {
         let mut pids = HashMap::new();
         for (i, entry) in entries.iter().enumerate() {
@@ -315,7 +377,7 @@ impl ResultTree {
                 tree.push_node(TreeNode {
                     kind: TreeNodeKind::RegistryValue,
                     record_id: Some(entry.id),
-                    label: format!("{name} - {}", entry.value_type),
+                    label: name.to_owned(),
                     pid: None,
                     children: vec![],
                     parent,

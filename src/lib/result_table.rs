@@ -178,13 +178,10 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         ],
         Some(ArtifactGroup::Modules) => &[
             ("PID", &["PID", "ProcessID"]),
-            ("Name", &["Name"]),
+            ("Name", &["Name", "ModuleName", "Module"]),
             ("Process", &["Process", "ImageFileName", "COMM"]),
-            ("Path", &["Path"]),
-            ("Base", &["Base"]),
-            ("LoadCount", &["LoadCount"]),
+            ("Path", &["Path", "MappedPath", "FilePath"]),
             ("LoadTime", &["LoadTime"]),
-            ("Size", &["Size"]),
         ],
         Some(ArtifactGroup::Sessions) => &[
             ("Username", &["Username"]),
@@ -198,6 +195,18 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
             return available
                 .iter()
                 .filter(|name| visible_column(name))
+                .filter(|name| {
+                    group != Some(ArtifactGroup::Memory)
+                        || !matches!(
+                            normalized(name).as_str(),
+                            "offsetvirtual"
+                                | "offsetphysical"
+                                | "csrss"
+                                | "pslist"
+                                | "psscan"
+                                | "thrdscan"
+                        )
+                })
                 .map(|name| Column {
                     key: name.clone(),
                     label: name.clone(),
@@ -223,6 +232,19 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
                 fields,
                 ports,
             })
+        })
+        .collect()
+}
+
+/// Metadata shown beside the pinned hierarchy in the artifact tree table.
+pub fn tree_columns(group: ArtifactGroup, available: &[String]) -> Vec<Column> {
+    columns(Some(group), available)
+        .into_iter()
+        .filter(|column| match group {
+            ArtifactGroup::Processes => column.label != "Process",
+            ArtifactGroup::Registry => column.label != "Name",
+            ArtifactGroup::Modules => !matches!(column.label.as_str(), "Name" | "Process"),
+            _ => false,
         })
         .collect()
 }
@@ -404,5 +426,21 @@ mod tests {
         for value in ["Disabled", "624", "csrss.exe", "2026-10-24", "invalid time"] {
             assert_eq!(cell_text(value), value);
         }
+    }
+
+    #[test]
+    fn module_tree_columns_hide_addresses_counts_and_sizes_without_changing_records() {
+        let source = Table::parse(r#"[{"PID":42,"Process":"editor.exe","Name":"example.dll","Path":"C:\\example.dll","Base":4096,"LoadCount":1,"Size":8192,"LoadTime":"2026-10-24T07:03:09Z"}]"#).unwrap();
+        let columns = tree_columns(ArtifactGroup::Modules, &source.columns);
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| column.label.as_str())
+                .collect::<Vec<_>>(),
+            ["PID", "Path", "LoadTime"]
+        );
+        assert_eq!(source.rows[0].text("Base"), "4096");
+        assert_eq!(source.rows[0].text("LoadCount"), "1");
+        assert_eq!(source.rows[0].text("Size"), "8192");
     }
 }

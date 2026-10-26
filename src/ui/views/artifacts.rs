@@ -160,8 +160,8 @@ impl Workspace {
         match self.result_group() {
             Some(ArtifactGroup::Processes) => return self.render_processes(cx),
             Some(ArtifactGroup::Files) => return self.render_files(cx),
-            Some(ArtifactGroup::Registry) => {
-                return self.render_artifact_tree(ArtifactGroup::Registry, cx);
+            Some(group @ (ArtifactGroup::Registry | ArtifactGroup::Modules)) => {
+                return self.render_artifact_tree(group, cx);
             }
             _ => {}
         }
@@ -190,7 +190,7 @@ impl Workspace {
             )
             .into_any_element()
     }
-    pub(in crate::ui) fn render_results_toolbar(&self, _cx: &mut Context<Self>) -> Div {
+    pub(in crate::ui) fn render_results_toolbar(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .items_center()
@@ -207,6 +207,26 @@ impl Workspace {
                 },
                 if self.loading { " · searching" } else { "" }
             )))
+            .when(self.result_group() == Some(ArtifactGroup::Memory), |toolbar| {
+                let supported = self.selected.as_ref().is_some_and(|selected| {
+                    self.case.as_ref().and_then(|case| {
+                        let run = case.document.runs.iter().find(|r| r.id == selected.run_id)?;
+                        volgui::memory_scan::Address::from_record(&run.plugin, &selected.record)
+                    }).is_some()
+                });
+                toolbar.child(
+                    app_button("view-scan-memory")
+                        .small()
+                        .label("View surrounding memory")
+                        .disabled(!supported || self.loading || matches!(self.hex_view, HexView::Loading))
+                        .tooltip(if supported {
+                            "Open this result's bytes in the sidebar hex view. Collect process memory if needed."
+                        } else {
+                            "Select a result with a memory address to inspect"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.view_memory_scan(cx))),
+                )
+            })
             .child(
                 div().w(px(260.)).child(
                     Input::new(&self.query)

@@ -92,6 +92,19 @@ cargo run --example seed_workspace -- <new-case-directory>
 
 This generates a labelled synthetic case with 5,000 processes, 10,000 network records, 50,001 files, file and non-file handles, recovered browser data, registry keys and values, and multiple cache variants. Select PID 1 and open Handles to inspect File, Key, Mutant and Event objects. Select its History file child, enable Contents, choose SQLite tables, and inspect the visits table. Browser activity shows parsed history, a search and a saved session tab. Registry can reuse saved root and Microsoft subkey reads without an engine. Global string search for `Synthetic` should return a UTF-8 match in fixture.raw. Text/hex paging and Show in Files remain available.
 
+Processes, Registry and Loaded modules display a hierarchy column and aligned
+detail columns. The Process tree defaults to two-thirds of the viewport; Loaded
+modules and Registry default to one-half. The tree stays pinned on the left.
+Drag its header edge to resize the divider. Scroll details horizontally and
+confirm the tree stays visible and rows stay aligned. Horizontal wheel gestures must leave
+the current vertical row unchanged. Expand and collapse branches, use arrow keys,
+and select records to inspect their original details. The fixture includes 200
+process modules and one kernel module. Loaded modules groups them by process and
+source scan. Search a module name to check that its parent remains visible. Files
+keeps its original tree without detail columns. File handle rows repeat the owning
+process's PID and metadata while selection and file actions still target the handle.
+Loaded modules omits Base, LoadCount and Size from its columns.
+
 In Network, check IP nodes, protocol/state filters, continuous graph scrolling and port selection. Select an endpoint with more than forty occurrences and page through the sidebar. Verify both local and remote endpoint selections, process links, record details and Back. Search an endpoint and confirm graph filtering does not remove sidebar records. Text references have no invented connection to the focus host. In a real capture case, run New analysis > Network investigation and correlation, then inspect share references and explicit network commands from collected records. Verify that acquisition scanning recovers only structurally validated Meterpreter TCP configurations, while command and credential correlation uses collected records. Older findings with acquisition offsets still support Source bytes. In New analysis, check group and individual checkboxes, shift selection, previously run plugins, and Options. The SQLite preview uses native columns while retaining its read-only 100-row pages.
 
 `tests/investigation.rs` exercises native job persistence/export, evidence separation,

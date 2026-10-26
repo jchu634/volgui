@@ -8,6 +8,7 @@
 - [File recovery and process file integration](file-recovery-design.md)
 - [Network investigation](network-design.md)
 - [Virtual hex editor](hex-editor-design.md)
+- [Tree detail columns and loaded modules](tree-details-design.md)
 - [Analysis performance measurements](analysis-performance.md)
 
 ## Source layout

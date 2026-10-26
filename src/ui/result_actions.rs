@@ -306,6 +306,9 @@ impl Workspace {
                     Some(ArtifactGroup::Registry) => {
                         ResultTree::registry(store.registry_entries(&query.runs)?, &index.ids)
                     }
+                    Some(ArtifactGroup::Modules) => {
+                        ResultTree::modules(store.module_entries(&query.runs)?, &index.ids)
+                    }
                     _ => ResultTree::default(),
                 };
                 let mut ids: Vec<_> = if tree.nodes.is_empty() {

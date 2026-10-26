@@ -816,6 +816,50 @@ impl ResultStore {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())
     }
+    /// Load module hierarchy fields without materializing every module's details.
+    pub fn module_entries(&self, runs: &[String]) -> Result<Vec<crate::result_tree::ModuleEntry>> {
+        if runs.is_empty() {
+            return Ok(vec![]);
+        }
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut sql = format!(
+            "SELECT id,run_id,
+             CAST(COALESCE(json_extract(fields_json,'$.PID'),json_extract(fields_json,'$.ProcessID'),json_extract(fields_json,'$.Pid')) AS TEXT),
+             COALESCE(NULLIF(json_extract(fields_json,'$.Process'),''),NULLIF(json_extract(fields_json,'$.ImageFileName'),''),json_extract(fields_json,'$.COMM'),''),
+             COALESCE(NULLIF(json_extract(fields_json,'$.Name'),''),NULLIF(json_extract(fields_json,'$.ModuleName'),''),NULLIF(json_extract(fields_json,'$.Module'),''),''),
+             COALESCE(NULLIF(json_extract(fields_json,'$.Path'),''),NULLIF(json_extract(fields_json,'$.MappedPath'),''),NULLIF(json_extract(fields_json,'$.FilePath'),''),'')
+             FROM records r WHERE run_id IN ({marks})"
+        );
+        let mut values = runs.iter().cloned().map(SqlValue::Text).collect();
+        append_representatives(&mut sql, &mut values, runs, "r");
+        sql.push_str(" ORDER BY id");
+        let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
+        stmt.query_map(params_from_iter(values), |r| {
+            let name: String = r.get(4)?;
+            let path: String = r.get(5)?;
+            Ok(crate::result_tree::ModuleEntry {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                pid: r.get::<_, Option<String>>(2)?.filter(|pid| !pid.is_empty()),
+                process: r.get(3)?,
+                name: if !name.is_empty() {
+                    name
+                } else {
+                    path.rsplit(['/', '\\'])
+                        .find(|part| !part.is_empty())
+                        .unwrap_or("Unnamed module")
+                        .to_owned()
+                },
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+    }
+
     pub fn registry_entries(
         &self,
         runs: &[String],
