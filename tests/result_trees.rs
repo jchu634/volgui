@@ -1,7 +1,7 @@
 // Exercises tree construction against the same saved results used by the UI.
 use volgui::{
     case::{Run, RunStatus, now},
-    result_tree::ResultTree,
+    result_tree::{ModuleEntry, RegistryEntry, ResultTree, TreeEntry},
     results::{Query, ResultStore},
     volatility::Table,
 };
@@ -30,6 +30,193 @@ fn labels(tree: &ResultTree) -> Vec<(&str, usize)> {
         .iter()
         .map(|(i, depth)| (tree.nodes[*i].label.as_str(), *depth))
         .collect()
+}
+
+fn entry(id: i64, path: &str) -> TreeEntry {
+    TreeEntry {
+        id,
+        run_id: "run".into(),
+        depth: 0,
+        title: path.into(),
+        pid: Some(id.to_string()),
+        ppid: None,
+        path: Some(path.into()),
+    }
+}
+
+fn node(tree: &ResultTree, label: &str) -> usize {
+    tree.visible
+        .iter()
+        .find(|(i, _)| tree.nodes[*i].label == label)
+        .unwrap()
+        .0
+}
+
+#[test]
+fn process_expansion_survives_hidden_handles_and_reordered_records() {
+    let processes = vec![entry(1, "editor"), entry(2, "shell")];
+    let mut file = entry(3, "notes.txt");
+    file.pid = Some("1".into());
+    let mut tree = ResultTree::processes_with_files(processes.clone(), vec![file.clone()], &[1, 2]);
+    tree.toggle(node(&tree, "editor"));
+    assert_eq!(labels(&tree), [("editor", 0), ("shell", 0)]);
+
+    let mut hidden = ResultTree::processes(processes.into_iter().rev().collect(), &[1, 2]);
+    hidden.restore_state(tree.state().clone());
+    assert!(!hidden.expanded(node(&hidden, "editor")));
+    assert!(hidden.expanded(node(&hidden, "shell")));
+
+    let mut restored = ResultTree::processes_with_files(
+        vec![entry(2, "shell"), entry(1, "editor")],
+        vec![file],
+        &[1, 2],
+    );
+    restored.restore_state(hidden.state().clone());
+    assert_eq!(labels(&restored), [("shell", 0), ("editor", 0)]);
+    restored.toggle(node(&restored, "editor"));
+    assert_eq!(
+        labels(&restored),
+        [("shell", 0), ("editor", 0), ("notes.txt", 1)]
+    );
+}
+
+#[test]
+fn file_branch_state_survives_disappearance_and_an_empty_tree() {
+    let files = vec![entry(1, "/a/docs/one"), entry(2, "/b/docs/two")];
+    let mut tree = ResultTree::files(files.clone(), &[1, 2]);
+    tree.toggle(node(&tree, "/a/docs/"));
+
+    let mut hidden = ResultTree::files(vec![files[1].clone()], &[2]);
+    hidden.restore_state(tree.state().clone());
+    assert_eq!(labels(&hidden), [("/b/docs/", 0), ("two", 1)]);
+
+    let mut empty = ResultTree::files(vec![], &[]);
+    empty.restore_state(hidden.state().clone());
+    let mut restored = ResultTree::files(files.into_iter().rev().collect(), &[1, 2]);
+    restored.restore_state(empty.state().clone());
+    assert_eq!(
+        labels(&restored),
+        [("/a/docs/", 0), ("/b/docs/", 0), ("two", 1)]
+    );
+}
+
+#[test]
+fn compacted_file_branches_keep_state_when_paths_merge_and_split() {
+    let files = vec![entry(1, "/a/docs/one"), entry(2, "/a/other/two")];
+    let mut tree = ResultTree::files(files.clone(), &[1, 2]);
+    tree.toggle(node(&tree, "docs/"));
+
+    let mut merged = ResultTree::files(vec![files[0].clone()], &[1]);
+    merged.restore_state(tree.state().clone());
+    assert_eq!(labels(&merged), [("/a/docs/", 0)]);
+
+    // Expanding the compacted row also expands its components after splitting.
+    merged.toggle(node(&merged, "/a/docs/"));
+    let mut split = ResultTree::files(files.clone(), &[1, 2]);
+    split.restore_state(merged.state().clone());
+    assert_eq!(
+        labels(&split),
+        [
+            ("/a/", 0),
+            ("docs/", 1),
+            ("one", 2),
+            ("other/", 1),
+            ("two", 2)
+        ]
+    );
+
+    split.toggle(node(&split, "/a/"));
+    let mut merged = ResultTree::files(vec![files[0].clone()], &[1]);
+    merged.restore_state(split.state().clone());
+    assert_eq!(labels(&merged), [("/a/docs/", 0)]);
+}
+
+#[test]
+fn bulk_expansion_updates_hidden_branches_and_new_items() {
+    let files = vec![entry(1, "/a/one"), entry(2, "/b/two")];
+    let mut tree = ResultTree::files(files.clone(), &[1, 2]);
+    tree.toggle(node(&tree, "/a/"));
+
+    let mut hidden = ResultTree::files(vec![files[1].clone()], &[2]);
+    hidden.restore_state(tree.state().clone());
+    hidden.expand_all(true);
+    let mut restored = ResultTree::files(files.clone(), &[1, 2]);
+    restored.restore_state(hidden.state().clone());
+    assert_eq!(restored.visible.len(), 4);
+
+    hidden.expand_all(false);
+    let mut files = files;
+    files.push(entry(3, "/c/three"));
+    let mut restored = ResultTree::files(files, &[1, 2, 3]);
+    restored.restore_state(hidden.state().clone());
+    assert_eq!(labels(&restored), [("/a/", 0), ("/b/", 0), ("/c/", 0)]);
+    restored.toggle(node(&restored, "/a/"));
+    assert_eq!(
+        labels(&restored),
+        [("/a/", 0), ("one", 1), ("/b/", 0), ("/c/", 0)]
+    );
+}
+
+#[test]
+fn module_branch_state_uses_source_and_pid_instead_of_display_name() {
+    let modules = vec![
+        ModuleEntry {
+            id: 1,
+            run_id: "first".into(),
+            pid: Some("100".into()),
+            process: "editor".into(),
+            name: "first.dll".into(),
+        },
+        ModuleEntry {
+            id: 2,
+            run_id: "second".into(),
+            pid: Some("100".into()),
+            process: "editor".into(),
+            name: "second.dll".into(),
+        },
+    ];
+    let mut tree = ResultTree::modules(modules.clone(), &[1, 2]);
+    tree.toggle(tree.visible[0].0);
+
+    let mut reordered: Vec<_> = modules.into_iter().rev().collect();
+    reordered[1].process = "renamed editor".into();
+    let mut restored = ResultTree::modules(reordered, &[1, 2]);
+    restored.restore_state(tree.state().clone());
+    assert_eq!(
+        labels(&restored),
+        [("editor", 0), ("second.dll", 1), ("renamed editor", 0)]
+    );
+}
+
+#[test]
+fn registry_branch_state_survives_reordering_and_new_key_observations() {
+    let value = RegistryEntry {
+        id: 1,
+        hive: "SYSTEM".into(),
+        path: "ControlSet\\Services".into(),
+        name: "Start".into(),
+        value_type: "REG_DWORD".into(),
+    };
+    let mut tree = ResultTree::registry(vec![value.clone()], &[1]);
+    tree.toggle(node(&tree, "Services"));
+
+    let key = RegistryEntry {
+        id: 2,
+        hive: "system".into(),
+        path: "controlset".into(),
+        name: "services".into(),
+        value_type: "Key".into(),
+    };
+    let mut restored = ResultTree::registry(vec![key, value], &[1, 2]);
+    restored.restore_state(tree.state().clone());
+    assert_eq!(
+        labels(&restored),
+        [("system", 0), ("controlset", 1), ("services", 2)]
+    );
+    assert_eq!(
+        restored.nodes[node(&restored, "services")].record_id,
+        Some(2)
+    );
 }
 
 #[test]

@@ -129,8 +129,7 @@ impl Workspace {
                                 .on_click(cx.listener(|this, checked, _, cx| {
                                     this.show_file_handles = *checked;
                                     this.selection_epoch += 1;
-                                    this.tree_cursor = None;
-                                    this.result_tree = ResultTree::default();
+                                    this.clear_result_tree();
                                     this.start_query(cx);
                                 })),
                         )
@@ -146,8 +145,7 @@ impl Workspace {
                                     .on_click(cx.listener(|this, checked, _, cx| {
                                         this.show_unavailable_files = *checked;
                                         this.selection_epoch += 1;
-                                        this.tree_cursor = None;
-                                        this.result_tree = ResultTree::default();
+                                        this.clear_result_tree();
                                         this.start_query(cx);
                                     })),
                             )

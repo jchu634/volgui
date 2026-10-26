@@ -741,18 +741,34 @@ impl Workspace {
                         if meterpreter && name.as_str() == "Payload configuration" {
                             fields = fields.child(
                                 div()
+                                    .flex()
+                                    .items_start()
+                                    .gap_2()
                                     .w_full()
                                     .min_w_0()
                                     .py_1()
                                     .border_b_1()
                                     .border_color(cx.theme().border)
-                                    .child(self.json_node(
-                                        "/Payload configuration",
-                                        name,
-                                        value,
-                                        0,
-                                        cx,
-                                    )),
+                                    .child(
+                                        div()
+                                            .w(px(104.))
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(SelectableText::new(
+                                                ("field-name", i),
+                                                name.clone(),
+                                            )),
+                                    )
+                                    .child(
+                                        div().flex_1().min_w_0().child(self.json_node(
+                                            "/Payload configuration",
+                                            "",
+                                            value,
+                                            0,
+                                            cx,
+                                        )),
+                                    ),
                             );
                             continue;
                         }
@@ -1100,7 +1116,11 @@ impl Workspace {
         };
         row = row.child(SelectableText::new(
             key("json-value", path),
-            format!("{name}: {summary}"),
+            if name.is_empty() {
+                summary
+            } else {
+                format!("{name}: {summary}")
+            },
         ));
         let mut node = div().flex().flex_col().child(row);
         if expandable && expanded && depth < 64 {

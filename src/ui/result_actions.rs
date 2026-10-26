@@ -2,6 +2,44 @@
 use super::*;
 
 impl Workspace {
+    fn remember_tree_state(&mut self) {
+        if let Some(scope) = self.tree_scope.take() {
+            self.tree_states
+                .insert(scope, self.result_tree.state().clone());
+        }
+    }
+
+    pub(super) fn clear_result_tree(&mut self) {
+        self.remember_tree_state();
+        self.result_tree = ResultTree::default();
+        self.tree_cursor = None;
+    }
+
+    pub(super) fn set_result_tree(&mut self, mut tree: ResultTree) {
+        self.remember_tree_state();
+        if let Some(
+            group @ (ArtifactGroup::Processes
+            | ArtifactGroup::Files
+            | ArtifactGroup::Registry
+            | ArtifactGroup::Modules),
+        ) = self.result_group()
+        {
+            let mut runs = self.scope.clone();
+            runs.sort_unstable();
+            let scope = TreeScope {
+                evidence: self.selected_evidence.clone(),
+                group,
+                runs,
+            };
+            if let Some(state) = self.tree_states.get(&scope) {
+                tree.restore_state(state.clone());
+            }
+            self.tree_scope = Some(scope);
+        }
+        self.result_tree = tree;
+        self.tree_cursor = None;
+    }
+
     pub(super) fn group_runs(&self, group: ArtifactGroup) -> Vec<String> {
         let Some(case) = &self.case else {
             return vec![];
@@ -144,7 +182,7 @@ impl Workspace {
         self.selected_run = self.scope.first().cloned();
         self.sort = None;
         self.index = ResultIndex::default();
-        self.result_tree = ResultTree::default();
+        self.clear_result_tree();
         self.row_cache.clear();
         self.file_recovery_states.clear();
         self.file_recovery = None;

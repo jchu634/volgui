@@ -20,6 +20,12 @@ selection, scrollbars and column resizing, so both sides remain aligned. Tree
 keyboard handling captures navigation before native table bindings change it.
 The table selection maps to a node index rather than the flat query index.
 
+Expansion state is retained for each evidence, artifact group and set of source
+runs until the case closes. Query rebuilds and visibility toggles restore it by
+record ID, module source and PID, or directory and registry path. Hidden branches
+retain their state, and compacted directory rows retain every merged path's
+identity. Expand all and Collapse all also set the default for returning branches.
+
 `ResultTree::detail_node(i)` returns the owning process for a file handle row and
 the node itself for other rows. Display columns use that source's PID, session,
 thread count, process path and creation time. Clicking a handle still selects its

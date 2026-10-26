@@ -53,7 +53,7 @@ use volgui::{
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, QueueClearScope, RunStatus, now},
     result_table as table,
-    result_tree::ResultTree,
+    result_tree::{ResultTree, TreeState},
     results::{ProcessRelations, Query, ResultIndex, ResultStore, StoredRecord},
     settings::Settings,
     volatility::{Installation, Outcome, display_value, format_arguments},
@@ -107,6 +107,13 @@ struct QueryResult {
     tree: ResultTree,
     file_states: HashMap<i64, volgui::analysis::files::RecoveryState>,
     recovery: Option<volgui::analysis::files::RecoveryIndex>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TreeScope {
+    evidence: Option<String>,
+    group: ArtifactGroup,
+    runs: Vec<String>,
 }
 
 enum Event {
@@ -189,6 +196,8 @@ pub struct Workspace {
     scope_label: String,
     index: ResultIndex,
     result_tree: ResultTree,
+    tree_scope: Option<TreeScope>,
+    tree_states: HashMap<TreeScope, TreeState>,
     network: volgui::network::Graph,
     network_table: Entity<TableState<components::network_data_table::NetworkTable>>,
     network_table_view: bool,
@@ -552,6 +561,8 @@ impl Workspace {
             scope_label: "Artifacts".into(),
             index: ResultIndex::default(),
             result_tree: ResultTree::default(),
+            tree_scope: None,
+            tree_states: HashMap::new(),
             network: volgui::network::Graph::default(),
             network_table,
             network_table_view: false,
@@ -943,7 +954,7 @@ impl Workspace {
                         self.selected_row = None;
                         self.scope.clear();
                         self.index = ResultIndex::default();
-                        self.result_tree = ResultTree::default();
+                        self.clear_result_tree();
                         self.row_cache.clear();
                         self.inflight.clear();
                         self.view = View::Workspace;
@@ -1125,8 +1136,7 @@ impl Workspace {
                             self.file_recovery_states = file_states;
                             self.file_recovery = recovery;
                             self.index = index;
-                            self.result_tree = tree;
-                            self.tree_cursor = None;
+                            self.set_result_tree(tree);
                             self.row_cache.clear();
                             for r in rows {
                                 self.row_cache.insert(r.id, Arc::new(r));
