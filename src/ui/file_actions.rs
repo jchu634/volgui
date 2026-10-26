@@ -104,6 +104,9 @@ impl Workspace {
     }
 
     pub(super) fn toggle_content_sidebar(&mut self, cx: &mut Context<Self>) {
+        if !self.supports_content_sidebar() {
+            return;
+        }
         self.content_sidebar_visible = !self.content_sidebar_visible;
         if matches!(
             self.result_group(),

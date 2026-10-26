@@ -162,7 +162,16 @@ impl Workspace {
                             engine.plugins.iter().any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
                         });
                     content = content.child(
+                        div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            if file_target {
+                                "Recover this file's cached contents from memory and view them here."
+                            } else {
+                                "Recover cached files from this process and view them here."
+                            },
+                        ),
+                    ).child(
                         app_button("dump-load-sidebar-files")
+                            .self_start()
                             .small()
                             .label("Dump and Load files")
                             .disabled(!available)
@@ -180,7 +189,11 @@ impl Workspace {
             }
             HexView::NeedsMemory => {
                 content = content.child(
+                    div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child("Collect this process's memory to view the bytes surrounding this result."),
+                ).child(
                     app_button("load-scan-memory")
+                        .self_start()
                         .small()
                         .label("Load memory")
                         .disabled(self.loading)

@@ -133,16 +133,12 @@ impl Workspace {
         self.column_filters.clear();
         self.scope = runs;
         if !was_application && self.result_group() == Some(ArtifactGroup::Applications) {
-            self.content_sidebar_visible = true;
             self.content_encoding = volgui::extracted_files::ContentEncoding::Utf8;
         }
         self.selection_epoch += 1;
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
         self.scope_label = label;
-        if self.result_group() == Some(ArtifactGroup::Network) {
-            self.content_sidebar_visible = true;
-        }
         self.selected = None;
         self.selected_row = None;
         self.selected_run = self.scope.first().cloned();
@@ -472,7 +468,7 @@ impl Workspace {
         }
         self.hex_scroll.set_offset(Point::default());
         if self.result_group() != Some(ArtifactGroup::Network)
-            && (self.content_sidebar_visible
+            && ((self.supports_content_sidebar() && self.content_sidebar_visible)
                 || self.result_group() == Some(ArtifactGroup::Applications))
         {
             self.load_hex(cx);

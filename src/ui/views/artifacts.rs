@@ -2,6 +2,21 @@
 use super::*;
 
 impl Workspace {
+    pub(in crate::ui) fn supports_content_sidebar(&self) -> bool {
+        self.view == View::Workspace
+            && matches!(
+                self.result_group(),
+                Some(
+                    ArtifactGroup::Processes
+                        | ArtifactGroup::Files
+                        | ArtifactGroup::Applications
+                        | ArtifactGroup::Network
+                        | ArtifactGroup::Memory
+                        | ArtifactGroup::Strings
+                )
+            )
+    }
+
     pub(in crate::ui) fn result_group(&self) -> Option<ArtifactGroup> {
         if self.scope.is_empty() && self.scope_label == self.browser_group.label() {
             return Some(self.browser_group);
@@ -118,7 +133,7 @@ impl Workspace {
                 )
                 .into_any_element();
         }
-        let results = if self.content_sidebar_visible {
+        let results = if self.supports_content_sidebar() && self.content_sidebar_visible {
             h_resizable("artifact-hex-split")
                 .child(
                     resizable_panel()

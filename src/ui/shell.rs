@@ -118,15 +118,25 @@ impl Render for Workspace {
                 View::CaseInfo => self.render_case_info(cx),
             }
         };
-        let body = div()
-            .flex()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .when(self.sidebar_visible && case_open, |s| {
-                s.child(self.render_sidebar(cx))
-            })
-            .child(content);
+        let content = if self.sidebar_visible && case_open {
+            h_resizable("workspace-sidebar-split")
+                .child(
+                    resizable_panel()
+                        .size(px(282.))
+                        .size_range(px(220.)..px(560.))
+                        .fixed()
+                        .child(self.render_sidebar(cx)),
+                )
+                .child(
+                    resizable_panel()
+                        .size_range(px(320.)..Pixels::MAX)
+                        .child(content),
+                )
+                .into_any_element()
+        } else {
+            content
+        };
+        let body = div().flex().flex_1().min_h_0().min_w_0().child(content);
         let runs: Vec<_> = self
             .case
             .as_ref()
@@ -248,7 +258,7 @@ impl Render for Workspace {
                     .icon(IconName::PanelRight)
                     .accessibility_label("Toggle supplemental sidebar")
                     .selected(self.content_sidebar_visible)
-                    .disabled(!case_open || self.view != View::Workspace)
+                    .disabled(!case_open || !self.supports_content_sidebar())
                     .tooltip(if self.content_sidebar_visible {
                         "Hide sidebar"
                     } else {
