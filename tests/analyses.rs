@@ -650,3 +650,43 @@ fn browser_recovery_can_be_queued_with_its_prerequisites() {
             .is_empty()
     );
 }
+
+#[test]
+fn process_scan_completion_is_scoped_to_evidence_pid_and_success() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"scan scope fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut run = volgui::analysis::prepare(
+        &evidence, volgui::analysis::APPLICATION, vec!["--pid".into(), "42".into()],
+    ).unwrap();
+    assert!(!volgui::analyses::completed_process_scan(&run, &evidence.id, 42));
+    run.status = RunStatus::Completed;
+    assert!(volgui::analyses::completed_process_scan(&run, &evidence.id, 42));
+    assert!(!volgui::analyses::completed_process_scan(&run, &evidence.id, 43));
+    assert!(!volgui::analyses::completed_process_scan(&run, "other-evidence", 42));
+    run.status = RunStatus::Failed;
+    assert!(!volgui::analyses::completed_process_scan(&run, &evidence.id, 42));
+}
+
+#[test]
+fn scoped_memory_collections_do_not_block_global_scans() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"global scan fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut run = volgui::analysis::prepare(&evidence, volgui::analysis::APPLICATION, vec![]).unwrap();
+    for plugin in ["windows.memmap.Memmap", "windows.vadinfo.VadInfo"] {
+        run.plugin = plugin.into();
+        for status in [RunStatus::Queued, RunStatus::Running, RunStatus::Completed] {
+            run.status = status;
+            run.arguments = vec!["--pid".into(), "42".into(), "--dump".into()];
+            assert!(!volgui::analyses::blocks_global_selection(&run));
+            run.arguments.clear();
+            assert!(volgui::analyses::blocks_global_selection(&run));
+        }
+        run.status = RunStatus::Failed;
+        assert!(!volgui::analyses::blocks_global_selection(&run));
+    }
+    assert!(volgui::analyses::basic_label("windows.memmap.Memmap").is_none());
+}

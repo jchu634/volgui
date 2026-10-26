@@ -28,6 +28,19 @@ impl Workspace {
     ) {
         let completed = self.case.as_ref().is_some_and(|case| {
             case.document.runs.iter().any(|run| {
+                if plugin == analysis::APPLICATION {
+                    return self.selected_evidence.as_ref().is_some_and(|evidence_id| {
+                        self.application_pid
+                            .read(cx)
+                            .value()
+                            .trim()
+                            .parse::<u64>()
+                            .ok()
+                            .is_some_and(|pid| {
+                                volgui::analyses::completed_process_scan(run, evidence_id, pid)
+                            })
+                    });
+                }
                 Some(&run.evidence_id) == self.selected_evidence.as_ref()
                     && run.plugin == plugin
                     && run.status == RunStatus::Completed

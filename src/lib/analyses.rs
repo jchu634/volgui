@@ -48,6 +48,26 @@ fn is_recovery_analysis(plugin: &str) -> bool {
 
 pub const APPLICATION_RECOVERY_PENDING: &str = "Waiting to prepare process memory recovery";
 
+/// A PID-filtered memory collection does not cover a global memory analysis.
+pub fn blocks_global_selection(run: &Run) -> bool {
+    run.status.blocks_plugin_selection()
+        && !crate::analysis::quarantine::is_passive(run)
+        && !(matches!(
+            run.plugin.as_str(),
+            "windows.memmap.Memmap" | "windows.vadinfo.VadInfo"
+        ) && run
+            .arguments
+            .iter()
+            .any(|argument| argument == "--pid" || argument.starts_with("--pid=")))
+}
+
+pub fn completed_process_scan(run: &Run, evidence_id: &str, pid: u64) -> bool {
+    run.evidence_id == evidence_id
+        && run.plugin == crate::analysis::APPLICATION
+        && run.status == RunStatus::Completed
+        && crate::analysis::application::target_pid(&run.arguments) == Ok(pid)
+}
+
 pub fn prepare_file_recovery(case: &Case, engine: &Installation, run: &Run) -> Result<Vec<Run>> {
     let evidence = case
         .document
@@ -216,7 +236,6 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.handles.Handles" => "Process handles",
         "windows.registry.printkey.PrintKey" => "Registry key contents",
         "windows.vadinfo.VadInfo" => "Process memory regions and dumps",
-        "windows.memmap.Memmap" => "Process memory map and dump",
         "windows.registry.hivelist.HiveList" | "windows.registry.hivescan.HiveScan" => {
             "Registry hives"
         }

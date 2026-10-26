@@ -141,9 +141,8 @@ impl Workspace {
                     .runs
                     .iter()
                     .filter(|run| {
-                        run.status.blocks_plugin_selection()
+                        volgui::analyses::blocks_global_selection(run)
                             && run.evidence_id == draft.evidence_id
-                            && !volgui::analysis::quarantine::is_passive(run)
                     })
                     .map(|run| run.plugin.clone())
                     .collect()
@@ -193,8 +192,7 @@ impl Workspace {
                     for draft in &mut this.analysis_drafts {
                         draft.selected.retain(|id| {
                             !case.document.runs.iter().any(|run| {
-                                run.status.blocks_plugin_selection()
-                                    && !volgui::analysis::quarantine::is_passive(run)
+                                volgui::analyses::blocks_global_selection(run)
                                     && run.evidence_id == draft.evidence_id
                                     && &run.plugin == id
                             })
