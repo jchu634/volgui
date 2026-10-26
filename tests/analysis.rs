@@ -569,7 +569,7 @@ fn browser_and_application_jobs_select_user_memory_and_reuse_both_scopes_after_r
         );
         let directory = case.directory.clone();
         drop(case);
-        let case = Case::open(&directory).unwrap();
+        let mut case = Case::open(&directory).unwrap();
 
         // Even an older selected engine can reuse a complete scoped dump already saved.
         engine.user_memory_dumps = !supported;
@@ -596,6 +596,20 @@ fn browser_and_application_jobs_select_user_memory_and_reuse_both_scopes_after_r
             |_| {},
         );
         assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+        case.queue(jobs[0].clone()).unwrap();
+        case.finish(&jobs[0].id, &outcome).unwrap();
+        drop(case);
+        let case = Case::open(&directory).unwrap();
+        let saved = case
+            .document
+            .runs
+            .iter()
+            .find(|run| run.id == jobs[0].id)
+            .unwrap();
+        let path = application::dump_path(&directory, &case.document, saved)
+            .expect("Selecting a saved PID must find full and user-memory dumps");
+        assert_eq!(path, case.run_dir(&collected.id).join("pid.42.dmp"));
+        assert_eq!(HexPage::read(&path, 0).unwrap().bytes, bytes);
         assert!(
             outcome
                 .table
@@ -629,6 +643,67 @@ fn browser_and_application_jobs_select_user_memory_and_reuse_both_scopes_after_r
             outcome.message
         );
     }
+}
+
+#[test]
+fn saved_application_dump_uses_its_pinned_source_and_rejects_invalid_sources() {
+    use volgui::analysis::{APPLICATION, application};
+    let (_temp, mut case, _engine) = setup();
+    let dump_args: Vec<String> = ["--pid", "42", "--dump", "--user-memory"]
+        .map(str::to_owned)
+        .into();
+    let dump = save(
+        &mut case,
+        0,
+        application::MEMMAP,
+        dump_args.clone(),
+        json!([]),
+    );
+    let path = case.run_dir(&dump.id).join("pid.42.dmp");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"saved process memory").unwrap();
+    let scan = save(
+        &mut case,
+        0,
+        APPLICATION,
+        vec![
+            "--pid".into(),
+            "42".into(),
+            "--source-run".into(),
+            dump.id.clone(),
+        ],
+        json!([]),
+    );
+    // Later dumps for the same PID must not replace the saved scan's bytes.
+    let newer = save(&mut case, 0, application::MEMMAP, dump_args, json!([]));
+    fs::create_dir_all(case.run_dir(&newer.id)).unwrap();
+    fs::write(case.run_dir(&newer.id).join("pid.42.dmp"), b"newer bytes").unwrap();
+    assert_eq!(
+        application::dump_path(&case.directory, &case.document, &scan),
+        Some(path.clone())
+    );
+    let mut wrong_evidence = scan.clone();
+    wrong_evidence.evidence_id = case.document.evidence[1].id.clone();
+    assert!(application::dump_path(&case.directory, &case.document, &wrong_evidence).is_none());
+    let mut wrong_pid = scan.clone();
+    wrong_pid.arguments[1] = "43".into();
+    assert!(application::dump_path(&case.directory, &case.document, &wrong_pid).is_none());
+    let source = case
+        .document
+        .runs
+        .iter_mut()
+        .find(|r| r.id == dump.id)
+        .unwrap();
+    source.status = RunStatus::Failed;
+    assert!(application::dump_path(&case.directory, &case.document, &scan).is_none());
+    case.document
+        .runs
+        .iter_mut()
+        .find(|r| r.id == dump.id)
+        .unwrap()
+        .status = RunStatus::Completed;
+    fs::remove_file(path).unwrap();
+    assert!(application::dump_path(&case.directory, &case.document, &scan).is_none());
 }
 
 #[test]

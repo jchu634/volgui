@@ -13,7 +13,7 @@ Download the Windows application from [Releases](https://github.com/jchu634/volg
 | View | What it provides |
 | --- | --- |
 | Processes | Parent/child process trees, command context, collected handles and process file children. |
-| Network | Socket graph and table, endpoint details, command correlation and validated Meterpreter TCP configuration recovery. |
+| Network | Socket graph and table, endpoint details, command correlation, validated Meterpreter TCP configurations and incomplete configuration candidates. Payload UUIDs, session GUIDs and ownership limits remain visible. |
 | Files | Directory trees, per-file extraction, recovery status and recovered content inspection. Bulk file recovery is an extended analysis. |
 | Download investigation | Download origins, filename-based execution candidates, residual process candidates and related socket records, with separate evidence labels. |
 | Quarantined threats | Defender quarantine metadata, known antivirus folder candidates, process matches and download origins. Local blocked outputs have a separate scope. |

@@ -1,6 +1,46 @@
 // Renders record fields, diagnostics, extracted files, and bookmarks.
 use super::*;
 
+const NETWORK_INFO_FIELDS: &[&str] = &[
+    "IP",
+    "Port",
+    "URI",
+    "ForeignAddr",
+    "RemoteAddr",
+    "RemoteAddress",
+    "DstAddr",
+    "Target",
+    "ForeignPort",
+    "RemotePort",
+    "DstPort",
+    "TargetPort",
+    "LocalAddr",
+    "LocalAddress",
+    "SrcAddr",
+    "Source",
+    "LocalPort",
+    "SrcPort",
+    "SourcePort",
+    "Proto",
+    "Protocol",
+    "State",
+    "PID",
+    "Pid",
+    "ProcessID",
+    "Owner",
+    "Process",
+    "ProcessName",
+    "ImageFileName",
+    "COMM",
+    "Created",
+    "CreateTime",
+    "StartTime",
+    "Finding",
+    "Share",
+    "Username",
+    "Password",
+];
+
 impl Workspace {
     pub(in crate::ui) fn render_file_actions(&self, for_hex: bool, cx: &mut Context<Self>) -> Div {
         if for_hex {
@@ -9,7 +49,7 @@ impl Workspace {
             };
             let executable = self.imhex_path.clone();
             let file = page.path.clone();
-            return div().flex().items_center().mb_2().child(
+            return div().flex().flex_shrink_0().items_center().child(
                 app_button("hex-open-imhex")
                     .small()
                     .label("Open in ImHex")
@@ -420,6 +460,7 @@ impl Workspace {
                     let application = self.result_group() == Some(ArtifactGroup::Applications);
                     let downloads = self.result_group() == Some(ArtifactGroup::Downloads);
                     let quarantine = self.result_group() == Some(ArtifactGroup::Quarantine);
+                    let network = self.result_group() == Some(ArtifactGroup::Network);
                     let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
                     if downloads || quarantine {
                         if let Some(pid) = record.record.fields.get("PID").and_then(|v| v.as_u64())
@@ -549,12 +590,24 @@ impl Workspace {
                     }
                     let mut fields = div().flex().flex_wrap().gap_x_4().items_start().w_full();
                     content = content.child(actions);
+                    let meterpreter = network && record.record.text("Finding").contains("Meterpreter");
                     let mut ordered: Vec<_> = record
                         .record
                         .fields
                         .iter()
                         .filter(|(name, _)| {
-                            !(self.result_group() == Some(ArtifactGroup::Processes)
+                            !(meterpreter
+                                && matches!(
+                                    name.as_str(),
+                                    "Acquisition offset"
+                                        | "Configuration offset"
+                                        | "Match offset"
+                                        | "Interpretation"
+                                        | "Ownership evidence"
+                                        | "Payload UUID"
+                                        | "Session GUID"
+                                ))
+                                && !(self.result_group() == Some(ArtifactGroup::Processes)
                                 && (name.starts_with("Fact provenance")
                                     || matches!(name.as_str(), "File output" | "Handles")))
                                 && (!browser
@@ -647,7 +700,78 @@ impl Workspace {
                                 .unwrap_or(priority.len())
                         });
                     }
+                    if network {
+                        ordered.sort_by_key(|(name, _)| {
+                            NETWORK_INFO_FIELDS
+                                .iter()
+                                .position(|key| key == name)
+                                .unwrap_or(NETWORK_INFO_FIELDS.len())
+                        });
+                    }
+                    let network_info_count = ordered
+                        .iter()
+                        .take_while(|(name, _)| NETWORK_INFO_FIELDS.contains(&name.as_str()))
+                        .count();
                     for (i, (name, value)) in ordered.into_iter().enumerate() {
+                        if network {
+                            if i == 0 {
+                                fields = fields.child(
+                                    div()
+                                        .w_full()
+                                        .flex_shrink_0()
+                                        .mb_2()
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Network info"),
+                                );
+                            }
+                            if i == network_info_count {
+                                fields = fields.child(
+                                    div()
+                                        .w_full()
+                                        .flex_shrink_0()
+                                        .mt_3()
+                                        .mb_2()
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Other"),
+                                );
+                            }
+                        }
+                        if meterpreter && name.as_str() == "Payload configuration" {
+                            fields = fields.child(
+                                div()
+                                    .flex()
+                                    .items_start()
+                                    .gap_2()
+                                    .w_full()
+                                    .min_w_0()
+                                    .py_1()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .child(
+                                        div()
+                                            .w(px(104.))
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(SelectableText::new(
+                                                ("field-name", i),
+                                                name.clone(),
+                                            )),
+                                    )
+                                    .child(
+                                        div().flex_1().min_w_0().child(self.json_node(
+                                            "/Payload configuration",
+                                            "",
+                                            value,
+                                            0,
+                                            cx,
+                                        )),
+                                    ),
+                            );
+                            continue;
+                        }
                         let text = if application && name.as_str() == "Text" {
                             display_value(value)
                                 .replace("\r\n", "\n")
@@ -992,7 +1116,11 @@ impl Workspace {
         };
         row = row.child(SelectableText::new(
             key("json-value", path),
-            format!("{name}: {summary}"),
+            if name.is_empty() {
+                summary
+            } else {
+                format!("{name}: {summary}")
+            },
         ));
         let mut node = div().flex().flex_col().child(row);
         if expandable && expanded && depth < 64 {

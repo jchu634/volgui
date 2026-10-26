@@ -235,7 +235,9 @@ pub fn adjacent_address(
 pub fn source_offset(record: &Record) -> Option<u64> {
     if !matches!(
         record.text("Source type").as_str(),
-        "Residual memory string" | "Validated acquisition configuration"
+        "Residual memory string"
+            | "Validated acquisition configuration"
+            | "Incomplete acquisition configuration"
     ) && record.text("Finding") != "Meterpreter TCP configuration"
     {
         return None;
@@ -248,6 +250,50 @@ pub fn source_offset(record: &Record) -> Option<u64> {
     ]
     .into_iter()
     .find_map(|key| record.fields.get(key).and_then(|value| value.as_u64()))
+}
+
+/// Count recovered artifacts, not processes or successful connections. Repeated
+/// parser runs at the same evidence offset must not inflate the comparison.
+pub fn configuration_summary<'a>(entries: impl Iterator<Item = &'a Entry>) -> Option<String> {
+    let mut complete = BTreeSet::new();
+    let mut incomplete = BTreeSet::new();
+    let mut payloads = BTreeSet::new();
+    for entry in entries {
+        let row = &entry.source.record;
+        let finding = row.text("Finding");
+        let group = match finding.as_str() {
+            "Meterpreter TCP configuration" => &mut complete,
+            "Incomplete Meterpreter TCP configuration candidate" => &mut incomplete,
+            _ => continue,
+        };
+        let offset = row
+            .fields
+            .get("Configuration offset")
+            .and_then(|v| v.as_u64());
+        group.insert((
+            row.text("Evidence SHA-256"),
+            offset,
+            if offset.is_none() { entry.source.id } else { 0 },
+        ));
+        let payload = row.text("Payload UUID");
+        let payload = if payload.is_empty() {
+            row.fields
+                .get("Payload configuration")
+                .and_then(|v| v.get("Payload UUID"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            payload
+        };
+        if !payload.is_empty() {
+            payloads.insert(payload);
+        }
+    }
+    (!complete.is_empty() || !incomplete.is_empty()).then(|| format!(
+        "Meterpreter artifacts: {} validated, {} incomplete; {} distinct payload UUIDs. Artifact and UUID counts are not process counts. A shared endpoint does not establish shared configuration or ownership.",
+        complete.len(), incomplete.len(), payloads.len()
+    ))
 }
 
 fn endpoint(r: &Record, addresses: &[&str], ports: &[&str]) -> Option<Endpoint> {
@@ -459,8 +505,16 @@ impl Graph {
 
 /// Common assignments are investigation hints, not identification of the actual service.
 pub fn service(port: Option<u16>) -> &'static str {
-    match port {
+    common_service(port).unwrap_or(match port {
         Some(0) => "Unspecified port",
+        None => "Port not recovered",
+        _ => "No common service assignment",
+    })
+}
+
+/// Common port assignments, when known, without a fallback description.
+pub fn common_service(port: Option<u16>) -> Option<&'static str> {
+    Some(match port {
         Some(21) => "FTP control",
         Some(22) => "SSH",
         Some(23) => "Telnet",
@@ -479,7 +533,6 @@ pub fn service(port: Option<u16>) -> &'static str {
         Some(3306) => "MySQL",
         Some(3389) => "Remote Desktop",
         Some(5985 | 5986) => "WinRM",
-        None => "Port not recovered",
-        _ => "No common service assignment",
-    }
+        _ => return None,
+    })
 }

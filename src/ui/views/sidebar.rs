@@ -134,7 +134,7 @@ impl Workspace {
             shortcuts = shortcuts.child(self.render_artifact_shortcut(group, cx));
         }
         div()
-            .w(px(282.))
+            .w_full()
             .flex_shrink_0()
             .h_full()
             .flex()

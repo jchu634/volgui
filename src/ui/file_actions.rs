@@ -18,7 +18,21 @@ impl Workspace {
         {
             return Some(run);
         }
-        extracted_files::completed_dump(case, record, self.file_offset_physical)
+        extracted_files::completed_dump(case, record, self.file_offset_physical).or_else(|| {
+            let source = case.document.runs.iter().find(|run| run.id == record.run_id)?;
+            if ArtifactGroup::for_plugin(&source.plugin) != ArtifactGroup::Processes {
+                return None;
+            }
+            let pid = ["PID", "Pid", "pid"].iter()
+                .map(|key| record.record.text(key))
+                .find(|pid| pid.parse::<u64>().is_ok())?;
+            case.document.runs.iter().rev().find(|run| {
+                run.plugin == extracted_files::DUMP_FILES
+                    && run.evidence_id == source.evidence_id
+                    && run.status == RunStatus::Completed
+                    && run.arguments == ["--pid", pid.as_str()]
+            })
+        })
     }
 
     pub(super) fn locate_imhex(&self) {
@@ -90,6 +104,9 @@ impl Workspace {
     }
 
     pub(super) fn toggle_content_sidebar(&mut self, cx: &mut Context<Self>) {
+        if !self.supports_content_sidebar() {
+            return;
+        }
         self.content_sidebar_visible = !self.content_sidebar_visible;
         if matches!(
             self.result_group(),
@@ -108,6 +125,7 @@ impl Workspace {
 
     pub(super) fn reset_hex(&mut self) {
         self.hex_epoch += 1;
+        self.memory_scan_dump = None;
         self.hex_view = HexView::Idle;
         self.hex_editor = None;
         self.database_view = None;
@@ -171,6 +189,10 @@ impl Workspace {
 
     pub(super) fn load_hex(&mut self, cx: &mut Context<Self>) {
         self.reset_hex();
+        if self.result_group() == Some(ArtifactGroup::Memory) {
+            self.load_memory_scan_hex(false, cx);
+            return;
+        }
         if self.result_group() == Some(ArtifactGroup::Strings)
             && let Some(record) = &self.selected
             && let Some(offset) = record.record.fields.get("Offset").and_then(|v| v.as_u64())
@@ -235,6 +257,44 @@ impl Workspace {
                 }
                 Err(error)
             })();
+            let _ = tx.send(Event::HexLoaded(epoch, result));
+        });
+        cx.notify();
+    }
+
+    pub(super) fn view_memory_scan(&mut self, cx: &mut Context<Self>) {
+        self.reset_hex();
+        self.content_sidebar_visible = true;
+        self.content_encoding = volgui::extracted_files::ContentEncoding::Hex;
+        self.load_memory_scan_hex(true, cx);
+    }
+
+    fn load_memory_scan_hex(&mut self, collect: bool, cx: &mut Context<Self>) {
+        let (Some(case), Some(selected)) = (&self.case, &self.selected) else {
+            cx.notify();
+            return;
+        };
+        let directory = case.directory.clone();
+        let document = case.document.clone();
+        let selected = selected.clone();
+        self.hex_view = HexView::Loading;
+        let epoch = self.hex_epoch;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = match volgui::memory_scan::content(&directory, &document, &selected) {
+                Ok(volgui::memory_scan::Content::Ready(path, offset)) => {
+                    HexPage::read(&path, offset).map(|page| (vec![path], page))
+                }
+                Ok(volgui::memory_scan::Content::NeedsDump { evidence_id, pid }) if collect => {
+                    let _ = tx.send(Event::MemoryScanDumpNeeded(epoch, evidence_id, pid));
+                    return;
+                }
+                Ok(volgui::memory_scan::Content::NeedsDump { .. }) => {
+                    let _ = tx.send(Event::MemoryScanLoadAvailable(epoch));
+                    return;
+                }
+                Err(error) => Err(error),
+            };
             let _ = tx.send(Event::HexLoaded(epoch, result));
         });
         cx.notify();

@@ -1,6 +1,18 @@
 // Renders the window frame, navigation, and active view.
 use super::*;
 
+fn titlebar_logo() -> Arc<Image> {
+    static LOGO: std::sync::OnceLock<Arc<Image>> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            // Original PNG embedded in logo_dark.svg, preserved without recoloring.
+            include_bytes!("../../assets/logo-dark.png").to_vec(),
+        ))
+    })
+    .clone()
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.case.is_none() && !self.welcome_open {
@@ -25,11 +37,7 @@ impl Render for Workspace {
                 .flex_1()
                 .items_center()
                 .gap_3()
-                .child(
-                    div()
-                        .text_color(rgb(0xd96b87))
-                        .child(Icon::new(IconName::Shield).size_4()),
-                )
+                .child(img(titlebar_logo()).size_5().flex_shrink_0())
                 .child(
                     div()
                         .text_sm()
@@ -118,15 +126,25 @@ impl Render for Workspace {
                 View::CaseInfo => self.render_case_info(cx),
             }
         };
-        let body = div()
-            .flex()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .when(self.sidebar_visible && case_open, |s| {
-                s.child(self.render_sidebar(cx))
-            })
-            .child(content);
+        let content = if self.sidebar_visible && case_open {
+            h_resizable("workspace-sidebar-split")
+                .child(
+                    resizable_panel()
+                        .size(px(282.))
+                        .size_range(px(220.)..px(560.))
+                        .fixed()
+                        .child(self.render_sidebar(cx)),
+                )
+                .child(
+                    resizable_panel()
+                        .size_range(px(320.)..Pixels::MAX)
+                        .child(content),
+                )
+                .into_any_element()
+        } else {
+            content
+        };
+        let body = div().flex().flex_1().min_h_0().min_w_0().child(content);
         let runs: Vec<_> = self
             .case
             .as_ref()
@@ -248,7 +266,7 @@ impl Render for Workspace {
                     .icon(IconName::PanelRight)
                     .accessibility_label("Toggle supplemental sidebar")
                     .selected(self.content_sidebar_visible)
-                    .disabled(!case_open || self.view != View::Workspace)
+                    .disabled(!case_open || !self.supports_content_sidebar())
                     .tooltip(if self.content_sidebar_visible {
                         "Hide sidebar"
                     } else {
@@ -268,6 +286,7 @@ impl Render for Workspace {
                             ArtifactGroup::Processes
                                 | ArtifactGroup::Files
                                 | ArtifactGroup::Registry
+                                | ArtifactGroup::Modules
                         )
                     )
                 {

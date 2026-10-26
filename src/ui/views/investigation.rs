@@ -94,26 +94,35 @@ impl Workspace {
             .px_3()
             .py_2();
         match self.result_group() {
+            Some(ArtifactGroup::Files) => {
+                let pending = self.case.as_ref().is_some_and(|case| {
+                    case.document.runs.iter().any(|run| {
+                        Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                            && run.plugin == volgui::analysis::FILE_PATHS
+                            && matches!(run.status, RunStatus::Queued | RunStatus::Running)
+                    })
+                });
+                tools = tools.child(div().text_xs().child("Discover executable paths missing from file inventories with one scan of the evidence. Results appear as Path reference only. File contents are not extracted."))
+                    .child(div().flex().items_center().child(app_button("discover-file-paths").small().label("Discover executable paths")
+                        .disabled(self.is_working() || self.evidence().is_none() || pending)
+                        .on_click(cx.listener(|this, _, window, cx| this.confirm_repeat_analysis(volgui::analysis::FILE_PATHS, Self::discover_file_paths, window, cx)))));
+            }
             Some(ArtifactGroup::Quarantine) => {
                 tools = tools.child(div().text_xs().child("Isolation targets recorded during other analyses appear automatically, including interrupted scans. Start analysis explicitly to collect quarantine evidence from the capture. Defender metadata identifies threats when cached; other antivirus folders remain candidates. Select a finding for process matches, download origins and source records."))
                     .child(div().flex().flex_wrap().items_center().gap_2()
                         .child(app_button("investigate-quarantine").small().primary().label(if self.installation.is_some() { "Start analysis" } else { "Analyze collected evidence" })
                             .tooltip("Collect quarantine metadata with the configured engine, or analyze existing case records when no engine is configured.")
                             .disabled(self.is_working() || self.evidence().is_none())
-                            .on_click(cx.listener(|this, _, window, cx| this.analyze_quarantine(window, cx)))));
+                            .on_click(cx.listener(|this, _, window, cx| this.confirm_repeat_analysis(volgui::analysis::QUARANTINE, Self::analyze_quarantine, window, cx)))));
             }
             Some(ArtifactGroup::Downloads) => {
                 tools = tools.child(div().text_xs().child("Start with a website or filename. Select a finding to follow download origins, process evidence and remote connections. Filename matches and residual bytes are candidates; a port alone does not identify a reverse shell."))
                     .child(div().flex().flex_wrap().w_full().min_w_0().items_center().gap_2()
                         .child(app_button("investigate-downloads").small().primary().label("Start analysis")
                             .disabled(self.is_working() || self.installation.is_none() || self.evidence().is_none())
-                            .on_click(cx.listener(|this, _, window, cx| this.analyze_downloads(window,cx))))
+                            .on_click(cx.listener(|this, _, window, cx| this.confirm_repeat_analysis(volgui::analysis::DOWNLOADS, Self::analyze_downloads, window, cx))))
                         .child(app_button("download-all-findings").small().label("All findings")
-                            .on_click(cx.listener(|this,_,_,cx| { this.column_filters.clear();this.start_query(cx); })))
-                        .child(app_button("download-browser-activity").small().label("Browser activity")
-                            .on_click(cx.listener(|this, _, window, cx| this.choose_group(ArtifactGroup::Web,window,cx))))
-                        .child(app_button("download-network").small().label("All network connections")
-                            .on_click(cx.listener(|this, _, window, cx| this.choose_group(ArtifactGroup::Network,window,cx)))));
+                            .on_click(cx.listener(|this,_,_,cx| { this.column_filters.clear();this.start_query(cx); }))));
             }
             Some(ArtifactGroup::Applications) => {
                 tools = tools.child(
@@ -142,7 +151,14 @@ impl Workspace {
                                         || self.installation.is_none(),
                                 )
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.scan_application_memory(None, window, cx)
+                                    this.confirm_repeat_analysis(
+                                        volgui::analysis::APPLICATION,
+                                        |this, window, cx| {
+                                            this.scan_application_memory(None, window, cx)
+                                        },
+                                        window,
+                                        cx,
+                                    )
                                 })),
                         ),
                 );
@@ -151,12 +167,12 @@ impl Workspace {
                 tools = tools.child(div().text_xs().child("Recover browser memory, history and saved tabs, then analyze URLs and searches.\n Memory findings may include stale strings and do not alone prove a visit."))
                     .child(div().flex().items_center().child(app_button("recover-analyze-browser").small().label("Start analysis")
                         .disabled(self.is_working() || self.browser_recovery_pending || self.installation.is_none())
-                        .on_click(cx.listener(|this, _, window, cx| this.recover_and_analyze_browser(window, cx)))));
+                        .on_click(cx.listener(|this, _, window, cx| this.confirm_repeat_analysis(volgui::analysis::BROWSER, Self::recover_and_analyze_browser, window, cx)))));
             }
             Some(ArtifactGroup::Strings) => {
                 tools = tools.child(div().text_xs().child("Search the selected evidence file for a literal string in UTF-8, UTF-16LE and UTF-16BE. Results include byte offsets and context. Maximum 10,000 matches per analysis."))
-                    .child(div().flex().items_center().gap_2()
-                        .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w(px(360.)))
+                    .child(div().flex().flex_wrap().w_full().min_w_0().items_center().gap_2()
+                        .child(Input::new(&self.string_needle).id("global-string-needle").aria_label("String to find in evidence").small().w_full().max_w(px(360.)).min_w_0())
                         .child(self.search_history_dropdown(false, cx))
                         .child(Checkbox::new("string-ignore-case").label("Ignore ASCII case").checked(self.string_ignore_case).on_click(cx.listener(|this,checked,_,cx| { this.string_ignore_case = *checked; cx.notify(); })))
                         .child(app_button("run-global-search").small().label("Search").disabled(self.evidence().is_none() || self.busy.is_some()).on_click(cx.listener(|this,_,window,cx| this.run_string_search(window,cx)))));
@@ -178,7 +194,7 @@ impl Workspace {
                     .is_some();
                 tools = tools.child(div().text_xs().child("Expand branches to inspect collected registry keys and values. Select a key and choose Open subkey to collect its contents."))
                     .child(div().flex().flex_wrap().items_center().gap_2()
-                        .child(app_button("find-registry-hives").small().label("Find hives").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.collect_source("windows.registry.hivelist.HiveList",window,cx))))
+                        .child(app_button("find-registry-hives").small().label("Find hives").disabled(self.installation.is_none()).on_click(cx.listener(|this,_,window,cx| this.confirm_repeat_analysis("windows.registry.hivelist.HiveList", |this, window, cx| this.collect_source("windows.registry.hivelist.HiveList", window, cx), window, cx))))
                         .child(Input::new(&self.registry_key).id("registry-key-path").aria_label("Registry key relative to hive root").small().w(px(350.)))
                         .child(app_button("registry-open-subkey").small().label("Open subkey").tooltip("Collect the contents of the selected immediate subkey.").disabled(!child).on_click(cx.listener(|this,_,window,cx| this.browse_registry(true,false,window,cx)))));
             }

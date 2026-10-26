@@ -22,12 +22,45 @@ pub struct RegistryEntry {
 }
 
 #[derive(Clone, Debug)]
+pub struct ModuleEntry {
+    pub id: i64,
+    pub run_id: String,
+    pub pid: Option<String>,
+    pub process: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
 pub enum TreeNodeKind {
     Process,
+    Module,
     File,
     Directory,
     RegistryKey,
     RegistryValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum TreeNodeKey {
+    Record(i64),
+    ModuleProcess(String, Option<String>),
+    Directory(Vec<String>),
+    RegistryKey(Vec<String>),
+}
+
+#[derive(Clone, Debug)]
+pub struct TreeState {
+    expanded: bool,
+    branches: HashMap<TreeNodeKey, bool>,
+}
+
+impl Default for TreeState {
+    fn default() -> Self {
+        Self {
+            expanded: true,
+            branches: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +71,8 @@ pub struct TreeNode {
     pub pid: Option<String>,
     pub children: Vec<usize>,
     parent: Option<usize>,
+    // Compacted directories retain the identities of every merged component.
+    keys: Vec<TreeNodeKey>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -45,11 +80,65 @@ pub struct ResultTree {
     pub nodes: Vec<TreeNode>,
     pub visible: Vec<(usize, usize)>,
     roots: Vec<usize>,
-    collapsed: HashSet<usize>,
+    state: TreeState,
     included: HashSet<usize>,
 }
 
 impl ResultTree {
+    /// File handle rows display their owning process's metadata, while selection
+    /// and actions continue to use the handle's own record.
+    pub fn detail_node(&self, i: usize) -> &TreeNode {
+        let node = &self.nodes[i];
+        if matches!(node.kind, TreeNodeKind::File)
+            && let Some(parent) = node.parent
+            && matches!(self.nodes[parent].kind, TreeNodeKind::Process)
+        {
+            &self.nodes[parent]
+        } else {
+            node
+        }
+    }
+
+    pub fn modules(entries: Vec<ModuleEntry>, matches: &[i64]) -> Self {
+        let mut tree = Self::default();
+        let mut groups = HashMap::new();
+        for entry in entries {
+            let key = (entry.run_id, entry.pid.clone());
+            let parent = *groups.entry(key.clone()).or_insert_with(|| {
+                tree.push_node(TreeNode {
+                    keys: vec![TreeNodeKey::ModuleProcess(key.0.clone(), key.1.clone())],
+                    kind: TreeNodeKind::Process,
+                    record_id: None,
+                    label: if !entry.process.is_empty() {
+                        entry.process.clone()
+                    } else if let Some(pid) = &entry.pid {
+                        format!("PID {pid}")
+                    } else {
+                        "Kernel modules".into()
+                    },
+                    pid: entry.pid.clone(),
+                    children: vec![],
+                    parent: None,
+                })
+            });
+            // A later observation may supply the name missing from the first one.
+            if !entry.process.is_empty() {
+                tree.nodes[parent].label = entry.process;
+            }
+            tree.push_node(TreeNode {
+                keys: vec![TreeNodeKey::Record(entry.id)],
+                kind: TreeNodeKind::Module,
+                record_id: Some(entry.id),
+                label: entry.name,
+                pid: entry.pid,
+                children: vec![],
+                parent: Some(parent),
+            });
+        }
+        tree.filter(matches);
+        tree
+    }
+
     pub fn processes(entries: Vec<TreeEntry>, matches: &[i64]) -> Self {
         let mut pids = HashMap::new();
         for (i, entry) in entries.iter().enumerate() {
@@ -69,6 +158,7 @@ impl ResultTree {
             }
             .filter(|parent| *parent != i);
             tree.nodes.push(TreeNode {
+                keys: vec![TreeNodeKey::Record(entry.id)],
                 kind: TreeNodeKind::Process,
                 record_id: Some(entry.id),
                 label: entry.title.clone(),
@@ -137,6 +227,7 @@ impl ResultTree {
                     included.push(file.id);
                 }
                 tree.push_node(TreeNode {
+                    keys: vec![TreeNodeKey::Record(file.id)],
                     kind: TreeNodeKind::File,
                     record_id: Some(file.id),
                     label: file
@@ -196,10 +287,11 @@ impl ResultTree {
                 parts[0] = format!("{prefix}{}", parts[0]);
             }
             let mut parent = None;
-            for label in &parts[..parts.len() - 1] {
+            for (depth, label) in parts[..parts.len() - 1].iter().enumerate() {
                 let key = (parent, label.clone());
                 let i = *folders.entry(key).or_insert_with(|| {
                     tree.push_node(TreeNode {
+                        keys: vec![TreeNodeKey::Directory(parts[..=depth].to_vec())],
                         kind: TreeNodeKind::Directory,
                         record_id: None,
                         label: format!("{label}{separator}"),
@@ -211,6 +303,7 @@ impl ResultTree {
                 parent = Some(i);
             }
             tree.push_node(TreeNode {
+                keys: vec![TreeNodeKey::Record(entry.id)],
                 kind: TreeNodeKind::File,
                 record_id: Some(entry.id),
                 label: parts.pop().unwrap(),
@@ -247,12 +340,15 @@ impl ResultTree {
         let mut keys = HashMap::new();
         for entry in entries {
             let mut parent = None;
+            let mut key_path = vec![];
             let components = std::iter::once(entry.hive.as_str())
                 .chain(entry.path.split('\\').filter(|part| !part.is_empty()));
             for label in components {
+                key_path.push(label.to_lowercase());
                 let key = (parent, label.to_lowercase());
                 let i = *keys.entry(key).or_insert_with(|| {
                     tree.push_node(TreeNode {
+                        keys: vec![TreeNodeKey::RegistryKey(key_path.clone())],
                         kind: TreeNodeKind::RegistryKey,
                         record_id: None,
                         label: label.to_owned(),
@@ -272,6 +368,7 @@ impl ResultTree {
                         }
                     } else {
                         tree.push_node(TreeNode {
+                            keys: vec![TreeNodeKey::Record(entry.id)],
                             kind: TreeNodeKind::RegistryKey,
                             record_id: Some(entry.id),
                             label: entry.name,
@@ -282,9 +379,11 @@ impl ResultTree {
                     }
                 }
             } else if entry.value_type == "Key" {
+                key_path.push(entry.name.to_lowercase());
                 let key = (parent, entry.name.to_lowercase());
                 let i = *keys.entry(key).or_insert_with(|| {
                     tree.push_node(TreeNode {
+                        keys: vec![TreeNodeKey::RegistryKey(key_path.clone())],
                         kind: TreeNodeKind::RegistryKey,
                         record_id: None,
                         label: entry.name.clone(),
@@ -298,6 +397,7 @@ impl ResultTree {
                     tree.nodes[i].record_id = Some(entry.id);
                 } else {
                     tree.push_node(TreeNode {
+                        keys: vec![TreeNodeKey::Record(entry.id)],
                         kind: TreeNodeKind::RegistryKey,
                         record_id: Some(entry.id),
                         label: entry.name,
@@ -313,9 +413,10 @@ impl ResultTree {
                     &entry.name
                 };
                 tree.push_node(TreeNode {
+                    keys: vec![TreeNodeKey::Record(entry.id)],
                     kind: TreeNodeKind::RegistryValue,
                     record_id: Some(entry.id),
-                    label: format!("{name} - {}", entry.value_type),
+                    label: name.to_owned(),
                     pid: None,
                     children: vec![],
                     parent,
@@ -339,6 +440,8 @@ impl ResultTree {
                 }
                 let label = std::mem::take(&mut self.nodes[child].label);
                 self.nodes[i].label.push_str(&label);
+                let keys = std::mem::take(&mut self.nodes[child].keys);
+                self.nodes[i].keys.extend(keys);
                 let children = std::mem::take(&mut self.nodes[child].children);
                 for child in &children {
                     self.nodes[*child].parent = Some(i);
@@ -379,8 +482,23 @@ impl ResultTree {
         self.refresh();
     }
 
+    pub fn state(&self) -> &TreeState {
+        &self.state
+    }
+
+    pub fn restore_state(&mut self, state: TreeState) {
+        self.state = state;
+        self.refresh();
+    }
+
     pub fn expanded(&self, i: usize) -> bool {
-        !self.collapsed.contains(&i)
+        self.nodes[i].keys.iter().all(|key| {
+            self.state
+                .branches
+                .get(key)
+                .copied()
+                .unwrap_or(self.state.expanded)
+        })
     }
     pub fn has_children(&self, i: usize) -> bool {
         self.nodes[i]
@@ -390,17 +508,17 @@ impl ResultTree {
     }
 
     pub fn toggle(&mut self, i: usize) {
-        if !self.collapsed.remove(&i) {
-            self.collapsed.insert(i);
+        let expanded = !self.expanded(i);
+        for key in &self.nodes[i].keys {
+            self.state.branches.insert(key.clone(), expanded);
         }
         self.refresh();
     }
 
     pub fn expand_all(&mut self, expand: bool) {
-        self.collapsed = if expand {
-            HashSet::new()
-        } else {
-            (0..self.nodes.len()).collect()
+        self.state = TreeState {
+            expanded: expand,
+            branches: HashMap::new(),
         };
         self.refresh();
     }

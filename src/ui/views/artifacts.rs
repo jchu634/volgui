@@ -1,7 +1,23 @@
 // Renders artifact results and record details.
 use super::*;
+use gpui_kit::base::ElementExt as _;
 
 impl Workspace {
+    pub(in crate::ui) fn supports_content_sidebar(&self) -> bool {
+        self.view == View::Workspace
+            && matches!(
+                self.result_group(),
+                Some(
+                    ArtifactGroup::Processes
+                        | ArtifactGroup::Files
+                        | ArtifactGroup::Applications
+                        | ArtifactGroup::Network
+                        | ArtifactGroup::Memory
+                        | ArtifactGroup::Strings
+                )
+            )
+    }
+
     pub(in crate::ui) fn result_group(&self) -> Option<ArtifactGroup> {
         if self.scope.is_empty() && self.scope_label == self.browser_group.label() {
             return Some(self.browser_group);
@@ -26,7 +42,20 @@ impl Workspace {
         self.column_widths
             .get(&column.key)
             .copied()
-            .unwrap_or(px(column.default_width()))
+            .unwrap_or_else(|| {
+                let default = px(column.default_width());
+                if self.result_group() == Some(ArtifactGroup::Strings) && column.key == "Context" {
+                    let other_widths: Pixels = self
+                        .result_columns()
+                        .iter()
+                        .filter(|column| column.key != "Context")
+                        .map(|column| self.column_width(column))
+                        .sum();
+                    (self.result_viewport_width - px(2.) - other_widths).max(default)
+                } else {
+                    default
+                }
+            })
     }
     pub(in crate::ui) fn fit_column(
         &mut self,
@@ -118,7 +147,7 @@ impl Workspace {
                 )
                 .into_any_element();
         }
-        let results = if self.content_sidebar_visible {
+        let results = if self.supports_content_sidebar() && self.content_sidebar_visible {
             h_resizable("artifact-hex-split")
                 .child(
                     resizable_panel()
@@ -160,12 +189,13 @@ impl Workspace {
         match self.result_group() {
             Some(ArtifactGroup::Processes) => return self.render_processes(cx),
             Some(ArtifactGroup::Files) => return self.render_files(cx),
-            Some(ArtifactGroup::Registry) => {
-                return self.render_artifact_tree(ArtifactGroup::Registry, cx);
+            Some(group @ (ArtifactGroup::Registry | ArtifactGroup::Modules)) => {
+                return self.render_artifact_tree(group, cx);
             }
             _ => {}
         }
         self.sync_result_table(cx);
+        let workspace = cx.entity().downgrade();
         div()
             .flex()
             .flex_col()
@@ -183,14 +213,30 @@ impl Workspace {
                     .min_h_0()
                     .min_w_0()
                     .child(
-                        DataTable::new(&self.result_table)
-                            .small()
-                            .header_row_height(px(32.)),
+                        div()
+                            .size_full()
+                            .child(
+                                DataTable::new(&self.result_table)
+                                    .small()
+                                    .header_row_height(px(32.)),
+                            )
+                            .on_prepaint(move |bounds, _, cx| {
+                                cx.defer(move |cx| {
+                                    let _ = workspace.update(cx, |this, cx| {
+                                        if (this.result_viewport_width - bounds.size.width).abs()
+                                            >= px(1.)
+                                        {
+                                            this.result_viewport_width = bounds.size.width;
+                                            cx.notify();
+                                        }
+                                    });
+                                });
+                            }),
                     ),
             )
             .into_any_element()
     }
-    pub(in crate::ui) fn render_results_toolbar(&self, _cx: &mut Context<Self>) -> Div {
+    pub(in crate::ui) fn render_results_toolbar(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .items_center()
@@ -207,6 +253,26 @@ impl Workspace {
                 },
                 if self.loading { " · searching" } else { "" }
             )))
+            .when(self.result_group() == Some(ArtifactGroup::Memory), |toolbar| {
+                let supported = self.selected.as_ref().is_some_and(|selected| {
+                    self.case.as_ref().and_then(|case| {
+                        let run = case.document.runs.iter().find(|r| r.id == selected.run_id)?;
+                        volgui::memory_scan::Address::from_record(&run.plugin, &selected.record)
+                    }).is_some()
+                });
+                toolbar.child(
+                    app_button("view-scan-memory")
+                        .small()
+                        .label("View surrounding memory")
+                        .disabled(!supported || self.loading || matches!(self.hex_view, HexView::Loading))
+                        .tooltip(if supported {
+                            "Open this result's bytes in the sidebar hex view. Collect process memory if needed."
+                        } else {
+                            "Select a result with a memory address to inspect"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.view_memory_scan(cx))),
+                )
+            })
             .child(
                 div().w(px(260.)).child(
                     Input::new(&self.query)

@@ -7,3 +7,4 @@ pub(in crate::ui) mod hex_editor;
 pub(in crate::ui) mod network_data_table;
 pub(in crate::ui) mod result_data_table;
 pub(in crate::ui) mod tree;
+pub(in crate::ui) mod tree_data_table;

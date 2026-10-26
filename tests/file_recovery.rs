@@ -78,7 +78,10 @@ fn records(case: &Case, run: &str) -> Vec<StoredRecord> {
 
 #[test]
 fn executable_references_without_file_objects_appear_in_the_file_tree() {
-    let (_temp, mut case, _, _) = fixture(json!([]));
+    let (_temp, mut case, mut engine, _) = fixture(json!([]));
+    // Discovery must work without inventories, an engine, or bulk recovery.
+    case.document.runs.clear();
+    engine.plugins.clear();
     let name =
         r"C:\Users\sepehr\Documents\49f5_354bd7ad_611729000b81358a_22ee7136c30a2f24\runas.exe";
     let source = case.document.evidence[0].path.clone();
@@ -86,8 +89,21 @@ fn executable_references_without_file_objects_appear_in_the_file_tree() {
     let mut evidence = Evidence::inspect(&source, &AtomicBool::new(false), |_, _| {}).unwrap();
     evidence.id = case.document.evidence[0].id.clone();
     case.document.evidence[0] = evidence;
-    let report = analysis::prepare(&case.document.evidence[0], analysis::FILES, vec![]).unwrap();
-    case.queue(report.clone()).unwrap();
+    let mut draft = AnalysisDraft::new(&case.document.evidence[0]);
+    draft.selected.insert(analysis::FILE_PATHS.into());
+    let runs = draft
+        .prepare_in_case(&engine, &case.document.evidence[0], &case)
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    let report = runs[0].clone();
+    assert_eq!(report.plugin, analysis::FILE_PATHS);
+    assert!(report.message.is_empty());
+    assert!(analysis::is_native(&report.plugin));
+    assert_eq!(
+        ArtifactGroup::for_plugin(&report.plugin),
+        ArtifactGroup::Files
+    );
+    case.queue_batch(runs).unwrap();
     let outcome = analysis::execute(
         &case.directory,
         &case.document,
@@ -99,14 +115,16 @@ fn executable_references_without_file_objects_appear_in_the_file_tree() {
     case.finish(&report.id, &outcome).unwrap();
     let row = records(&case, &report.id).remove(0);
     assert_eq!(row.record.text("Name"), name);
-    assert!(FileDumpTarget::from_record(analysis::FILES, &row.record).is_none());
+    assert!(FileDumpTarget::from_record(analysis::FILE_PATHS, &row.record).is_none());
     let recovery = RecoveryIndex::load(&case.directory, &case.document).unwrap();
     assert_eq!(recovery.state(&row, false), RecoveryState::Referenced);
     let store = ResultStore::at(&case.directory);
     let (entries, _) = files::filter_entries(
         &store,
         &recovery,
-        store.tree_entries(&[report.id]).unwrap(),
+        store
+            .tree_entries(std::slice::from_ref(&report.id))
+            .unwrap(),
         false,
         false,
     )
@@ -117,6 +135,41 @@ fn executable_references_without_file_objects_appear_in_the_file_tree() {
             .iter()
             .any(|n| n.label == "runas.exe" && n.record_id == Some(row.id))
     );
+    let matches = store
+        .query(&Query {
+            runs: vec![report.id.clone()],
+            text: "runas.exe".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(matches.ids, [row.id]);
+    let cancelled = analysis::execute(
+        &case.directory,
+        &case.document,
+        &report,
+        &AtomicBool::new(true),
+        |_| {},
+    );
+    assert_eq!(cancelled.status, RunStatus::Cancelled);
+}
+
+#[test]
+fn executable_discovery_is_a_basic_analysis_and_rejects_options() {
+    let (_temp, case, engine, _) = fixture(json!([]));
+    let catalog = analyses::application_plugins(&engine.plugins);
+    assert!(
+        analyses::chooser_plugins(&catalog, OperatingSystem::Windows, false, "executable")
+            .iter()
+            .any(|plugin| plugin.id == analysis::FILE_PATHS)
+    );
+    assert!(
+        analysis::prepare(
+            &case.document.evidence[0],
+            analysis::FILE_PATHS,
+            vec!["--pid".into(), "42".into()]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -124,6 +177,7 @@ fn executable_references_without_file_objects_appear_in_the_file_tree() {
 fn real_memory_dump_contains_the_documents_executable_reference() {
     let path = std::env::var_os("VOLGUI_TEST_MEMORY_DUMP").expect("Set VOLGUI_TEST_MEMORY_DUMP");
     let (_temp, mut case, _, _) = fixture(json!([]));
+    case.document.runs.clear();
     let mut evidence = Evidence::inspect(
         std::path::Path::new(&path),
         &AtomicBool::new(false),
@@ -132,7 +186,8 @@ fn real_memory_dump_contains_the_documents_executable_reference() {
     .unwrap();
     evidence.id = case.document.evidence[0].id.clone();
     case.document.evidence[0] = evidence;
-    let report = analysis::prepare(&case.document.evidence[0], analysis::FILES, vec![]).unwrap();
+    let report =
+        analysis::prepare(&case.document.evidence[0], analysis::FILE_PATHS, vec![]).unwrap();
     case.queue(report.clone()).unwrap();
     let outcome = analysis::execute(
         &case.directory,

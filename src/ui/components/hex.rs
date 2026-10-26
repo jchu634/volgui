@@ -18,7 +18,6 @@ impl Workspace {
                     div()
                         .px_3()
                         .py_2()
-                        .child(self.render_file_actions(true, cx))
                         .child(self.render_content_controls(files, &page.path, cx)),
                 )
                 .child(div().flex_1().min_h_0().min_w_0().child(editor.clone()))
@@ -36,7 +35,6 @@ impl Workspace {
                         .overflow_scroll()
                         .track_scroll(&self.hex_scroll)
                         .p_3()
-                        .child(self.render_file_actions(true, cx))
                         .child(self.render_hex(cx)),
                 )
                 .child(Scrollbar::vertical(&self.hex_scroll).mode(ScrollbarMode::Always))
@@ -78,7 +76,7 @@ impl Workspace {
         selected_path: &std::path::Path,
         cx: &mut Context<Self>,
     ) -> Div {
-        let mut encodings = div().flex().flex_wrap().gap_1();
+        let mut encodings = div().flex().flex_1().min_w_0().flex_wrap().gap_1();
         for (i, encoding) in volgui::extracted_files::ContentEncoding::ALL
             .into_iter()
             .enumerate()
@@ -137,7 +135,16 @@ impl Workspace {
             .gap_2()
             .min_w_0()
             .overflow_hidden()
-            .child(encodings)
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .child(encodings)
+                    .child(self.render_file_actions(true, cx)),
+            )
             .child(choices)
     }
 
@@ -146,14 +153,66 @@ impl Workspace {
         let mut content = div().flex().flex_col().gap_2().text_sm();
         match &self.hex_view {
             HexView::Idle => {
-                content = content.child(if matches!(self.result_group(), Some(ArtifactGroup::Files | ArtifactGroup::Processes)) {
-                    "Cached contents have not been recovered. Use Dump file in record details, or choose File and document recovery in New analysis."
+                if matches!(self.result_group(), Some(ArtifactGroup::Files | ArtifactGroup::Processes)) {
+                    let file_target = self.selected.as_ref().and_then(|record| {
+                        let source = self.case.as_ref()?.document.runs.iter()
+                            .find(|run| run.id == record.run_id)?;
+                        volgui::extracted_files::FileDumpTarget::from_record(&source.plugin, &record.record)
+                    }).is_some();
+                    let process_target = self.result_group() == Some(ArtifactGroup::Processes)
+                        && self.selected.as_ref().is_some_and(|record| {
+                            ["PID", "Pid", "pid"].iter().any(|key| record.record.text(key).parse::<u64>().is_ok())
+                        });
+                    let available = (file_target || process_target)
+                        && self.busy.is_none()
+                        && self.installation.as_ref().is_some_and(|engine| {
+                            engine.plugins.iter().any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
+                        });
+                    content = content.child(
+                        div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            if file_target {
+                                "Recover this file's cached contents from memory and view them here."
+                            } else {
+                                "Recover cached files from this process and view them here."
+                            },
+                        ),
+                    ).child(
+                        app_button("dump-load-sidebar-files")
+                            .self_start()
+                            .small()
+                            .label("Dump and Load files")
+                            .disabled(!available)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if file_target {
+                                    this.dump_file(false, true, window, cx);
+                                } else {
+                                    this.collect_process_files(window, cx);
+                                }
+                            })),
+                    );
                 } else {
-                    "No sidebar view is available for this content."
-                });
+                    content = content.child("No sidebar view is available for this content.");
+                }
+            }
+            HexView::NeedsMemory => {
+                content = content.child(
+                    div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child("Collect this process's memory to view the bytes surrounding this result."),
+                ).child(
+                    app_button("load-scan-memory")
+                        .self_start()
+                        .small()
+                        .label("Load memory")
+                        .disabled(self.loading)
+                        .on_click(cx.listener(|this, _, _, cx| this.view_memory_scan(cx))),
+                );
             }
             HexView::Loading => {
-                content = content.child("Loading file contents...");
+                content = content.child(if self.memory_scan_dump.is_some() {
+                    "Collecting process memory. The hex view will open when the analysis finishes."
+                } else {
+                    "Loading file contents..."
+                });
             }
             HexView::Error(error) => {
                 content = content.child(error.clone()).child(

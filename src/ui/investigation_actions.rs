@@ -2,6 +2,58 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn discover_file_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self
+            .evidence()
+            .ok_or_else(|| "Select evidence first".to_string())
+            .and_then(|evidence| analysis::prepare(evidence, analysis::FILE_PATHS, vec![]));
+        match result {
+            Ok(run) => {
+                self.queue_investigation(vec![run], window, cx);
+                self.choose_group(ArtifactGroup::Files, window, cx);
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn confirm_repeat_analysis(
+        &mut self,
+        plugin: &str,
+        action: fn(&mut Self, &mut Window, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let completed = self.case.as_ref().is_some_and(|case| {
+            case.document.runs.iter().any(|run| {
+                Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                    && run.plugin == plugin
+                    && run.status == RunStatus::Completed
+            })
+        });
+        if !completed {
+            action(self, window, cx);
+            return;
+        }
+        let workspace = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let workspace = workspace.clone();
+            dialog.width(px(460.))
+                .title(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Redo analysis?"))
+                .child(div().text_xs().child("This analysis has already completed successfully for the selected evidence. Run it again?"))
+                .footer(div().flex().w_full().justify_end().gap_2()
+                    .child(app_button("cancel-repeat-analysis").small().label("Cancel")
+                        .on_click(|_, window, cx| window.close_dialog(cx)))
+                    .child(app_button("confirm-repeat-analysis").small().primary().label("Redo analysis")
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let _ = workspace.update(cx, |this, cx| action(this, window, cx));
+                        })))
+        });
+    }
+
     pub(super) fn refresh_passive_quarantine(&mut self) {
         let Some(case) = &self.case else { return };
         self.passive_quarantine_epoch += 1;
@@ -157,20 +209,9 @@ impl Workspace {
             }
         }
     }
-    pub(super) fn open_application_dump(&mut self, cx: &mut Context<Self>) {
-        let pid = self.application_pid.read(cx).value().trim().to_string();
+    pub(super) fn open_application_dump(&mut self, run: &Run, cx: &mut Context<Self>) {
         let source = self.case.as_ref().and_then(|case| {
-            case.document
-                .runs
-                .iter()
-                .rev()
-                .find(|run| {
-                    Some(&run.evidence_id) == self.selected_evidence.as_ref()
-                        && run.plugin == analysis::application::MEMMAP
-                        && run.status == RunStatus::Completed
-                        && run.arguments == ["--pid".to_string(), pid.clone(), "--dump".to_string()]
-                })
-                .map(|run| case.run_dir(&run.id).join(format!("pid.{pid}.dmp")))
+            analysis::application::dump_path(&case.directory, &case.document, run)
         });
         if let Some(path) = source {
             self.open_hex_file(vec![path.clone()], path, 0, cx);
@@ -530,7 +571,21 @@ impl Workspace {
             )
         })();
         match result {
-            Ok(run) => self.queue_investigation(vec![run], window, cx),
+            Ok(run) => {
+                let id = run.id.clone();
+                self.queue_investigation(vec![run], window, cx);
+                if dump_files
+                    && self.case.as_ref().is_some_and(|case| case.document.runs.iter().any(|run| run.id == id))
+                    && let Some(record) = &self.selected
+                {
+                    self.file_dumps.insert(id, FileDumpRequest {
+                        record_id: record.id,
+                        selection_epoch: self.selection_epoch,
+                        executable: None,
+                        show_hex: self.content_sidebar_visible,
+                    });
+                }
+            }
             Err(error) => {
                 self.error = Some(error);
                 cx.notify();

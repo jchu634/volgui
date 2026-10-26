@@ -1,5 +1,6 @@
 // Shares virtual scrolling and branch interactions for artifact trees.
 use super::*;
+use gpui_kit::base::ElementExt;
 
 impl Workspace {
     pub(in crate::ui) fn render_artifact_tree(
@@ -7,29 +8,82 @@ impl Workspace {
         group: ArtifactGroup,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let list = uniform_list(
-            "artifact-tree-virtual",
-            self.result_tree.visible.len(),
-            cx.processor(move |this, range: Range<usize>, _, cx| {
-                let visible = this.result_tree.visible.get(range).unwrap_or(&[]).to_vec();
-                this.request_record_ids(
+        let body = if group == ArtifactGroup::Files {
+            let list = uniform_list(
+                "artifact-tree-virtual",
+                self.result_tree.visible.len(),
+                cx.processor(|this, range: Range<usize>, _, cx| {
+                    let visible = this.result_tree.visible.get(range).unwrap_or(&[]).to_vec();
+                    this.request_record_ids(
+                        visible
+                            .iter()
+                            .filter_map(|(i, _)| this.result_tree.nodes[*i].record_id)
+                            .collect(),
+                    );
                     visible
-                        .iter()
-                        .filter_map(|(i, _)| this.result_tree.nodes[*i].record_id)
-                        .collect(),
-                );
-                visible
-                    .into_iter()
-                    .map(|(i, depth)| match group {
-                        ArtifactGroup::Processes => this.render_process_node(i, depth, cx),
-                        ArtifactGroup::Registry => this.render_registry_node(i, depth, cx),
-                        _ => this.render_file_node(i, depth, cx),
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        )
-        .track_scroll(&self.result_scroll)
-        .size_full();
+                        .into_iter()
+                        .map(|(i, depth)| this.render_file_node(i, depth, cx))
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.result_scroll)
+            .size_full();
+            div()
+                .id("artifact-tree")
+                .role(Role::Tree)
+                .aria_label("File tree")
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .child(list)
+                .when(self.index.ids.is_empty(), |body| {
+                    body.child(
+                        div()
+                            .absolute()
+                            .top(px(24.))
+                            .left_0()
+                            .right_0()
+                            .px_4()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(self.results_empty_message(cx)),
+                    )
+                })
+                .child(Scrollbar::vertical(&self.result_scroll).mode(ScrollbarMode::Always))
+                .into_any_element()
+        } else {
+            self.sync_tree_table(group, cx);
+            let workspace = cx.entity().downgrade();
+            div()
+                .id("artifact-tree-table")
+                .aria_label(match group {
+                    ArtifactGroup::Processes => "Process tree and details",
+                    ArtifactGroup::Registry => "Registry tree and details",
+                    _ => "Loaded modules tree and details",
+                })
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .capture_key_down(cx.listener(|this, event, _, cx| this.tree_key_down(event, cx)))
+                .child(
+                    DataTable::new(&self.tree_table)
+                        .small()
+                        .header_row_height(px(32.)),
+                )
+                .on_prepaint(move |bounds, _, cx| {
+                    cx.defer(move |cx| {
+                        let _ = workspace.update(cx, |this, cx| {
+                            if (this.tree_viewport_width - bounds.size.width).abs() >= px(1.) {
+                                this.tree_viewport_width = bounds.size.width;
+                                cx.notify();
+                            }
+                        });
+                    });
+                })
+                .into_any_element()
+        };
         div()
             .flex()
             .flex_col()
@@ -37,9 +91,10 @@ impl Workspace {
             .min_w_0()
             .min_h_0()
             .child(self.render_results_toolbar(cx))
-            .when(group == ArtifactGroup::Registry, |view| {
-                view.child(self.render_investigation_tools(cx))
-            })
+            .when(
+                matches!(group, ArtifactGroup::Registry | ArtifactGroup::Files),
+                |view| view.child(self.render_investigation_tools(cx)),
+            )
             .child(
                 div()
                     .flex()
@@ -57,6 +112,8 @@ impl Workspace {
                             "Process hierarchy"
                         } else if group == ArtifactGroup::Registry {
                             "Registry hierarchy"
+                        } else if group == ArtifactGroup::Modules {
+                            "Modules by process"
                         } else {
                             "Directory hierarchy"
                         },
@@ -72,8 +129,7 @@ impl Workspace {
                                 .on_click(cx.listener(|this, checked, _, cx| {
                                     this.show_file_handles = *checked;
                                     this.selection_epoch += 1;
-                                    this.tree_cursor = None;
-                                    this.result_tree = ResultTree::default();
+                                    this.clear_result_tree();
                                     this.start_query(cx);
                                 })),
                         )
@@ -89,8 +145,7 @@ impl Workspace {
                                     .on_click(cx.listener(|this, checked, _, cx| {
                                         this.show_unavailable_files = *checked;
                                         this.selection_epoch += 1;
-                                        this.tree_cursor = None;
-                                        this.result_tree = ResultTree::default();
+                                        this.clear_result_tree();
                                         this.start_query(cx);
                                     })),
                             )
@@ -115,54 +170,7 @@ impl Workspace {
                             })),
                     ),
             )
-            .child(
-                div()
-                    .id("artifact-tree")
-                    .role(Role::Tree)
-                    .aria_label(if group == ArtifactGroup::Processes {
-                        "Process tree"
-                    } else if group == ArtifactGroup::Registry {
-                        "Registry tree"
-                    } else {
-                        "File tree"
-                    })
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .child(list)
-                    .when(self.index.ids.is_empty(), |body| {
-                        body.child(
-                            div()
-                                .absolute()
-                                .top(px(24.))
-                                .left_0()
-                                .right_0()
-                                .px_4()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(self.results_empty_message(cx)),
-                        )
-                    })
-                    .child(Scrollbar::vertical(&self.result_scroll).mode(ScrollbarMode::Always)),
-            )
-            .into_any_element()
-    }
-
-    fn render_registry_node(&self, i: usize, depth: usize, cx: &mut Context<Self>) -> AnyElement {
-        let node = &self.result_tree.nodes[i];
-        let value = matches!(node.kind, volgui::result_tree::TreeNodeKind::RegistryValue);
-        self.artifact_tree_row(i, depth, cx)
-            .child(
-                Icon::new(if value {
-                    IconName::File
-                } else {
-                    IconName::Folder
-                })
-                .size_4()
-                .flex_shrink_0(),
-            )
-            .child(div().min_w_0().truncate().child(node.label.clone()))
+            .child(body)
             .into_any_element()
     }
 
@@ -189,13 +197,13 @@ impl Workspace {
             .when(branch, |row| row.aria_expanded(expanded))
             .flex()
             .items_center()
-            .gap_2()
             .h(px(32.))
             .w_full()
             .min_w_0()
             .overflow_hidden()
-            .pl(px(8. + depth as f32 * 18.))
             .pr(px(20.))
+            .gap_2()
+            .pl(px(8. + depth as f32 * 18.))
             .text_xs()
             .when(
                 id.and_then(|id| self.file_recovery_states.get(&id))
@@ -222,30 +230,38 @@ impl Workspace {
                     cx.notify();
                 }
             }))
-            .child(if branch {
-                app_button(("tree-toggle", i))
-                    .ghost()
-                    .xsmall()
-                    .icon(if expanded {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .tooltip(if expanded {
-                        "Collapse branch"
-                    } else {
-                        "Expand branch"
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.tree_cursor = Some(i);
-                        this.result_tree.toggle(i);
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            } else {
-                div().w(px(24.)).flex_shrink_0().into_any_element()
-            })
+    }
+
+    pub(in crate::ui) fn artifact_tree_toggle(
+        &self,
+        i: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.result_tree.has_children(i) {
+            let expanded = self.result_tree.expanded(i);
+            app_button(("tree-toggle", i))
+                .ghost()
+                .xsmall()
+                .icon(if expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .tooltip(if expanded {
+                    "Collapse branch"
+                } else {
+                    "Expand branch"
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.tree_cursor = Some(i);
+                    this.result_tree.toggle(i);
+                    cx.notify();
+                }))
+                .into_any_element()
+        } else {
+            div().w(px(24.)).flex_shrink_0().into_any_element()
+        }
     }
 
     pub(in crate::ui) fn tree_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -315,8 +331,7 @@ impl Workspace {
         };
         let node = self.result_tree.visible[target].0;
         self.tree_cursor = Some(node);
-        self.result_scroll
-            .scroll_to_item(target, ScrollStrategy::Nearest);
+        self.scroll_tree_to_row(target, cx);
         if let Some(id) = self.result_tree.nodes[node].record_id {
             self.load_record(id, cx);
         }

@@ -2,6 +2,44 @@
 use super::*;
 
 impl Workspace {
+    fn remember_tree_state(&mut self) {
+        if let Some(scope) = self.tree_scope.take() {
+            self.tree_states
+                .insert(scope, self.result_tree.state().clone());
+        }
+    }
+
+    pub(super) fn clear_result_tree(&mut self) {
+        self.remember_tree_state();
+        self.result_tree = ResultTree::default();
+        self.tree_cursor = None;
+    }
+
+    pub(super) fn set_result_tree(&mut self, mut tree: ResultTree) {
+        self.remember_tree_state();
+        if let Some(
+            group @ (ArtifactGroup::Processes
+            | ArtifactGroup::Files
+            | ArtifactGroup::Registry
+            | ArtifactGroup::Modules),
+        ) = self.result_group()
+        {
+            let mut runs = self.scope.clone();
+            runs.sort_unstable();
+            let scope = TreeScope {
+                evidence: self.selected_evidence.clone(),
+                group,
+                runs,
+            };
+            if let Some(state) = self.tree_states.get(&scope) {
+                tree.restore_state(state.clone());
+            }
+            self.tree_scope = Some(scope);
+        }
+        self.result_tree = tree;
+        self.tree_cursor = None;
+    }
+
     pub(super) fn group_runs(&self, group: ArtifactGroup) -> Vec<String> {
         let Some(case) = &self.case else {
             return vec![];
@@ -106,11 +144,11 @@ impl Workspace {
         } else if run.plugin == volgui::analysis::QUARANTINE {
             ArtifactGroup::Quarantine.label().into()
         } else {
-            run.plugin
+            run.plugin.clone()
         };
         self.set_scope(vec![id], label, window, cx);
         if open_memory {
-            self.open_application_dump(cx);
+            self.open_application_dump(&run, cx);
         }
     }
     pub(super) fn set_scope(
@@ -133,22 +171,18 @@ impl Workspace {
         self.column_filters.clear();
         self.scope = runs;
         if !was_application && self.result_group() == Some(ArtifactGroup::Applications) {
-            self.content_sidebar_visible = true;
             self.content_encoding = volgui::extracted_files::ContentEncoding::Utf8;
         }
         self.selection_epoch += 1;
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
         self.scope_label = label;
-        if self.result_group() == Some(ArtifactGroup::Network) {
-            self.content_sidebar_visible = true;
-        }
         self.selected = None;
         self.selected_row = None;
         self.selected_run = self.scope.first().cloned();
         self.sort = None;
         self.index = ResultIndex::default();
-        self.result_tree = ResultTree::default();
+        self.clear_result_tree();
         self.row_cache.clear();
         self.file_recovery_states.clear();
         self.file_recovery = None;
@@ -305,6 +339,9 @@ impl Workspace {
                     }
                     Some(ArtifactGroup::Registry) => {
                         ResultTree::registry(store.registry_entries(&query.runs)?, &index.ids)
+                    }
+                    Some(ArtifactGroup::Modules) => {
+                        ResultTree::modules(store.module_entries(&query.runs)?, &index.ids)
                     }
                     _ => ResultTree::default(),
                 };
@@ -469,7 +506,7 @@ impl Workspace {
         }
         self.hex_scroll.set_offset(Point::default());
         if self.result_group() != Some(ArtifactGroup::Network)
-            && (self.content_sidebar_visible
+            && ((self.supports_content_sidebar() && self.content_sidebar_visible)
                 || self.result_group() == Some(ArtifactGroup::Applications))
         {
             self.load_hex(cx);

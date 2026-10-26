@@ -53,7 +53,7 @@ use volgui::{
     artifacts::{ArtifactGroup, OperatingSystem},
     case::{Case, Evidence, QueueClearScope, RunStatus, now},
     result_table as table,
-    result_tree::ResultTree,
+    result_tree::{ResultTree, TreeState},
     results::{ProcessRelations, Query, ResultIndex, ResultStore, StoredRecord},
     settings::Settings,
     volatility::{Installation, Outcome, display_value, format_arguments},
@@ -94,6 +94,7 @@ enum HexView {
     #[default]
     Idle,
     Loading,
+    NeedsMemory,
     Ready {
         files: Vec<PathBuf>,
         page: volgui::extracted_files::HexPage,
@@ -106,6 +107,13 @@ struct QueryResult {
     tree: ResultTree,
     file_states: HashMap<i64, volgui::analysis::files::RecoveryState>,
     recovery: Option<volgui::analysis::files::RecoveryIndex>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TreeScope {
+    evidence: Option<String>,
+    group: ArtifactGroup,
+    runs: Vec<String>,
 }
 
 enum Event {
@@ -146,6 +154,8 @@ enum Event {
         u64,
         std::result::Result<(Vec<PathBuf>, volgui::extracted_files::HexPage), String>,
     ),
+    MemoryScanDumpNeeded(u64, String, u64),
+    MemoryScanLoadAvailable(u64),
     BrowserPrepared(std::result::Result<Vec<volgui::case::Run>, String>),
     HandlesLoaded(
         u64,
@@ -186,6 +196,8 @@ pub struct Workspace {
     scope_label: String,
     index: ResultIndex,
     result_tree: ResultTree,
+    tree_scope: Option<TreeScope>,
+    tree_states: HashMap<TreeScope, TreeState>,
     network: volgui::network::Graph,
     network_table: Entity<TableState<components::network_data_table::NetworkTable>>,
     network_table_view: bool,
@@ -217,7 +229,10 @@ pub struct Workspace {
     file_recovery_states: HashMap<i64, volgui::analysis::files::RecoveryState>,
     file_recovery: Option<volgui::analysis::files::RecoveryIndex>,
     result_scroll: UniformListScrollHandle,
+    tree_table: Entity<TableState<components::tree_data_table::TreeTable>>,
+    tree_viewport_width: Pixels,
     result_table: Entity<TableState<components::result_data_table::ResultTable>>,
+    result_viewport_width: Pixels,
     analysis_table: Entity<TableState<components::analysis_data_table::AnalysisTable>>,
     database_table: Entity<TableState<components::database_data_table::DatabaseTable>>,
     details_scroll: ScrollHandle,
@@ -241,6 +256,7 @@ pub struct Workspace {
     content_sidebar_visible: bool,
     hex_scroll: ScrollHandle,
     hex_epoch: u64,
+    memory_scan_dump: Option<(String, u64)>,
     content_encoding: volgui::extracted_files::ContentEncoding,
     database_view: Option<std::result::Result<volgui::file_content::DatabasePage, String>>,
     database_epoch: u64,
@@ -380,6 +396,18 @@ impl Workspace {
             .loop_selection(false)
             .select_on_modifier_click(false)
         });
+        let tree_table = cx.new(|cx| {
+            TableState::new(
+                components::tree_data_table::TreeTable::new(workspace.clone()),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_header(false)
+            .loop_selection(false)
+            .select_on_modifier_click(false)
+        });
         let analysis_table = cx.new(|cx| {
             TableState::new(
                 components::analysis_data_table::AnalysisTable::new(workspace.clone()),
@@ -403,6 +431,29 @@ impl Workspace {
             .row_header(false)
         });
         let subscriptions = vec![
+            cx.subscribe(
+                &tree_table,
+                |this, table, event: &TableEvent, cx| match event {
+                    TableEvent::SelectRow(row) => {
+                        if let Some((node, _)) = this.result_tree.visible.get(*row).copied() {
+                            this.tree_cursor = Some(node);
+                            if let Some(id) = this.result_tree.nodes[node].record_id
+                                && this.selected.as_ref().is_none_or(|record| record.id != id)
+                            {
+                                this.load_record(id, cx);
+                            }
+                            cx.notify();
+                        }
+                    }
+                    TableEvent::ColumnWidthsChanged(widths) => {
+                        for (column, width) in table.read(cx).delegate().layout.iter().zip(widths) {
+                            this.column_widths.insert(column.key.to_string(), *width);
+                        }
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
             cx.subscribe(&network_table, |this, table, event: &TableEvent, cx| {
                 if let TableEvent::SelectRow(row) = event
                     && let Some(id) = table
@@ -427,9 +478,15 @@ impl Workspace {
                     }
                     TableEvent::ColumnWidthsChanged(widths) => {
                         this.column_fit_epoch.fetch_add(1, Ordering::Relaxed);
-                        for (column, width) in this.result_columns().iter().zip(widths) {
-                            this.column_widths.insert(column.key.clone(), *width);
-                        }
+                        // Keep automatic widths until that column is actually resized.
+                        let changed: Vec<_> = this
+                            .result_columns()
+                            .iter()
+                            .zip(widths)
+                            .filter(|(column, width)| this.column_width(column) != **width)
+                            .map(|(column, width)| (column.key.clone(), *width))
+                            .collect();
+                        this.column_widths.extend(changed);
                         cx.notify();
                     }
                     _ => {}
@@ -504,6 +561,8 @@ impl Workspace {
             scope_label: "Artifacts".into(),
             index: ResultIndex::default(),
             result_tree: ResultTree::default(),
+            tree_scope: None,
+            tree_states: HashMap::new(),
             network: volgui::network::Graph::default(),
             network_table,
             network_table_view: false,
@@ -535,7 +594,10 @@ impl Workspace {
             file_recovery_states: HashMap::new(),
             file_recovery: None,
             result_scroll: UniformListScrollHandle::default(),
+            tree_table,
+            tree_viewport_width: px(1100.),
             result_table,
+            result_viewport_width: px(0.),
             analysis_table,
             database_table,
             details_scroll: ScrollHandle::default(),
@@ -559,6 +621,7 @@ impl Workspace {
             content_sidebar_visible: false,
             hex_scroll: ScrollHandle::default(),
             hex_epoch: 0,
+            memory_scan_dump: None,
             content_encoding: volgui::extracted_files::ContentEncoding::Hex,
             database_view: None,
             database_epoch: 0,
@@ -891,7 +954,7 @@ impl Workspace {
                         self.selected_row = None;
                         self.scope.clear();
                         self.index = ResultIndex::default();
-                        self.result_tree = ResultTree::default();
+                        self.clear_result_tree();
                         self.row_cache.clear();
                         self.inflight.clear();
                         self.view = View::Workspace;
@@ -924,6 +987,23 @@ impl Workspace {
                         None => false,
                     };
                     self.message = format!("Analysis {}", outcome.status.label().to_lowercase());
+                    if self
+                        .memory_scan_dump
+                        .as_ref()
+                        .is_some_and(|(run, _)| run == &id)
+                    {
+                        let (_, epoch) = self.memory_scan_dump.take().unwrap();
+                        if epoch == self.hex_epoch {
+                            if saved && outcome.status == RunStatus::Completed {
+                                self.load_hex(cx);
+                            } else {
+                                self.hex_view = HexView::Error(format!(
+                                    "Could not collect surrounding memory: {}",
+                                    outcome.message
+                                ));
+                            }
+                        }
+                    }
                     if outcome.status == RunStatus::Failed {
                         self.error = Some(outcome.message.chars().take(1500).collect());
                     }
@@ -952,18 +1032,18 @@ impl Workspace {
                     {
                         self.scope = self.group_runs(ArtifactGroup::Quarantine);
                         self.start_query(cx);
-                    } else if self.result_group() == Some(ArtifactGroup::Network)
-                        && self.scope_label == ArtifactGroup::Network.label()
+                    } else if let Some(group @ (ArtifactGroup::Network | ArtifactGroup::Files)) =
+                        self.result_group()
+                        && self.scope_label == group.label()
                         && self.case.as_ref().is_some_and(|case| {
                             case.document.runs.iter().any(|run| {
                                 run.id == id
                                     && Some(&run.evidence_id) == self.selected_evidence.as_ref()
-                                    && ArtifactGroup::for_plugin(&run.plugin)
-                                        == ArtifactGroup::Network
+                                    && ArtifactGroup::for_plugin(&run.plugin) == group
                             })
                         })
                     {
-                        self.scope = self.group_runs(ArtifactGroup::Network);
+                        self.scope = self.group_runs(group);
                         self.start_query(cx);
                     } else if self.scope.contains(&id)
                         || self.result_group() == Some(ArtifactGroup::Processes)
@@ -1056,8 +1136,7 @@ impl Workspace {
                             self.file_recovery_states = file_states;
                             self.file_recovery = recovery;
                             self.index = index;
-                            self.result_tree = tree;
-                            self.tree_cursor = None;
+                            self.set_result_tree(tree);
                             self.row_cache.clear();
                             for r in rows {
                                 self.row_cache.insert(r.id, Arc::new(r));
@@ -1101,8 +1180,7 @@ impl Workspace {
                                 })
                             {
                                 self.tree_cursor = Some(*node);
-                                self.result_scroll
-                                    .scroll_to_item(position, ScrollStrategy::Nearest);
+                                self.scroll_tree_to_row(position, cx);
                             }
                         }
                         Err(e) => self.error = Some(e),
@@ -1206,6 +1284,64 @@ impl Workspace {
                     Ok(p) => self.message = format!("Exported {}", p.display()),
                     Err(e) => self.error = Some(format!("Export failed: {e}")),
                 },
+                Event::MemoryScanLoadAvailable(epoch) => {
+                    if epoch == self.hex_epoch {
+                        self.hex_view = HexView::NeedsMemory;
+                    }
+                }
+                Event::MemoryScanDumpNeeded(epoch, evidence_id, pid) => {
+                    if epoch != self.hex_epoch {
+                        continue;
+                    }
+                    let arguments = vec!["--pid".into(), pid.to_string(), "--dump".into()];
+                    if let Some(run) = self.case.as_ref().and_then(|case| {
+                        case.document.runs.iter().find(|run| {
+                            run.evidence_id == evidence_id
+                                && run.plugin == volgui::memory_scan::MEMMAP
+                                && run.arguments == arguments
+                                && matches!(run.status, RunStatus::Queued | RunStatus::Running)
+                        })
+                    }) {
+                        self.memory_scan_dump = Some((run.id.clone(), epoch));
+                        continue;
+                    }
+                    let result = (|| {
+                        let case = self.case.as_ref().ok_or("Open a case first")?;
+                        let evidence = case
+                            .document
+                            .evidence
+                            .iter()
+                            .find(|e| e.id == evidence_id)
+                            .ok_or("Missing source evidence")?;
+                        let engine = self.installation.as_ref()
+                            .ok_or("Configure an analysis engine in Settings to collect surrounding memory.")?;
+                        engine.prepare(
+                            evidence,
+                            volgui::memory_scan::MEMMAP,
+                            arguments,
+                            &case.directory.join("analyses"),
+                        )
+                    })();
+                    match result {
+                        Ok(run) => {
+                            let id = run.id.clone();
+                            self.memory_scan_dump = Some((id.clone(), epoch));
+                            self.queue_investigation(vec![run], window, cx);
+                            if !self
+                                .case
+                                .as_ref()
+                                .is_some_and(|case| case.document.runs.iter().any(|r| r.id == id))
+                            {
+                                self.memory_scan_dump = None;
+                                self.hex_view =
+                                    HexView::Error(self.error.clone().unwrap_or_else(|| {
+                                        "Could not queue process memory collection.".into()
+                                    }));
+                            }
+                        }
+                        Err(error) => self.hex_view = HexView::Error(error),
+                    }
+                }
                 Event::HexLoaded(epoch, result) => {
                     if epoch != self.hex_epoch {
                         continue;
@@ -1259,6 +1395,19 @@ impl Workspace {
                     }
                 }
             }
+        }
+        if self.memory_scan_dump.as_ref().is_some_and(|(id, _)| {
+            self.case.as_ref().is_none_or(|case| {
+                !case.document.runs.iter().any(|run| {
+                    &run.id == id && matches!(run.status, RunStatus::Queued | RunStatus::Running)
+                })
+            })
+        }) {
+            self.memory_scan_dump = None;
+            self.hex_view = HexView::Error(
+                "Process memory collection stopped. Use View surrounding memory to retry.".into(),
+            );
+            changed = true;
         }
         self.refresh_file_listing(cx);
         if self.query_due.is_some_and(|t| Instant::now() >= t) {

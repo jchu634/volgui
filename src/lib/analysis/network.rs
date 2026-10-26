@@ -20,7 +20,7 @@ use std::{
 };
 
 pub const MAX_FINDINGS: usize = 20_000;
-pub const PARSER_VERSION: &str = "network-v3-configurations";
+pub const PARSER_VERSION: &str = "network-v4-configuration-candidates";
 pub const SOURCES: &[&str] = &[
     "windows.netscan.NetScan",
     "windows.netstat.NetStat",

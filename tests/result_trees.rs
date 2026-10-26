@@ -1,7 +1,7 @@
 // Exercises tree construction against the same saved results used by the UI.
 use volgui::{
     case::{Run, RunStatus, now},
-    result_tree::ResultTree,
+    result_tree::{ModuleEntry, RegistryEntry, ResultTree, TreeEntry},
     results::{Query, ResultStore},
     volatility::Table,
 };
@@ -30,6 +30,193 @@ fn labels(tree: &ResultTree) -> Vec<(&str, usize)> {
         .iter()
         .map(|(i, depth)| (tree.nodes[*i].label.as_str(), *depth))
         .collect()
+}
+
+fn entry(id: i64, path: &str) -> TreeEntry {
+    TreeEntry {
+        id,
+        run_id: "run".into(),
+        depth: 0,
+        title: path.into(),
+        pid: Some(id.to_string()),
+        ppid: None,
+        path: Some(path.into()),
+    }
+}
+
+fn node(tree: &ResultTree, label: &str) -> usize {
+    tree.visible
+        .iter()
+        .find(|(i, _)| tree.nodes[*i].label == label)
+        .unwrap()
+        .0
+}
+
+#[test]
+fn process_expansion_survives_hidden_handles_and_reordered_records() {
+    let processes = vec![entry(1, "editor"), entry(2, "shell")];
+    let mut file = entry(3, "notes.txt");
+    file.pid = Some("1".into());
+    let mut tree = ResultTree::processes_with_files(processes.clone(), vec![file.clone()], &[1, 2]);
+    tree.toggle(node(&tree, "editor"));
+    assert_eq!(labels(&tree), [("editor", 0), ("shell", 0)]);
+
+    let mut hidden = ResultTree::processes(processes.into_iter().rev().collect(), &[1, 2]);
+    hidden.restore_state(tree.state().clone());
+    assert!(!hidden.expanded(node(&hidden, "editor")));
+    assert!(hidden.expanded(node(&hidden, "shell")));
+
+    let mut restored = ResultTree::processes_with_files(
+        vec![entry(2, "shell"), entry(1, "editor")],
+        vec![file],
+        &[1, 2],
+    );
+    restored.restore_state(hidden.state().clone());
+    assert_eq!(labels(&restored), [("shell", 0), ("editor", 0)]);
+    restored.toggle(node(&restored, "editor"));
+    assert_eq!(
+        labels(&restored),
+        [("shell", 0), ("editor", 0), ("notes.txt", 1)]
+    );
+}
+
+#[test]
+fn file_branch_state_survives_disappearance_and_an_empty_tree() {
+    let files = vec![entry(1, "/a/docs/one"), entry(2, "/b/docs/two")];
+    let mut tree = ResultTree::files(files.clone(), &[1, 2]);
+    tree.toggle(node(&tree, "/a/docs/"));
+
+    let mut hidden = ResultTree::files(vec![files[1].clone()], &[2]);
+    hidden.restore_state(tree.state().clone());
+    assert_eq!(labels(&hidden), [("/b/docs/", 0), ("two", 1)]);
+
+    let mut empty = ResultTree::files(vec![], &[]);
+    empty.restore_state(hidden.state().clone());
+    let mut restored = ResultTree::files(files.into_iter().rev().collect(), &[1, 2]);
+    restored.restore_state(empty.state().clone());
+    assert_eq!(
+        labels(&restored),
+        [("/a/docs/", 0), ("/b/docs/", 0), ("two", 1)]
+    );
+}
+
+#[test]
+fn compacted_file_branches_keep_state_when_paths_merge_and_split() {
+    let files = vec![entry(1, "/a/docs/one"), entry(2, "/a/other/two")];
+    let mut tree = ResultTree::files(files.clone(), &[1, 2]);
+    tree.toggle(node(&tree, "docs/"));
+
+    let mut merged = ResultTree::files(vec![files[0].clone()], &[1]);
+    merged.restore_state(tree.state().clone());
+    assert_eq!(labels(&merged), [("/a/docs/", 0)]);
+
+    // Expanding the compacted row also expands its components after splitting.
+    merged.toggle(node(&merged, "/a/docs/"));
+    let mut split = ResultTree::files(files.clone(), &[1, 2]);
+    split.restore_state(merged.state().clone());
+    assert_eq!(
+        labels(&split),
+        [
+            ("/a/", 0),
+            ("docs/", 1),
+            ("one", 2),
+            ("other/", 1),
+            ("two", 2)
+        ]
+    );
+
+    split.toggle(node(&split, "/a/"));
+    let mut merged = ResultTree::files(vec![files[0].clone()], &[1]);
+    merged.restore_state(split.state().clone());
+    assert_eq!(labels(&merged), [("/a/docs/", 0)]);
+}
+
+#[test]
+fn bulk_expansion_updates_hidden_branches_and_new_items() {
+    let files = vec![entry(1, "/a/one"), entry(2, "/b/two")];
+    let mut tree = ResultTree::files(files.clone(), &[1, 2]);
+    tree.toggle(node(&tree, "/a/"));
+
+    let mut hidden = ResultTree::files(vec![files[1].clone()], &[2]);
+    hidden.restore_state(tree.state().clone());
+    hidden.expand_all(true);
+    let mut restored = ResultTree::files(files.clone(), &[1, 2]);
+    restored.restore_state(hidden.state().clone());
+    assert_eq!(restored.visible.len(), 4);
+
+    hidden.expand_all(false);
+    let mut files = files;
+    files.push(entry(3, "/c/three"));
+    let mut restored = ResultTree::files(files, &[1, 2, 3]);
+    restored.restore_state(hidden.state().clone());
+    assert_eq!(labels(&restored), [("/a/", 0), ("/b/", 0), ("/c/", 0)]);
+    restored.toggle(node(&restored, "/a/"));
+    assert_eq!(
+        labels(&restored),
+        [("/a/", 0), ("one", 1), ("/b/", 0), ("/c/", 0)]
+    );
+}
+
+#[test]
+fn module_branch_state_uses_source_and_pid_instead_of_display_name() {
+    let modules = vec![
+        ModuleEntry {
+            id: 1,
+            run_id: "first".into(),
+            pid: Some("100".into()),
+            process: "editor".into(),
+            name: "first.dll".into(),
+        },
+        ModuleEntry {
+            id: 2,
+            run_id: "second".into(),
+            pid: Some("100".into()),
+            process: "editor".into(),
+            name: "second.dll".into(),
+        },
+    ];
+    let mut tree = ResultTree::modules(modules.clone(), &[1, 2]);
+    tree.toggle(tree.visible[0].0);
+
+    let mut reordered: Vec<_> = modules.into_iter().rev().collect();
+    reordered[1].process = "renamed editor".into();
+    let mut restored = ResultTree::modules(reordered, &[1, 2]);
+    restored.restore_state(tree.state().clone());
+    assert_eq!(
+        labels(&restored),
+        [("editor", 0), ("second.dll", 1), ("renamed editor", 0)]
+    );
+}
+
+#[test]
+fn registry_branch_state_survives_reordering_and_new_key_observations() {
+    let value = RegistryEntry {
+        id: 1,
+        hive: "SYSTEM".into(),
+        path: "ControlSet\\Services".into(),
+        name: "Start".into(),
+        value_type: "REG_DWORD".into(),
+    };
+    let mut tree = ResultTree::registry(vec![value.clone()], &[1]);
+    tree.toggle(node(&tree, "Services"));
+
+    let key = RegistryEntry {
+        id: 2,
+        hive: "system".into(),
+        path: "controlset".into(),
+        name: "services".into(),
+        value_type: "Key".into(),
+    };
+    let mut restored = ResultTree::registry(vec![key, value], &[1, 2]);
+    restored.restore_state(tree.state().clone());
+    assert_eq!(
+        labels(&restored),
+        [("system", 0), ("controlset", 1), ("services", 2)]
+    );
+    assert_eq!(
+        restored.nodes[node(&restored, "services")].record_id,
+        Some(2)
+    );
 }
 
 #[test]
@@ -338,8 +525,8 @@ fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
         "windows.pslist.PsList",
         r#"[
         {"PID":4,"PPID":0,"ImageFileName":"System"},
-        {"PID":100,"PPID":4,"ImageFileName":"editor.exe"},
-        {"PID":200,"PPID":4,"ImageFileName":"other.exe"}
+        {"PID":100,"PPID":4,"ImageFileName":"editor.exe","SessionId":1,"Threads":7,"Path":"C:\\editor.exe","CreateTime":"2026-10-24T07:03:09Z"},
+        {"PID":200,"PPID":4,"ImageFileName":"other.exe","SessionId":2,"Threads":3,"Path":"C:\\other.exe"}
     ]"#,
     );
     insert(
@@ -396,6 +583,42 @@ fn process_files_join_by_pid_filter_object_types_and_keep_search_context() {
         ]
     );
     let editor = tree.visible[1].0;
+    let columns = volgui::result_table::tree_columns(
+        volgui::artifacts::ArtifactGroup::Processes,
+        &store
+            .query(&Query {
+                runs: vec!["processes".into()],
+                ..Default::default()
+            })
+            .unwrap()
+            .columns,
+    );
+    for (file_pos, owner_pos) in [(2, 1), (3, 1), (5, 4)] {
+        let file = tree.visible[file_pos].0;
+        let owner = tree.visible[owner_pos].0;
+        let source = tree.detail_node(file);
+        assert_eq!(source.record_id, tree.nodes[owner].record_id);
+        assert_ne!(source.record_id, tree.nodes[file].record_id);
+        let record = store.fetch(&[source.record_id.unwrap()]).unwrap().remove(0);
+        let values: Vec<_> = columns
+            .iter()
+            .map(|column| column.text(&record.record))
+            .collect();
+        if owner_pos == 1 {
+            assert_eq!(
+                values,
+                [
+                    "100",
+                    "1",
+                    "7",
+                    "C:\\editor.exe",
+                    "07:03:09 (24-10-2026)(+00:00)"
+                ]
+            );
+        } else {
+            assert_eq!(values, ["200", "2", "3", "C:\\other.exe", "N.A."]);
+        }
+    }
     assert!(matches!(
         tree.nodes[tree.visible[2].0].kind,
         volgui::result_tree::TreeNodeKind::File
@@ -504,9 +727,146 @@ fn registry_keys_values_hives_and_search_share_branches() {
             ("SYSTEM", 1),
             ("ControlSet001", 2),
             ("Services", 3),
-            ("Start - REG_DWORD", 4)
+            ("Start", 4)
         ]
     );
     let id = tree.nodes[tree.visible[4].0].record_id.unwrap();
     assert_eq!(store.fetch(&[id]).unwrap()[0].record.text("Data"), "2");
+}
+
+#[test]
+fn modules_group_by_source_process_and_keep_kernel_records_selectable() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "dlls",
+        "windows.dlllist.DllList",
+        r#"[
+        {"PID":100,"Process":"editor.exe","Name":"ntdll.dll","Base":4096},
+        {"PID":100,"Process":"editor.exe","Name":"ntdll.dll","Base":8192},
+        {"PID":200,"Process":"shell.exe","Name":"kernel32.dll","Base":12288}
+    ]"#,
+    );
+    insert(
+        &store,
+        "scan",
+        "windows.ldrmodules.LdrModules",
+        r#"[
+        {"PID":100,"Process":"editor.exe","MappedPath":"C:\\Windows\\ntdll.dll","Base":4096}
+    ]"#,
+    );
+    insert(
+        &store,
+        "kernel",
+        "windows.modules.Modules",
+        r#"[
+        {"Name":"ntoskrnl.exe","Base":65536},
+        {"Name":"driver.sys","Base":131072}
+    ]"#,
+    );
+    let runs = vec!["dlls".into(), "scan".into(), "kernel".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut tree = ResultTree::modules(store.module_entries(&runs).unwrap(), &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("editor.exe", 0),
+            ("ntdll.dll", 1),
+            ("ntdll.dll", 1),
+            ("shell.exe", 0),
+            ("kernel32.dll", 1),
+            ("editor.exe", 0),
+            ("ntdll.dll", 1),
+            ("Kernel modules", 0),
+            ("ntoskrnl.exe", 1),
+            ("driver.sys", 1),
+        ]
+    );
+    let mut ids: Vec<_> = tree
+        .visible
+        .iter()
+        .filter_map(|(i, _)| tree.nodes[*i].record_id)
+        .collect();
+    ids.sort();
+    assert_eq!(ids, index.ids);
+    assert_eq!(store.fetch(&ids).unwrap().len(), 6);
+    let editor = tree.visible[0].0;
+    tree.toggle(editor);
+    assert_eq!(tree.visible.len(), 8);
+    tree.expand_all(false);
+    assert_eq!(tree.visible.len(), 4);
+    tree.expand_all(true);
+    assert_eq!(tree.visible.len(), 10);
+
+    let filtered = store
+        .query(&Query {
+            runs,
+            text: "kernel32".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let tree = ResultTree::modules(
+        store
+            .module_entries(&["dlls".into(), "scan".into(), "kernel".into()])
+            .unwrap(),
+        &filtered.ids,
+    );
+    assert_eq!(labels(&tree), [("shell.exe", 0), ("kernel32.dll", 1)]);
+}
+
+#[test]
+fn module_names_and_pid_aliases_work_without_a_process_inventory() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    insert(
+        &store,
+        "libs",
+        "mac.library_list.LibraryList",
+        r#"[
+        {"ProcessID":42,"Path":"/usr/lib/libSystem.dylib"},
+        {"ProcessID":42,"COMM":"terminal","ModuleName":"libobjc.dylib"},
+        {"Pid":"43","ImageFileName":"other","FilePath":"/usr/lib/libc.dylib"},
+        {"PID":null,"Name":"kernel-extension"},
+        {"PID":44,"Name":"","Path":""}
+    ]"#,
+    );
+    insert(
+        &store,
+        "unrelated",
+        "windows.dlllist.DllList",
+        r#"[
+        {"PID":42,"Process":"wrong-capture.exe","Name":"wrong.dll"}
+    ]"#,
+    );
+    let runs = vec!["libs".into()];
+    let index = store
+        .query(&Query {
+            runs: runs.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let tree = ResultTree::modules(store.module_entries(&runs).unwrap(), &index.ids);
+    assert_eq!(
+        labels(&tree),
+        [
+            ("terminal", 0),
+            ("libSystem.dylib", 1),
+            ("libobjc.dylib", 1),
+            ("other", 0),
+            ("libc.dylib", 1),
+            ("Kernel modules", 0),
+            ("kernel-extension", 1),
+            ("PID 44", 0),
+            ("Unnamed module", 1),
+        ]
+    );
+    assert_eq!(tree.nodes[tree.visible[0].0].pid.as_deref(), Some("42"));
+    assert_eq!(tree.nodes[tree.visible[3].0].pid.as_deref(), Some("43"));
+    assert!(store.module_entries(&[]).unwrap().is_empty());
 }

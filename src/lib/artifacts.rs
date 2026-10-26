@@ -79,7 +79,7 @@ impl ArtifactGroup {
             Self::Network => "Network",
             Self::Files => "Files and documents",
             Self::Web => "Browser activity",
-            Self::Downloads => "Download investigation",
+            Self::Downloads => "Downloads",
             Self::Quarantine => "Quarantined threats",
             Self::Applications => "Process Memory",
             Self::Strings => "Global string search",

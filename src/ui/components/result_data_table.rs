@@ -594,6 +594,7 @@ impl Workspace {
     }
 
     pub(in crate::ui) fn reset_result_table(&self, cx: &mut Context<Self>) {
+        self.reset_tree_table(cx);
         self.result_table.update(cx, |state, cx| {
             state.delegate_mut().synced_selection = None;
             state.delegate_mut().pointer_scroll = None;

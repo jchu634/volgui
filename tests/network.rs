@@ -542,6 +542,100 @@ fn payload_configuration() -> Vec<u8> {
 }
 
 #[test]
+fn incomplete_payloads_remain_candidates_and_never_gain_socket_ownership() {
+    let mut complete = payload_configuration();
+    complete[32..48].fill(0x22);
+    let mut incomplete = payload_configuration();
+    incomplete[16..32].fill(0x33);
+    // Model a transport crossing into an unrelated physical page.
+    incomplete[48 + 400..].fill(0x7f);
+    let incomplete_at = complete.len();
+    complete.extend(incomplete);
+    let (_temp, mut case, evidence) = case_with_contents(&complete);
+    let mut socket_run = analysis::prepare(&evidence, analysis::NETWORK, vec![]).unwrap();
+    socket_run.plugin = "windows.netscan.NetScan".into();
+    case.queue(socket_run.clone()).unwrap();
+    case.finish(&socket_run.id, &Outcome {
+        status: RunStatus::Completed, exit_code: Some(0), message: String::new(),
+        table: Some(Table::parse(&json!([{"PID":1234,"Owner":"example.exe","ForeignAddr":"192.0.2.5","ForeignPort":5059}]).to_string()).unwrap()),
+    }).unwrap();
+    let run = analysis::prepare(&evidence, analysis::NETWORK, vec![]).unwrap();
+    case.queue(run.clone()).unwrap();
+    let (table, message) = network::analyze(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(table.rows.len(), 2);
+    assert!(message.contains("1 validated Meterpreter TCP configurations; 1 incomplete"));
+    let full = &table.rows[0];
+    let partial = &table.rows[1];
+    assert_eq!(full.text("Finding"), "Meterpreter TCP configuration");
+    assert_eq!(full.text("Configuration bytes SHA-256").len(), 64);
+    assert_eq!(full.text("Session GUID"), "22".repeat(16));
+    assert_eq!(
+        partial.text("Finding"),
+        "Incomplete Meterpreter TCP configuration candidate"
+    );
+    assert_eq!(partial.text("Payload UUID"), "33".repeat(16));
+    assert!(partial.text("Configuration bytes SHA-256").is_empty());
+    assert!(
+        partial.fields["Payload configuration"]
+            .get("Communications timeout seconds")
+            .is_none()
+    );
+    assert_eq!(
+        volgui::network::source_offset(partial),
+        Some(incomplete_at as u64 + 48)
+    );
+    for row in &table.rows {
+        assert!(row.text("PID").is_empty());
+        assert!(row.text("Owner").is_empty());
+        assert!(row.text("Ownership evidence").starts_with("Not recovered"));
+        assert!(
+            row.text("Connection evidence")
+                .contains("No process-owned connection")
+        );
+    }
+}
+
+#[test]
+fn configuration_summary_preserves_distinct_payloads_and_deduplicates_parser_runs() {
+    let mut first = entry(
+        json!({"Finding":"Meterpreter TCP configuration","Evidence SHA-256":"capture","Configuration offset":0,"IP":"192.0.2.5","Port":5059,"Payload configuration":{"Payload UUID":"uuid-a"}}),
+    );
+    let duplicate = first.clone();
+    let second = entry(
+        json!({"Finding":"Meterpreter TCP configuration","Evidence SHA-256":"capture","Configuration offset":4096,"IP":"192.0.2.5","Port":5059,"Payload UUID":"uuid-b"}),
+    );
+    let incomplete = entry(
+        json!({"Finding":"Incomplete Meterpreter TCP configuration candidate","Evidence SHA-256":"capture","Configuration offset":8192,"IP":"192.0.2.6","Port":4364,"Payload UUID":"uuid-c"}),
+    );
+    first.source = std::sync::Arc::new(StoredRecord {
+        id: 2,
+        ..(*first.source).clone()
+    });
+    let summary = volgui::network::configuration_summary(
+        [&first, &duplicate, &second, &incomplete].into_iter(),
+    )
+    .unwrap();
+    assert!(
+        summary.contains("2 validated, 1 incomplete; 3 distinct payload UUIDs"),
+        "{summary}"
+    );
+    assert!(summary.contains("not process counts"));
+    assert!(
+        volgui::network::configuration_summary(
+            [&entry(json!({"ForeignAddr":"192.0.2.5","PID":12}))].into_iter()
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn payload_recovery_belongs_to_network_and_retains_offsets_across_chunk_boundaries() {
     let mut bytes = vec![0xff; 4 * 1024 * 1024 - 60];
     let config_at = bytes.len();

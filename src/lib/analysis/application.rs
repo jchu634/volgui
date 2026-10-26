@@ -17,7 +17,7 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
     io::{Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -75,6 +75,25 @@ pub fn target_pid(arguments: &[String]) -> Result<u64, String> {
     options(arguments)?
         .pid
         .ok_or_else(|| "Choose a PID to scan application memory".into())
+}
+
+/// Open the dump pinned to a saved scan, including full and user-memory dumps.
+pub fn dump_path(directory: &Path, document: &CaseSnapshot, run: &Run) -> Option<PathBuf> {
+    if run.plugin != APPLICATION || run.status != RunStatus::Completed {
+        return None;
+    }
+    let opts = options(&run.arguments).ok()?;
+    let pid = opts.pid?;
+    let dump = opts.sources.iter().find_map(|id| {
+        let dump = source(document, id, &run.evidence_id).ok()?;
+        (dump.plugin == MEMMAP && DumpScope::from_arguments(&dump.arguments, pid).is_some())
+            .then_some(dump)
+    })?;
+    let path = directory
+        .join("analyses")
+        .join(&dump.id)
+        .join(format!("pid.{pid}.dmp"));
+    crate::object_store::exists(&path).then_some(path)
 }
 
 /// User options survive retries; resolved source IDs must be selected again.

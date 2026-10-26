@@ -112,7 +112,7 @@ impl Workspace {
         self.network_scroll.set_offset(location.network_offset);
         self.content_sidebar_visible = location.content_sidebar_visible;
         self.file_offset_physical = location.file_offset_physical;
-        self.result_tree = ResultTree::default();
+        self.clear_result_tree();
         self.row_cache.clear();
         self.result_scroll = UniformListScrollHandle::default();
         self.reset_result_table(cx);
@@ -156,7 +156,8 @@ impl Workspace {
         self.scope.clear();
         self.scope_label.clear();
         self.index = ResultIndex::default();
-        self.result_tree = ResultTree::default();
+        self.clear_result_tree();
+        self.tree_states.clear();
         self.row_cache.clear();
         self.inflight.clear();
         self.relations = ProcessRelations::default();
