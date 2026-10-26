@@ -6,6 +6,8 @@ VolGUI runs a separately installed Volatility 3 or vol-rs engine and stores anal
 
 ## Documentation
 
+**Download investigation** connects download origins with execution candidates and remote sockets. Choose **New analysis > Download and execution investigation**, then open **Download investigation**. Search a website or filename, select a finding, and follow its source records or bytes. **Connection leads** shows explicit connection commands and validated legacy Meterpreter TCP configurations when socket ownership is unavailable. The report keeps filename matches, residual process candidates, configured endpoints and observed sockets distinct. See [the investigation flow](docs/investigation.md#download-investigation).
+
 - [Building and running](docs/building.md)
 - [Validation](docs/validation.md)
 - [Case storage](docs/case-storage.md)
@@ -24,7 +26,7 @@ Views share workspace state and call its actions. They do not run SQLite queries
 
 Artifact grids, the analysis chooser, and recovered SQLite previews use GPUI Kit's native `DataTable`. Artifact grids retain background row loading and database sorting, selectable cell text, resizable columns, and double-click column fitting. Process and file hierarchies use their tree views.
 
-With no case open, a welcome dialog requires opening or creating a case. Escape, backdrop clicks, and a close button cannot dismiss it. The sidebar offers Processes, Network, Files, Browser activity, Application memory, Registry, Global string search, and Bookmarks. Raw investigation artifacts remain available at the bottom.
+With no case open, a welcome dialog requires opening or creating a case. Escape, backdrop clicks, and a close button cannot dismiss it. The sidebar offers Processes, Network, Files, Download investigation, Browser activity, Application memory, Registry, Global string search, and Bookmarks. Raw investigation artifacts remain available at the bottom.
 
 Processes appear beneath their parents, and files are grouped by directory. Single-child folder chains share one row, stopping at branches or files. Both trees support branch expansion, collapse, search and record selection. Process searches retain ancestor branches for context. PPID and exit time remain available in record details and exports.
 

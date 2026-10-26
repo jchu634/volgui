@@ -1209,7 +1209,7 @@ fn append_representatives(
 fn filter_expression(column: &str) -> Result<String> {
     match column {
         "Domain" => Ok("COALESCE(NULLIF(json_extract(r.fields_json,'$.Domain'),''),browser_domain(json_extract(r.fields_json,'$.URL')))".into()),
-        "PID" | "Browser" | "Kind" => Ok(format!("COALESCE(CAST(json_extract(r.fields_json,'$.{column}') AS TEXT),'')")),
+        "PID" | "Browser" | "Kind" | "Finding" | "Filename" | "Remote IP" | "Remote port" => Ok(format!("COALESCE(CAST(json_extract(r.fields_json,'$.\"{column}\"') AS TEXT),'')")),
         _ => Err("Unknown filter column".into()),
     }
 }

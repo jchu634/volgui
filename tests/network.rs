@@ -57,6 +57,36 @@ fn endpoint_selection_matches_address_and_port_on_the_same_side() {
 }
 
 #[test]
+fn pid_search_matches_the_owner_exactly_instead_of_ports_or_substrings() {
+    let mut graph = Graph::default();
+    for value in [
+        json!({"PID":12,"ForeignAddr":"192.0.2.1","ForeignPort":80}),
+        json!({"PID":112,"ForeignAddr":"192.0.2.2","ForeignPort":12}),
+        json!({"ForeignAddr":"192.0.2.12","ForeignPort":12}),
+    ] {
+        graph.push(entry(value));
+    }
+    assert_eq!(
+        graph
+            .overview(&volgui::network::Filter {
+                text: "pid:12".into(),
+                ..Default::default()
+            })
+            .matching,
+        1
+    );
+    assert_eq!(
+        graph
+            .overview(&volgui::network::Filter {
+                text: "12".into(),
+                ..Default::default()
+            })
+            .matching,
+        3
+    );
+}
+
+#[test]
 fn normalization_retains_ipv6_scopes_wildcards_zero_and_unknown_ports() {
     let e =
         entry(json!({"LocalAddr":"[2001:0db8::1]:443","RemoteAddr":"fe80::a%12","RemotePort":"0"}));

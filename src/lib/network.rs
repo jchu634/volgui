@@ -268,7 +268,11 @@ impl Graph {
                 .as_ref()
                 .is_some_and(|p| p != &entry.protocol)
                 || filter.state.as_ref().is_some_and(|s| s != &entry.state)
-                || (!filter.text.is_empty() && !entry.search_text.contains(&filter.text))
+                || (if let Some(pid) = filter.text.strip_prefix("pid:") {
+                    entry.pid != pid.trim()
+                } else {
+                    !filter.text.is_empty() && !entry.search_text.contains(&filter.text)
+                })
             {
                 continue;
             }

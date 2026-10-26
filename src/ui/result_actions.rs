@@ -16,6 +16,12 @@ impl Workspace {
                     && ArtifactGroup::for_plugin(&r.plugin) == group
             })
             .map(|r| r.id.clone())
+            // The report is a complete source snapshot. Older interpretations remain in history.
+            .take(if group == ArtifactGroup::Downloads {
+                1
+            } else {
+                usize::MAX
+            })
             .collect()
     }
     pub(super) fn group_count(&self, group: ArtifactGroup) -> usize {
@@ -169,7 +175,10 @@ impl Workspace {
     }
     pub(super) fn active_query(&self, cx: &App) -> Query {
         Query {
-            filters: if self.result_group() == Some(ArtifactGroup::Web) {
+            filters: if matches!(
+                self.result_group(),
+                Some(ArtifactGroup::Web | ArtifactGroup::Downloads)
+            ) {
                 self.column_filters.clone()
             } else {
                 Default::default()

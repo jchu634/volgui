@@ -116,6 +116,16 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
             ("URL", &["URL"]),
             ("Virtual address", &["Virtual address"]),
         ],
+        Some(ArtifactGroup::Downloads) => &[
+            ("Finding", &["Finding"]),
+            ("Filename", &["Filename"]),
+            ("Website URL", &["Website URL"]),
+            ("Download URL", &["URL"]),
+            ("PID", &["PID"]),
+            ("Remote IP", &["Remote IP"]),
+            ("Remote port", &["Remote port"]),
+            ("Match basis", &["Match basis"]),
+        ],
         Some(ArtifactGroup::Applications) => &[
             ("PID", &["PID"]),
             ("Application", &["Application"]),

@@ -41,6 +41,7 @@ pub enum ArtifactGroup {
     Network,
     Files,
     Web,
+    Downloads,
     Applications,
     Strings,
     Registry,
@@ -52,10 +53,11 @@ pub enum ArtifactGroup {
     Other,
 }
 impl ArtifactGroup {
-    pub const BROWSER: [Self; 7] = [
+    pub const BROWSER: [Self; 8] = [
         Self::Processes,
         Self::Network,
         Self::Files,
+        Self::Downloads,
         Self::Web,
         Self::Applications,
         Self::Registry,
@@ -75,6 +77,7 @@ impl ArtifactGroup {
             Self::Network => "Network",
             Self::Files => "Files and documents",
             Self::Web => "Browser activity",
+            Self::Downloads => "Download investigation",
             Self::Applications => "Process Memory",
             Self::Strings => "Global string search",
             Self::Registry => "Registry",
@@ -87,6 +90,13 @@ impl ArtifactGroup {
         }
     }
     pub fn for_plugin(plugin: &str) -> Self {
+        // An ADS row describes a stream and its resident bytes, not a recoverable FILE_OBJECT.
+        if plugin == "windows.mftscan.ADS" {
+            return Self::Other;
+        }
+        if plugin == crate::analysis::DOWNLOADS {
+            return Self::Downloads;
+        }
         if plugin == crate::analysis::NETWORK {
             return Self::Network;
         }

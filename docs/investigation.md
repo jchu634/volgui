@@ -1,5 +1,16 @@
 # Investigation tools
 
+## Download investigation
+
+1. In **New analysis**, select **Download and execution investigation** for Windows evidence. It collects available PsList, PsScan, CmdLine, DLL paths, PsXView, FileScan, ADS, NetScan and NetStat. Existing completed unfiltered inventories are reused. Browser profile files are recovered after inventories finish, when DumpFiles is available.
+2. Open **Download investigation** and search a website or filename. The grid shows the local filename, website and download URLs, matching process PID and owned remote sockets. The selected row's details contain the match rule, timestamps, paths and source links. Chromium download targets, redirects and referrers are preserved; the browser's opened flag is not treated as execution evidence.
+3. Select **Download source**, **Process source**, **Command line source** or **Socket source** to inspect the original record. **Residual process bytes** opens the acquisition at a recovered process structure. **Network for PID** uses an exact `pid:<number>` search in Network. Back restores the investigation.
+4. Use **Connection leads** when the process or socket inventories are incomplete. This filters explicit connection commands and TCP transport strings found in acquisition bytes. Legacy Windows Meterpreter configurations receive a separate label only when the session, URL padding, exit function, UUID and timeouts pass structural checks. Select **Connection text bytes** to inspect the original bytes. **All findings** clears column filters.
+
+The report never assigns an unowned socket or global memory string to a process by proximity. A matching filename can refer to a different file. A configured reverse connection endpoint does not establish a successful connection or identify which executable owned it. Those gaps remain visible. Findings support bookmarks, case persistence and CSV export.
+
+Residual process recovery currently supports the Windows x64 EPROCESS 19041 layout. It activates only after at least five timestamped inventory PIDs corroborate that layout. It scans downloaded names up to 15 bytes and bounds additional raw name searches to 128. Carved copies can survive after exit and do not prove that a process was active at acquisition. Other layouts and longer names rely on collected engine inventories. Memory connection recovery reads UTF-8 and UTF-16LE, with at most 2,000 residual process candidates and 2,000 connection leads. The report retains at most 10,000 findings plus coverage. Partial cached databases, missing sources and limits appear in coverage and Run details.
+
 Select a memory image in the sidebar before using these tools. Results belong to
 that evidence capture. Application analyses appear in the same queue and case
 history as Volatility jobs, and their findings support bookmarks and CSV export.

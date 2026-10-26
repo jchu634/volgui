@@ -213,6 +213,13 @@ impl Workspace {
             .into_any_element()
     }
     fn render_queue(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Keep only display data; a run can contain large arguments and diagnostics.
+        struct QueueRow {
+            id: String,
+            plugin: String,
+            status: RunStatus,
+            row_count: usize,
+        }
         let mut runs = self
             .case
             .as_ref()
@@ -220,7 +227,12 @@ impl Workspace {
                 case.document
                     .queue_runs()
                     .rev()
-                    .cloned()
+                    .map(|run| QueueRow {
+                        id: run.id.clone(),
+                        plugin: run.plugin.clone(),
+                        status: run.status,
+                        row_count: run.row_count,
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -247,129 +259,159 @@ impl Workspace {
         let has_finished = runs
             .iter()
             .any(|run| QueueClearScope::Finished.includes(run.status));
-        let mut list = div().id("queue-analyses").flex().flex_col().w_full().pr_3();
-        if runs.is_empty() {
-            list = list.child(
-                div()
-                    .h(px(32.))
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No jobs in the queue"),
-            );
-        }
-        for run in runs {
-            let id = run.id.clone();
-            let cancel = id.clone();
-            let retry = id.clone();
-            let remove = id.clone();
-            let cancel_label = format!("Cancel {}", run.plugin);
-            let active = matches!(run.status, RunStatus::Running | RunStatus::Queued);
-            let color = match run.status {
-                RunStatus::Running => Some(cx.theme().primary),
-                RunStatus::Queued => Some(cx.theme().warning),
-                RunStatus::Failed | RunStatus::Interrupted => Some(cx.theme().danger),
-                RunStatus::Cancelled => Some(cx.theme().muted_foreground),
-                _ => None,
-            };
-            let status = run.status.label();
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .h(px(32.))
-                    .flex_shrink_0()
-                    .when_some(color, |row, color| row.text_color(color))
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .id(key("queue-run", &id))
-                            .role(Role::Button)
-                            .aria_label(format!("{} · {status}", run.plugin))
-                            .flex_1()
-                            .min_w_0()
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().min_w_0().text_sm().truncate().child(run.plugin))
-                            .when(
-                                !matches!(
-                                    run.status,
-                                    RunStatus::Failed
-                                        | RunStatus::Cancelled
-                                        | RunStatus::Interrupted
-                                ),
-                                |row| {
+        let list = if runs.is_empty() {
+            div()
+                .h(px(32.))
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("No jobs in the queue")
+                .into_any_element()
+        } else {
+            uniform_list(
+                "queue-analyses",
+                runs.len(),
+                cx.processor(move |_, range: Range<usize>, _, cx| {
+                    range
+                        .map(|index| {
+                            let run = &runs[index];
+                            let id = run.id.clone();
+                            let cancel = id.clone();
+                            let retry = id.clone();
+                            let remove = id.clone();
+                            let cancel_label = format!("Cancel {}", run.plugin);
+                            let active =
+                                matches!(run.status, RunStatus::Running | RunStatus::Queued);
+                            let color = match run.status {
+                                RunStatus::Running => Some(cx.theme().primary),
+                                RunStatus::Queued => Some(cx.theme().warning),
+                                RunStatus::Failed | RunStatus::Interrupted => {
+                                    Some(cx.theme().danger)
+                                }
+                                RunStatus::Cancelled => Some(cx.theme().muted_foreground),
+                                _ => None,
+                            };
+                            let status = run.status.label();
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .h(px(32.))
+                                .flex_shrink_0()
+                                .when_some(color, |row, color| row.text_color(color))
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .id(key("queue-run", &id))
+                                        .role(Role::Button)
+                                        .aria_label(format!("{} · {status}", run.plugin))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .text_sm()
+                                                .truncate()
+                                                .child(run.plugin.clone()),
+                                        )
+                                        .when(
+                                            !matches!(
+                                                run.status,
+                                                RunStatus::Failed
+                                                    | RunStatus::Cancelled
+                                                    | RunStatus::Interrupted
+                                            ),
+                                            |row| {
+                                                row.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .flex_shrink_0()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(format!(
+                                                            "{} records",
+                                                            run.row_count
+                                                        )),
+                                                )
+                                            },
+                                        )
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .flex_shrink_0()
+                                                .whitespace_nowrap()
+                                                .text_color(
+                                                    color.unwrap_or(cx.theme().muted_foreground),
+                                                )
+                                                .child(status),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.queue_open = false;
+                                            this.select_run(id.clone(), window, cx);
+                                        })),
+                                )
+                                .when(
+                                    matches!(
+                                        run.status,
+                                        RunStatus::Failed
+                                            | RunStatus::Interrupted
+                                            | RunStatus::Cancelled
+                                    ),
+                                    |row| {
+                                        row.child(
+                                            Button::new(key("retry-queued-run", &retry))
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Retry")
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.retry_run(&retry, window, cx)
+                                                    },
+                                                )),
+                                        )
+                                    },
+                                )
+                                .when(!active, |row| {
                                     row.child(
-                                        div()
-                                            .text_xs()
-                                            .flex_shrink_0()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("{} records", run.row_count)),
+                                        Button::new(key("remove-queued-run", &remove))
+                                            .accessibility_label(
+                                                "Remove finished analysis from queue",
+                                            )
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::X)
+                                            .tooltip("Remove from queue")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.remove_queue_run(&remove, cx)
+                                            })),
                                     )
-                                },
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .flex_shrink_0()
-                                    .whitespace_nowrap()
-                                    .text_color(color.unwrap_or(cx.theme().muted_foreground))
-                                    .child(status),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.queue_open = false;
-                                this.select_run(id.clone(), window, cx);
-                            })),
-                    )
-                    .when(
-                        matches!(
-                            run.status,
-                            RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled
-                        ),
-                        |row| {
-                            row.child(
-                                Button::new(key("retry-queued-run", &retry))
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Retry")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.retry_run(&retry, window, cx)
-                                    })),
-                            )
-                        },
-                    )
-                    .when(!active, |row| {
-                        row.child(
-                            Button::new(key("remove-queued-run", &remove))
-                                .accessibility_label("Remove finished analysis from queue")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::X)
-                                .tooltip("Remove from queue")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_queue_run(&remove, cx)
-                                })),
-                        )
-                    })
-                    .when(active, |row| {
-                        row.child(
-                            Button::new(key("cancel-queued-run", &cancel))
-                                .accessibility_label(cancel_label)
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::X)
-                                .tooltip("Cancel analysis")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.cancel_run(cancel.clone(), cx)
-                                })),
-                        )
-                    }),
-            );
-        }
+                                })
+                                .when(active, |row| {
+                                    row.child(
+                                        Button::new(key("cancel-queued-run", &cancel))
+                                            .accessibility_label(cancel_label)
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::X)
+                                            .tooltip("Cancel analysis")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.cancel_run(cancel.clone(), cx)
+                                            })),
+                                    )
+                                })
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.queue_scroll)
+            .size_full()
+            .pr_3()
+            .into_any_element()
+        };
         div()
             .w(px(400.))
             .p_3()
@@ -382,14 +424,7 @@ impl Workspace {
                     .relative()
                     .h(list_height)
                     .flex_shrink_0()
-                    .child(
-                        div()
-                            .id("queue-scroll-viewport")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.queue_scroll)
-                            .child(list),
-                    )
+                    .child(list)
                     .child(Scrollbar::vertical(&self.queue_scroll).mode(ScrollbarMode::Always)),
             )
             .child(

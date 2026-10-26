@@ -87,6 +87,25 @@ impl Workspace {
     pub(in crate::ui) fn render_investigation_tools(&self, cx: &mut Context<Self>) -> Div {
         let mut tools = div().flex().flex_col().gap_2().px_3().py_2();
         match self.result_group() {
+            Some(ArtifactGroup::Downloads) => {
+                tools = tools.child(div().text_xs().child("Start with a website or filename. Select a finding to follow download origins, process evidence and remote connections. Filename matches and residual bytes are candidates; a port alone does not identify a reverse shell."))
+                    .child(div().flex().items_center().gap_2()
+                        .child(Button::new("investigate-downloads").small().primary().label("Start analysis")
+                            .disabled(self.is_working() || self.installation.is_none() || self.evidence().is_none())
+                            .on_click(cx.listener(|this, _, window, cx| this.analyze_downloads(window,cx))))
+                        .child(Button::new("download-connection-leads").small().ghost().label("Connection leads")
+                            .on_click(cx.listener(|this,_,window,cx| {
+                                this.query.update(cx,|input,cx| input.set_value("",window,cx));
+                                this.column_filters.insert("Finding".into(),["Meterpreter TCP configuration","Reverse shell command candidate","TCP transport endpoint","TCP client command"].map(String::from).into());
+                                this.start_query(cx);
+                            })))
+                        .child(Button::new("download-all-findings").small().ghost().label("All findings")
+                            .on_click(cx.listener(|this,_,_,cx| { this.column_filters.clear();this.start_query(cx); })))
+                        .child(Button::new("download-browser-activity").small().ghost().label("Browser activity")
+                            .on_click(cx.listener(|this, _, window, cx| this.choose_group(ArtifactGroup::Web,window,cx))))
+                        .child(Button::new("download-network").small().ghost().label("All network connections")
+                            .on_click(cx.listener(|this, _, window, cx| this.choose_group(ArtifactGroup::Network,window,cx)))));
+            }
             Some(ArtifactGroup::Applications) => {
                 tools = tools.child(
                     div()

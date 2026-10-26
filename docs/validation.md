@@ -1,5 +1,15 @@
 # Validation
 
+## Download investigation validation
+
+```powershell
+cargo run --locked --no-default-features --example validate_downloads -- <capture> <new-case-directory> <engine> [source-case-directory]
+```
+
+This executes the chooser's inventories, deferred profile recovery and native parser. An optional source case supplies the evidence fingerprint and latest successful unfiltered inventories through read-only queries. The source case is not changed. The new case retains results and `downloads.csv`; memory scanning still reads the acquisition. `tests/downloads.rs` and download parser unit tests cover origin streams, renamed targets, ordered redirects, older schemas, source boundaries, different evidence, reused PIDs, missing socket owners, cancellation, persistence, raw scan boundaries, structural validation and export.
+
+Open the output case, select **Download investigation**, search a filename and inspect its origin and execution evidence. Open each source and return with Back. Choose **Connection leads**, select an endpoint and inspect its source bytes. Confirm missing ownership stays missing. Use **Network for PID** and verify `pid:<number>` matches the PID exactly. Native UI checks must also confirm the new analysis is in the basic chooser and that it expands to the normal queue.
+
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests. Tests and the Windows accessibility regression share one Windows job to reuse compiled dependencies. Cargo commands use the committed lockfile. Run formatting, compilation checks, and Clippy locally alongside the tests:
 
 ```powershell

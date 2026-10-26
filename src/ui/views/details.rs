@@ -388,7 +388,89 @@ impl Workspace {
                 if let Some(record) = record {
                     let browser = self.result_group() == Some(ArtifactGroup::Web);
                     let application = self.result_group() == Some(ArtifactGroup::Applications);
+                    let downloads = self.result_group() == Some(ArtifactGroup::Downloads);
                     let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+                    if downloads {
+                        if let Some(pid) = record.record.fields.get("PID").and_then(|v| v.as_u64())
+                        {
+                            let network_pid = pid.to_string();
+                            actions = actions
+                                .child(
+                                    Button::new("download-process")
+                                        .small()
+                                        .ghost()
+                                        .label(format!("Process {pid}"))
+                                        .disabled(record.record.text("Execution evidence").starts_with("Residual"))
+                                        .tooltip("Open a collected process. Residual process candidates can be inspected using their source bytes.")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.open_process(pid.to_string(), cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("download-process-network")
+                                        .small()
+                                        .ghost()
+                                        .label("Network for PID")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.investigate_pid_network(
+                                                network_pid.clone(),
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                );
+                        }
+                        if let Some(sources) = record
+                            .record
+                            .fields
+                            .get("Sources")
+                            .and_then(|v| v.as_array())
+                        {
+                            for (i, source) in sources.iter().enumerate() {
+                                let role = source
+                                    .get("Role")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Evidence");
+                                if let Some(offset) = source.get("Offset").and_then(|v| v.as_u64())
+                                {
+                                    actions = actions.child(
+                                        Button::new(("download-source-bytes", i))
+                                            .small()
+                                            .ghost()
+                                            .label(format!("{role} bytes"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.open_investigation_bytes(offset, cx)
+                                            })),
+                                    );
+                                } else if let Some(run) = source
+                                    .get("Run")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    let run = run.to_string();
+                                    let row = source.get("Row").and_then(|v| v.as_u64());
+                                    actions = actions.child(
+                                        Button::new(("download-source", i))
+                                            .small()
+                                            .ghost()
+                                            .label(format!("{role} source"))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if let Some(row) = row {
+                                                    this.load_annotation(
+                                                        run.clone(),
+                                                        row as usize,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                } else {
+                                                    this.select_run(run.clone(), window, cx);
+                                                }
+                                            })),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if matches!(
                         record.record.text("Kind").as_str(),
                         "Memory URL" | "Memory search"
@@ -461,6 +543,32 @@ impl Workspace {
                     if browser {
                         content = content.child(self.render_browser_overview(&record.record, cx));
                         ordered.clear();
+                    }
+                    if downloads {
+                        let priority = [
+                            "Finding",
+                            "Website URL",
+                            "URL",
+                            "Filename",
+                            "Path",
+                            "PID",
+                            "Remote IP",
+                            "Remote port",
+                            "Download evidence",
+                            "Execution evidence",
+                            "Match basis",
+                            "Network evidence",
+                            "Interpretation",
+                            "CreateTime",
+                            "ExitTime",
+                            "Sources",
+                        ];
+                        ordered.sort_by_key(|(name, _)| {
+                            priority
+                                .iter()
+                                .position(|key| key == name)
+                                .unwrap_or(priority.len())
+                        });
                     }
                     if application {
                         let priority = [

@@ -2,6 +2,53 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn analyze_downloads(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure analysis engine in settings")?;
+            let case = self.case.as_ref().ok_or("Open a case first")?;
+            let mut draft = AnalysisDraft::new(evidence);
+            draft.selected.insert(analysis::DOWNLOADS.into());
+            draft.prepare_in_case(engine, evidence, case)
+        })();
+        match result {
+            Ok(runs) => {
+                let report = runs.last().map(|r| r.id.clone());
+                self.queue_investigation(runs, window, cx);
+                if let Some(report) = report {
+                    self.select_run(report, window, cx);
+                }
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn open_investigation_bytes(&mut self, offset: u64, cx: &mut Context<Self>) {
+        if let Some(evidence) = self.evidence() {
+            let path = evidence.path.clone();
+            self.open_hex_file(vec![path.clone()], path, offset, cx);
+        }
+    }
+
+    pub(super) fn investigate_pid_network(
+        &mut self,
+        pid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose_group(ArtifactGroup::Network, window, cx);
+        // Network's graph and sidebar share the same scoped records and search.
+        self.query.update(cx, |input, cx| {
+            input.set_value(format!("pid:{pid}"), window, cx)
+        });
+        self.start_query(cx);
+    }
     pub(super) fn load_network_bytes(&mut self, cx: &mut Context<Self>) {
         let target = self.case.as_ref().and_then(|case| {
             let record = self.selected.as_ref()?;

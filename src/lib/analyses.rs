@@ -36,6 +36,7 @@ fn is_recovery_analysis(plugin: &str) -> bool {
             | crate::analysis::APPLICATION
             | crate::analysis::NETWORK
             | crate::analysis::FILES
+            | crate::analysis::DOWNLOADS
     )
 }
 
@@ -99,6 +100,44 @@ pub fn prepare_application_recovery(
 pub const BROWSER_RECOVERY_PENDING: &str =
     "Waiting to prepare browser recovery after prerequisites";
 
+pub fn prepare_download_recovery(
+    case: &Case,
+    engine: &Installation,
+    run: &Run,
+) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let mut document = case.document.clone();
+    if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
+        document.runs.truncate(index);
+    }
+    let mut runs = if engine
+        .plugins
+        .iter()
+        .any(|p| p.id == crate::extracted_files::DUMP_FILES)
+    {
+        crate::analysis::browser_recovery_runs(
+            &case.directory,
+            &document,
+            evidence,
+            engine,
+            false,
+            &std::sync::atomic::AtomicBool::new(false),
+        )?
+    } else {
+        Vec::new()
+    };
+    runs.retain(|r| r.plugin != crate::analysis::BROWSER);
+    let mut report = run.clone();
+    report.message.clear();
+    runs.push(report);
+    Ok(runs)
+}
+
 /// Resolve a deferred browser job using results from the jobs ahead of it.
 pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -> Result<Vec<Run>> {
     let evidence = case
@@ -124,6 +163,7 @@ pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
         crate::analysis::NETWORK => "Network investigation and correlation",
+        crate::analysis::DOWNLOADS => "Download and execution investigation",
         crate::analysis::BROWSER => "Browser recovery and analysis",
         crate::analysis::APPLICATION => "Process Memory recovery and analysis",
         crate::analysis::FILES => "File and document recovery",
@@ -133,6 +173,8 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.pstree.PsTree" | "linux.pstree.PsTree" | "mac.pstree.PsTree" => "Process tree",
         "windows.psscan.PsScan" => "Process scan",
         "windows.cmdline.CmdLine" => "Command lines",
+        "windows.mftscan.ADS" => "Download origins and alternate data streams",
+        "windows.malware.psxview.PsXView" => "Cross-check hidden processes",
         "windows.netscan.NetScan"
         | "windows.netstat.NetStat"
         | "linux.sockstat.Sockstat"
@@ -163,6 +205,10 @@ pub const REGISTRY_ALL: &str = "windows.registry.AllSubkeys";
 pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
     let mut catalog = plugins.to_vec();
     catalog.extend([
+        Plugin {
+            id: crate::analysis::DOWNLOADS.into(),
+            description: crate::analysis::downloads::HELP.into(),
+        },
         Plugin {
             id: crate::analysis::FILES.into(),
             description: "Collect FileScan and file handles, then attempt recovery of each distinct file object. Prepare cached files for hex, text, SQLite inspection and export. Hide confirmed unavailable files with the Files toggle. Large captures can queue many extraction jobs. Optional --physical uses older FileScan physical offsets.".into(),
@@ -233,6 +279,9 @@ pub fn queue_retries_with_engine(
                 }
                 if previous.plugin == crate::analysis::FILES {
                     run.message = crate::analysis::files::PENDING.into();
+                }
+                if previous.plugin == crate::analysis::DOWNLOADS {
+                    run.message = crate::analysis::downloads::PENDING.into();
                 }
                 return Ok(run);
             }
@@ -346,10 +395,12 @@ impl AnalysisDraft {
         let application = ordinary.selected.remove(crate::analysis::APPLICATION);
         let network = ordinary.selected.remove(crate::analysis::NETWORK);
         let files = ordinary.selected.remove(crate::analysis::FILES);
+        let downloads = ordinary.selected.remove(crate::analysis::DOWNLOADS);
         let registry = ordinary.selected.remove(REGISTRY_ALL);
         for id in [
             crate::analysis::BROWSER,
             crate::analysis::NETWORK,
+            crate::analysis::DOWNLOADS,
             REGISTRY_ALL,
         ] {
             if self.selected.contains(id)
@@ -492,6 +543,35 @@ impl AnalysisDraft {
                 vec!["--recurse".into()],
                 &case.directory.join("analyses"),
             )?);
+        }
+        if downloads {
+            if self.os != OperatingSystem::Windows {
+                return Err("Download investigation requires Windows evidence".into());
+            }
+            for plugin in crate::analysis::downloads::SOURCES {
+                if engine.plugins.iter().any(|p| p.id == *plugin)
+                    && !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                        r.evidence_id == evidence.id
+                            && r.plugin == *plugin
+                            && r.arguments.is_empty()
+                            && matches!(
+                                r.status,
+                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            )
+                    })
+                {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            let mut report =
+                crate::analysis::prepare(evidence, crate::analysis::DOWNLOADS, vec![])?;
+            report.message = crate::analysis::downloads::PENDING.into();
+            runs.push(report);
         }
         if browser {
             if self.os != OperatingSystem::Windows {

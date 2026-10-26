@@ -8,6 +8,7 @@ impl Workspace {
             ArtifactGroup::Network => IconName::Network,
             ArtifactGroup::Files => IconName::Folder,
             ArtifactGroup::Web => IconName::Network,
+            ArtifactGroup::Downloads => IconName::Search,
             ArtifactGroup::Applications => IconName::Layers,
             ArtifactGroup::Strings => IconName::Search,
             ArtifactGroup::Registry => IconName::Database,
@@ -89,7 +90,10 @@ impl Workspace {
                 }));
             if matches!(
                 group,
-                ArtifactGroup::Web | ArtifactGroup::Applications | ArtifactGroup::Registry
+                ArtifactGroup::Downloads
+                    | ArtifactGroup::Web
+                    | ArtifactGroup::Applications
+                    | ArtifactGroup::Registry
             ) {
                 browser_registry = browser_registry.child(button);
             } else {
