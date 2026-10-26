@@ -107,6 +107,7 @@ impl Workspace {
         address: String,
         label: &'static str,
         id: usize,
+        can_switch: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self
@@ -138,23 +139,33 @@ impl Workspace {
             .shadow_sm()
             .child(
                 div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label),
+                    .flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(label),
+                    )
+                    .when(can_switch, |row| {
+                        row.child(
+                            app_button(("network-focus", id))
+                                .xsmall()
+                                .label("Switch IP")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.network_all_sources = false;
+                                    this.network_focus = Some(focus.clone());
+                                    this.network_scroll.set_offset(Point::default());
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
             .child(div().child(address))
-            .child(
-                app_button(("network-focus", id))
-                    .xsmall()
-                    .label("Switch IP")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.network_all_sources = false;
-                        this.network_focus = Some(focus.clone());
-                        this.network_scroll.set_offset(Point::default());
-                        cx.notify();
-                    })),
-            )
             .into_any_element()
     }
 
@@ -196,27 +207,37 @@ impl Workspace {
         } else {
             190.
         };
-        let filters = div().flex().flex_wrap().flex_1().min_w_0().items_center().gap_2()
+        let filters = div()
+            .flex()
+            .flex_wrap()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap_2()
             .child(self.network_filter_menu(true, cx))
             .child(self.network_filter_menu(false, cx))
-            .child(Checkbox::new("network-hide-system").label("Hide common system processes")
-                .checked(self.network_hide_system).on_change(cx.listener(|this, checked, _, cx| {
-                    this.network_hide_system = *checked;
-                    this.network_sidebar_page = 0;
-                    this.network_scroll.set_offset(Point::default());
-                    cx.notify();
-                })))
-            .child(Checkbox::new("network-hide-noise").label("Hide local / empty endpoints")
-                .checked(self.network_hide_noise).on_change(cx.listener(|this, checked, _, cx| {
-                    this.network_hide_noise = *checked;
-                    this.network_sidebar_page = 0;
-                    this.network_scroll.set_offset(Point::default());
-                    cx.notify();
-                })))
-            .child(app_button("network-interesting").small().label("Interesting Traffic")
-                .selected(self.network_interesting)
-                .tooltip("Recovered configurations and commands, SMB and remote administration connections. Recovers missing network findings from the saved inventories and acquisition.")
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_interesting_network(window, cx))));
+            .child(
+                Checkbox::new("network-hide-system")
+                    .label("Hide common system processes")
+                    .checked(self.network_hide_system)
+                    .on_change(cx.listener(|this, checked, _, cx| {
+                        this.network_hide_system = *checked;
+                        this.network_sidebar_page = 0;
+                        this.network_scroll.set_offset(Point::default());
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("network-hide-noise")
+                    .label("Hide local / empty endpoints")
+                    .checked(self.network_hide_noise)
+                    .on_change(cx.listener(|this, checked, _, cx| {
+                        this.network_hide_noise = *checked;
+                        this.network_sidebar_page = 0;
+                        this.network_scroll.set_offset(Point::default());
+                        cx.notify();
+                    })),
+            );
         let mut navigation = div()
             .flex()
             .items_center()
@@ -345,17 +366,36 @@ impl Workspace {
                     .flex_shrink_0()
                     .child(filters)
                     .child(
-                        app_button("network-investigate")
-                            .small()
-                            .label("Analyze network")
-                            .flex_shrink_0()
-                            .disabled(
-                                self.evidence().is_none()
-                                    || self.installation.is_none()
-                                    || self.is_working(),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Checkbox::new("network-interesting")
+                                    .label("Interesting traffic")
+                                    .checked(self.network_interesting)
+                                    .on_change(cx.listener(|this, _, window, cx| {
+                                        this.toggle_interesting_network(window, cx)
+                                    })),
                             )
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.analyze_network(window, cx)),
+                            .child(
+                                app_button("network-investigate")
+                                    .small()
+                                    .label("Analyze network")
+                                    .flex_shrink_0()
+                                    .disabled(
+                                        self.evidence().is_none()
+                                            || self.installation.is_none()
+                                            || self.is_working(),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_repeat_analysis(
+                                            volgui::analysis::NETWORK,
+                                            Self::analyze_network,
+                                            window,
+                                            cx,
+                                        )
+                                    })),
                             ),
                     ),
             )
@@ -489,6 +529,7 @@ impl Workspace {
                         "Text reference"
                     },
                     peer_index,
+                    true,
                     cx,
                 ),
             ));
@@ -616,6 +657,7 @@ impl Workspace {
                             "Focus IP"
                         },
                         usize::MAX - i,
+                        spans.len() > 1,
                         cx,
                     )),
             );
@@ -685,26 +727,34 @@ impl Workspace {
                     .flex_col()
                     .gap_1()
                     .child(
-                        div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
-                            endpoint
-                                .map(Selection::label)
-                                .unwrap_or_else(|| "Network evidence".into()),
-                        ),
+                        div()
+                            .flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                                    endpoint
+                                        .map(Selection::label)
+                                        .unwrap_or_else(|| "Network evidence".into()),
+                                ),
+                            )
+                            .child(
+                                app_button("network-all-entries")
+                                    .xsmall()
+                                    .label("Show all entries")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.network_endpoint = None;
+                                        this.network_sidebar_page = 0;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(
                         div()
                             .text_xs()
                             .child(format!("{} matching entries", entries.len())),
-                    )
-                    .child(
-                        app_button("network-all-entries")
-                            .xsmall()
-                            .label("Show all entries")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.network_endpoint = None;
-                                this.network_sidebar_page = 0;
-                                cx.notify();
-                            })),
                     ),
             );
         let mut cards = div()
@@ -801,15 +851,6 @@ impl Workspace {
                     | "not available"
             )
         };
-        for (label, value) in [
-            ("Created", entry.created.as_str()),
-            ("Protocol", entry.protocol.as_str()),
-            ("State", entry.state.as_str()),
-        ] {
-            if known(value) {
-                card = card.child(div().child(format!("{label}: {value}")));
-            }
-        }
         let endpoints = [&entry.local, &entry.remote]
             .into_iter()
             .flatten()
@@ -818,7 +859,39 @@ impl Workspace {
                 None => endpoint.label(),
             })
             .collect::<Vec<_>>();
-        if !endpoints.is_empty() {
+        let header = if known(&entry.protocol) {
+            format!("Protocol: {}", entry.protocol)
+        } else {
+            endpoints.join(" \u{2194} ")
+        };
+        card = card.child(
+            div()
+                .flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().flex_1().min_w_0().child(header))
+                .child(
+                    app_button(key("network-inspect", &id.to_string()))
+                        .xsmall()
+                        .label("Inspect record")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.detail = DetailTab::Overview;
+                            this.show_record((*source).clone(), window, cx);
+                        })),
+                ),
+        );
+        for (label, value) in [
+            ("Created", entry.created.as_str()),
+            ("State", entry.state.as_str()),
+        ] {
+            if known(value) {
+                card = card.child(div().child(format!("{label}: {value}")));
+            }
+        }
+        if known(&entry.protocol) && !endpoints.is_empty() {
             card = card.child(div().child(endpoints.join(" ↔ ")));
         }
         if entry.finding {
@@ -833,22 +906,8 @@ impl Workspace {
                 }
             }
         }
-        let mut actions = div()
-            .flex()
-            .flex_wrap()
-            .min_w_0()
-            .items_center()
-            .gap_2()
-            .child(
-                app_button(key("network-inspect", &id.to_string()))
-                    .xsmall()
-                    .label("Inspect record")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.detail = DetailTab::Overview;
-                        this.show_record((*source).clone(), window, cx);
-                    })),
-            );
+        let mut actions = div().flex().flex_wrap().min_w_0().items_center().gap_2();
+
         if known(&pid) {
             actions = actions.child(
                 app_button(key("network-process", &id.to_string()))

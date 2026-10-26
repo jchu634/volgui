@@ -2,6 +2,41 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn confirm_repeat_analysis(
+        &mut self,
+        plugin: &str,
+        action: fn(&mut Self, &mut Window, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let completed = self.case.as_ref().is_some_and(|case| {
+            case.document.runs.iter().any(|run| {
+                Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                    && run.plugin == plugin
+                    && run.status == RunStatus::Completed
+            })
+        });
+        if !completed {
+            action(self, window, cx);
+            return;
+        }
+        let workspace = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let workspace = workspace.clone();
+            dialog.width(px(460.))
+                .title(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Redo analysis?"))
+                .child(div().text_xs().child("This analysis has already completed successfully for the selected evidence. Run it again?"))
+                .footer(div().flex().w_full().justify_end().gap_2()
+                    .child(app_button("cancel-repeat-analysis").small().label("Cancel")
+                        .on_click(|_, window, cx| window.close_dialog(cx)))
+                    .child(app_button("confirm-repeat-analysis").small().primary().label("Redo analysis")
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let _ = workspace.update(cx, |this, cx| action(this, window, cx));
+                        })))
+        });
+    }
+
     pub(super) fn refresh_passive_quarantine(&mut self) {
         let Some(case) = &self.case else { return };
         self.passive_quarantine_epoch += 1;

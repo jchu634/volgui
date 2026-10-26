@@ -1,6 +1,18 @@
 // Renders the window frame, navigation, and active view.
 use super::*;
 
+fn titlebar_logo() -> Arc<Image> {
+    static LOGO: std::sync::OnceLock<Arc<Image>> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            // Original PNG embedded in logo_dark.svg, preserved without recoloring.
+            include_bytes!("../../assets/logo-dark.png").to_vec(),
+        ))
+    })
+    .clone()
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.case.is_none() && !self.welcome_open {
@@ -25,11 +37,7 @@ impl Render for Workspace {
                 .flex_1()
                 .items_center()
                 .gap_3()
-                .child(
-                    div()
-                        .text_color(rgb(0xd96b87))
-                        .child(Icon::new(IconName::Shield).size_4()),
-                )
+                .child(img(titlebar_logo()).size_5().flex_shrink_0())
                 .child(
                     div()
                         .text_sm()
