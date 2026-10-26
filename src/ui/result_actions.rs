@@ -106,11 +106,11 @@ impl Workspace {
         } else if run.plugin == volgui::analysis::QUARANTINE {
             ArtifactGroup::Quarantine.label().into()
         } else {
-            run.plugin
+            run.plugin.clone()
         };
         self.set_scope(vec![id], label, window, cx);
         if open_memory {
-            self.open_application_dump(cx);
+            self.open_application_dump(&run, cx);
         }
     }
     pub(super) fn set_scope(

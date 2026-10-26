@@ -192,20 +192,9 @@ impl Workspace {
             }
         }
     }
-    pub(super) fn open_application_dump(&mut self, cx: &mut Context<Self>) {
-        let pid = self.application_pid.read(cx).value().trim().to_string();
+    pub(super) fn open_application_dump(&mut self, run: &Run, cx: &mut Context<Self>) {
         let source = self.case.as_ref().and_then(|case| {
-            case.document
-                .runs
-                .iter()
-                .rev()
-                .find(|run| {
-                    Some(&run.evidence_id) == self.selected_evidence.as_ref()
-                        && run.plugin == analysis::application::MEMMAP
-                        && run.status == RunStatus::Completed
-                        && run.arguments == ["--pid".to_string(), pid.clone(), "--dump".to_string()]
-                })
-                .map(|run| case.run_dir(&run.id).join(format!("pid.{pid}.dmp")))
+            analysis::application::dump_path(&case.directory, &case.document, run)
         });
         if let Some(path) = source {
             self.open_hex_file(vec![path.clone()], path, 0, cx);
