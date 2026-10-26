@@ -290,8 +290,8 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(title)
-            .when(self.welcome_open && cfg!(target_os = "windows"), |s| {
-                s.child(self.render_modal_window_controls(window, cx))
+            .when(cfg!(target_os = "windows"), |s| {
+                s.child(self.render_window_controls(window, cx))
             })
             .child(body)
             .child(status)

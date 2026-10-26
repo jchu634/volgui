@@ -2,10 +2,35 @@
 use super::*;
 use gpui_kit::component::dialog::DialogButtonProps;
 
+fn toggle_window_maximized(window: &Window) {
+    #[cfg(target_os = "windows")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SW_MAXIMIZE, SW_RESTORE, ShowWindowAsync,
+        };
+
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            let command = if window.is_maximized() {
+                SW_RESTORE
+            } else {
+                SW_MAXIMIZE
+            };
+            // The handle belongs to this live GPUI window.
+            unsafe { ShowWindowAsync(handle.hwnd.get() as _, command) };
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    window.zoom_window();
+}
+
 impl Workspace {
     // The modal backdrop covers the title bar's native hit-test regions.
-    // Paint only the window controls above it, leaving application controls modal.
-    pub(in crate::ui) fn render_modal_window_controls(
+    // Always paint the window controls above dialogs, including those opened
+    // without a workspace redraw. Application controls remain behind the backdrop.
+    pub(in crate::ui) fn render_window_controls(
         &self,
         window: &Window,
         cx: &App,
@@ -61,7 +86,21 @@ impl Workspace {
                                     style.bg(cx.theme().secondary_hover)
                                 }
                             })
-                            .window_control_area(area)
+                            // Dialogs consume events before GPUI's native window
+                            // control handling, so handle every control directly.
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            })
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                match area {
+                                    WindowControlArea::Min => window.minimize_window(),
+                                    WindowControlArea::Max => toggle_window_maximized(window),
+                                    WindowControlArea::Close => window.remove_window(),
+                                    _ => {}
+                                }
+                            })
                             .child(Icon::new(icon).small())
                     }),
                 ),
