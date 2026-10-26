@@ -1,4 +1,5 @@
 //! Recover URL strings from PID-scoped dumps without treating them as visits.
+use super::super::process_memory::DumpScope;
 use super::super::{BROWSER, browser, record};
 use crate::{
     artifacts::OperatingSystem,
@@ -172,11 +173,16 @@ pub fn recovery_runs(
         .filter(|p| !matches!(p.role, "GPU" | "Utility" | "Helper"))
     {
         cancelled(cancel)?;
-        let arguments = vec!["--pid".into(), process.pid.to_string(), "--dump".into()];
+        let arguments = if engine.user_memory_dumps {
+            DumpScope::User
+        } else {
+            DumpScope::Full
+        }
+        .arguments(process.pid);
         if document.runs.iter().any(|r| {
             r.evidence_id == evidence.id
                 && r.plugin == MEMMAP
-                && r.arguments == arguments
+                && DumpScope::from_arguments(&r.arguments, process.pid).is_some()
                 && (matches!(r.status, RunStatus::Queued | RunStatus::Running)
                     || r.status == RunStatus::Completed
                         && crate::object_store::exists(
@@ -365,6 +371,9 @@ pub(in crate::analysis) fn analyze(
         else {
             continue;
         };
+        let Some(scope) = DumpScope::from_arguments(&source.arguments, pid) else {
+            continue;
+        };
         let Some(process) = processes.get(&pid) else {
             warnings.push(format!("PID {pid}: skipped process dump because no supported browser identity is available in the current process inventory. Collect browser processes and analyze again."));
             continue;
@@ -387,8 +396,12 @@ pub(in crate::analysis) fn analyze(
                 }
             };
             let total = file.metadata().map_err(|e| e.to_string())?.len();
-            let (map, rejected) =
-                regions(Table::read(&output.join("stdout.json"))?, &filename, total)?;
+            let (map, rejected) = regions(
+                Table::read(&output.join("stdout.json"))?,
+                &filename,
+                total,
+                scope,
+            )?;
             let (hits, limited) = scan(&mut file, &map, cancel, progress)?;
             Ok((hits, limited, rejected))
         })();
@@ -505,15 +518,16 @@ mod tests {
     #[test]
     fn mapping_rejects_missing_pages_and_coalesces_virtual_neighbors() {
         let table = Table::parse(r#"[{"File output":"pid.42.dmp","Offset in File":0,"Virtual":4096,"Size":4096},{"File output":"pid.42.dmp","Offset in File":4096,"Virtual":8192,"Size":4096}]"#).unwrap();
-        let (merged, rejected) = regions(table.clone(), "pid.42.dmp", 8192).unwrap();
+        let (merged, rejected) =
+            regions(table.clone(), "pid.42.dmp", 8192, DumpScope::Full).unwrap();
         assert_eq!(rejected, 0);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].length, 8192);
-        let (partial, rejected) = regions(table, "pid.42.dmp", 4096).unwrap();
+        let (partial, rejected) = regions(table, "pid.42.dmp", 4096, DumpScope::Full).unwrap();
         assert_eq!(partial.len(), 1);
         assert_eq!(rejected, 1);
         let table = Table::parse(r#"[{"File output":"pid.42.dmp","Offset in File":0,"Virtual":4096,"Size":4096},{"File output":"pid.42.dmp","Offset in File":4096,"Virtual":200680602931200,"Size":4096}]"#).unwrap();
-        let (user, rejected) = regions(table, "pid.42.dmp", 8192).unwrap();
+        let (user, rejected) = regions(table, "pid.42.dmp", 8192, DumpScope::Full).unwrap();
         assert_eq!(rejected, 0);
         assert_eq!(
             user.len(),
@@ -523,7 +537,10 @@ mod tests {
         assert_eq!(user[0].length, 4096);
         let table = Table::parse(r#"[{"File output":"pid.42.dmp","Offset in File":0,"Virtual":4096,"Size":4096},{"File output":"pid.42.dmp","Offset in File":4096,"Virtual":2147483648,"Size":4096}]"#).unwrap();
         assert_eq!(
-            regions(table, "pid.42.dmp", 8192).unwrap().0.len(),
+            regions(table, "pid.42.dmp", 8192, DumpScope::Full)
+                .unwrap()
+                .0
+                .len(),
             1,
             "32-bit kernel mappings must also be excluded"
         );

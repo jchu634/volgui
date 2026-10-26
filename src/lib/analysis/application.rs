@@ -3,7 +3,7 @@
 //! These are carved strings, not a version-specific reconstruction of editor tabs.
 use super::{
     APPLICATION, prepare,
-    process_memory::{Region, number, regions},
+    process_memory::{DumpScope, Region, number, regions},
     record,
 };
 use crate::{
@@ -199,14 +199,23 @@ pub fn recovery_runs(
             (VADINFO, vec!["--pid".into(), pid.to_string()]),
             (
                 MEMMAP,
-                vec!["--pid".into(), pid.to_string(), "--dump".into()],
+                if engine.user_memory_dumps {
+                    DumpScope::User
+                } else {
+                    DumpScope::Full
+                }
+                .arguments(*pid),
             ),
         ] {
             cancelled(cancel)?;
             let reusable = document.runs.iter().rev().find(|r| {
                 r.evidence_id == evidence.id
                     && r.plugin == plugin
-                    && r.arguments == args
+                    && (if plugin == MEMMAP {
+                        DumpScope::from_arguments(&r.arguments, *pid).is_some()
+                    } else {
+                        r.arguments == args
+                    })
                     && r.status == RunStatus::Completed
                     && (plugin != MEMMAP
                         || crate::object_store::exists(
@@ -310,6 +319,7 @@ fn metadata_table(directory: &Path, source: &Run, cancel: &AtomicBool) -> Result
                 matches!(
                     key.as_str(),
                     "File output"
+                        | "User address limit"
                         | "Offset in File"
                         | "Virtual"
                         | "Size"
@@ -683,11 +693,10 @@ pub(super) fn analyze(
         if !processes.contains_key(&pid) || !matches!(r.plugin.as_str(), MEMMAP | VADINFO) {
             return Err("Application source does not match the selected processes".into());
         }
-        let mut expected = vec!["--pid".to_string(), pid.to_string()];
-        if r.plugin == MEMMAP {
-            expected.push("--dump".into());
-        }
-        if r.arguments != expected {
+        let expected = vec!["--pid".to_string(), pid.to_string()];
+        if (r.plugin == MEMMAP && DumpScope::from_arguments(&r.arguments, pid).is_none())
+            || (r.plugin == VADINFO && r.arguments != expected)
+        {
             return Err("Application source has unexpected collection filters".into());
         }
         if sources.insert((pid, r.plugin.as_str()), r).is_some() {
@@ -722,6 +731,8 @@ pub(super) fn analyze(
                 metadata_table(directory, map, cancel)?,
                 &format!("pid.{pid}.dmp"),
                 total,
+                DumpScope::from_arguments(&map.arguments, pid)
+                    .ok_or("Application dump has unexpected collection filters")?,
             )?;
             if rejected > 0 {
                 warnings.push(format!(

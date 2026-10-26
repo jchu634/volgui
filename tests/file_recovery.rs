@@ -26,6 +26,7 @@ fn fixture(rows: serde_json::Value) -> (tempfile::TempDir, Case, Installation, S
         case.add_evidence(evidence).unwrap();
     }
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: files::SOURCES
@@ -253,17 +254,14 @@ fn recovery_choice_collects_prerequisites_once_and_waits_to_expand() {
         [files::SOURCES[0], files::SOURCES[1], analysis::FILES]
     );
     assert_eq!(runs[2].message, files::PENDING);
-    assert_eq!(
-        analyses::basic_label(analysis::FILES),
-        Some("File and document recovery")
-    );
+    assert_eq!(analyses::basic_label(analysis::FILES), None);
     assert_eq!(
         ArtifactGroup::for_plugin(analysis::FILES),
         ArtifactGroup::Files
     );
     let catalog = analyses::application_plugins(&engine.plugins);
     assert!(
-        analyses::chooser_plugins(&catalog, OperatingSystem::Windows, false, "document")
+        analyses::chooser_plugins(&catalog, OperatingSystem::Windows, true, "document")
             .iter()
             .any(|p| p.id == analysis::FILES)
     );

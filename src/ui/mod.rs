@@ -181,13 +181,18 @@ pub struct Workspace {
     index: ResultIndex,
     result_tree: ResultTree,
     network: volgui::network::Graph,
+    network_table: Entity<TableState<components::network_data_table::NetworkTable>>,
+    network_table_view: bool,
+    network_hide_system: bool,
+    network_hide_noise: bool,
     network_cache: RefCell<views::network::NetworkViewCache>,
     network_loading: bool,
     network_focus: Option<String>,
     network_endpoint: Option<volgui::network::Selection>,
     network_protocol: Option<String>,
     network_state: Option<String>,
-    network_page: usize,
+    network_interesting: bool,
+    network_all_sources: bool,
     network_sidebar_page: usize,
     network_scroll: ScrollHandle,
     network_sidebar_scroll: ScrollHandle,
@@ -359,6 +364,18 @@ impl Workspace {
             .loop_selection(false)
             .select_on_modifier_click(false)
         });
+        let network_table = cx.new(|cx| {
+            TableState::new(
+                components::network_data_table::NetworkTable::new(workspace.clone()),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_header(false)
+            .loop_selection(false)
+            .select_on_modifier_click(false)
+        });
         let analysis_table = cx.new(|cx| {
             TableState::new(
                 components::analysis_data_table::AnalysisTable::new(workspace.clone()),
@@ -382,6 +399,18 @@ impl Workspace {
             .row_header(false)
         });
         let subscriptions = vec![
+            cx.subscribe(&network_table, |this, table, event: &TableEvent, cx| {
+                if let TableEvent::SelectRow(row) = event
+                    && let Some(id) = table
+                        .read(cx)
+                        .delegate()
+                        .record_id(*row, &this.network.entries)
+                    && this.selected.as_ref().is_none_or(|record| record.id != id)
+                {
+                    this.detail = DetailTab::Overview;
+                    this.load_record(id, cx);
+                }
+            }),
             cx.subscribe(
                 &result_table,
                 |this, _, event: &TableEvent, cx| match event {
@@ -404,6 +433,10 @@ impl Workspace {
             ),
             cx.subscribe(&query, |this, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
+                    if this.result_group() == Some(ArtifactGroup::Network) {
+                        this.network_scroll.set_offset(Point::default());
+                        this.network_sidebar_page = 0;
+                    }
                     this.query_due = Some(Instant::now() + Duration::from_millis(180));
                     cx.notify();
                 }
@@ -468,13 +501,18 @@ impl Workspace {
             index: ResultIndex::default(),
             result_tree: ResultTree::default(),
             network: volgui::network::Graph::default(),
+            network_table,
+            network_table_view: false,
+            network_hide_system: true,
+            network_hide_noise: true,
             network_cache: RefCell::default(),
             network_loading: false,
             network_focus: None,
             network_endpoint: None,
             network_protocol: None,
             network_state: None,
-            network_page: 0,
+            network_interesting: false,
+            network_all_sources: false,
             network_sidebar_page: 0,
             network_scroll: ScrollHandle::default(),
             network_sidebar_scroll: ScrollHandle::default(),
@@ -851,8 +889,21 @@ impl Workspace {
                                 }
                             }
                         }
-                    } else if self.scope.is_empty() || self.scope.contains(&id) {
-                        self.select_run(id.clone(), window, cx);
+                    } else if self.result_group() == Some(ArtifactGroup::Network)
+                        && self.scope_label == ArtifactGroup::Network.label()
+                        && self.case.as_ref().is_some_and(|case| {
+                            case.document.runs.iter().any(|run| {
+                                run.id == id
+                                    && Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                                    && ArtifactGroup::for_plugin(&run.plugin)
+                                        == ArtifactGroup::Network
+                            })
+                        })
+                    {
+                        self.scope = self.group_runs(ArtifactGroup::Network);
+                        self.start_query(cx);
+                    } else if self.scope.contains(&id) {
+                        self.start_query(cx);
                     } else if self.result_group() == Some(ArtifactGroup::Processes)
                         && self.case.as_ref().is_some_and(|case| {
                             case.document.runs.iter().any(|run| {
@@ -1046,6 +1097,12 @@ impl Workspace {
                             }
                             self.view = View::Workspace;
                             if !self.scope.contains(&r.run_id)
+                                && !(self.result_group() == Some(ArtifactGroup::Network)
+                                    && self
+                                        .network
+                                        .entries
+                                        .iter()
+                                        .any(|entry| entry.source.id == r.id))
                                 && !self
                                     .result_tree
                                     .nodes

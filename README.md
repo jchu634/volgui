@@ -6,7 +6,7 @@ VolGUI runs a separately installed Volatility 3 or vol-rs engine and stores anal
 
 ## Documentation
 
-**Download investigation** connects download origins with execution candidates and remote sockets. Choose **New analysis > Download and execution investigation**, then open **Download investigation**. Search a website or filename, select a finding, and follow its source records or bytes. **Connection leads** shows explicit connection commands and validated legacy Meterpreter TCP configurations when socket ownership is unavailable. The report keeps filename matches, residual process candidates, configured endpoints and observed sockets distinct. See [the investigation flow](docs/investigation.md#download-investigation).
+**Download investigation** connects download origins with execution candidates and remote sockets. Choose **New analysis > Download and execution investigation**, then open **Download investigation**. Search a website or filename, select a finding, and follow its source records or bytes. The report keeps filename matches, residual process candidates and observed sockets distinct. Meterpreter TCP configurations belong to **Network**, where **Interesting Traffic** shows recovered findings, SMB and remote administration connections, recovering missing network findings when needed. Network also offers common-system-process and local/empty-endpoint filters, plus graph and sortable table views. See [the investigation flow](docs/investigation.md#download-investigation).
 
 - [Building and running](docs/building.md)
 - [Validation](docs/validation.md)

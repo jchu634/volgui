@@ -311,14 +311,8 @@ impl Workspace {
             .p_3()
             .size_full();
         if self.result_group() == Some(ArtifactGroup::Network) {
-            let has_bytes = record.is_some_and(|r| {
-                r.record.text("Source type") == "Residual memory string"
-                    && r.record
-                        .fields
-                        .get("Offset")
-                        .and_then(|v| v.as_u64())
-                        .is_some()
-            });
+            let has_bytes =
+                record.is_some_and(|r| volgui::network::source_offset(&r.record).is_some());
             tabs = tabs.child(
                 Button::new("network-source-bytes")
                     .small()

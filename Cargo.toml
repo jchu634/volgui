@@ -46,6 +46,17 @@ opt-level = 3
 [profile.dev.package.memchr]
 opt-level = 3
 
+[profile.dev.package.lz4_flex]
+opt-level = 3
+
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# Compression and result processing instantiate hot generic code in this crate.
+# Keep it optimized during interactive development without optimizing GPUI's build.
+[profile.dev.package.volgui]
+opt-level = 2
+
 [patch.crates-io]
 # Propagate destroyed-window errors from Windows accessibility callbacks.
 accesskit_windows = { path = "vendor/accesskit_windows" }

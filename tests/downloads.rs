@@ -229,6 +229,7 @@ fn chooser_collects_prerequisites_reuses_successes_and_expands_a_single_report_b
     let (_temp, mut case) = fixture();
     save(&mut case, 0, "windows.pslist.PsList", json!([]));
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "Fixture".into(),
         plugins: downloads::SOURCES

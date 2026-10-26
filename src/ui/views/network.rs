@@ -1,14 +1,13 @@
 use super::*;
 use volgui::network::{Endpoint, Entry, Filter, Overview, Selection, service};
 
-const PEERS_PER_PAGE: usize = 6;
 const ENTRIES_PER_PAGE: usize = 40;
 const PORTS_PER_PEER: usize = 12;
 
 #[derive(Default)]
 pub(in crate::ui) struct NetworkViewCache {
     overview: Option<(Filter, Overview)>,
-    sidebar: Option<(Option<Selection>, Vec<usize>)>,
+    sidebar: Option<(Filter, Option<Selection>, Vec<usize>)>,
 }
 
 impl Workspace {
@@ -48,7 +47,8 @@ impl Workspace {
                     } else {
                         this.network_state = None;
                     }
-                    this.network_page = 0;
+                    this.network_scroll.set_offset(Point::default());
+                    this.network_sidebar_page = 0;
                     cx.notify();
                 });
             }));
@@ -62,7 +62,8 @@ impl Workspace {
                         } else {
                             this.network_state = Some(value.clone());
                         }
-                        this.network_page = 0;
+                        this.network_scroll.set_offset(Point::default());
+                        this.network_sidebar_page = 0;
                         cx.notify();
                     });
                 }));
@@ -151,108 +152,30 @@ impl Workspace {
                     .label("Switch IP")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
+                        this.network_all_sources = false;
                         this.network_focus = Some(focus.clone());
-                        this.network_page = 0;
+                        this.network_scroll.set_offset(Point::default());
                         cx.notify();
                     })),
             )
             .into_any_element()
     }
 
-    pub(in crate::ui) fn render_network(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut root = div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .min_h_0()
-            .min_w_0()
-            .overflow_hidden()
-            .child(self.render_results_toolbar(cx));
-        let focus = self.network_focus.clone();
-        let weak = cx.entity().downgrade();
-        let addresses: Vec<_> = self.network.addresses.keys().cloned().collect();
-        let current = focus
-            .as_ref()
-            .and_then(|s| addresses.iter().position(|ip| ip == s))
-            .unwrap_or(0);
-        let mut controls = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .child(self.network_filter_menu(true, cx))
-            .child(self.network_filter_menu(false, cx))
-            .child(
-                Button::new("network-focus-picker")
-                    .small()
-                    .ghost()
-                    .dropdown_caret(true)
-                    .label(focus.clone().unwrap_or_else(|| "Choose IP".into()))
-                    .dropdown_menu(move |mut menu, _, _| {
-                        // Focus is also reachable for every node by the previous/next IP controls.
-                        for ip in addresses.iter().skip(current.saturating_sub(30)).take(61) {
-                            let ip = ip.clone();
-                            let weak = weak.clone();
-                            menu = menu.item(PopupMenuItem::new(ip.clone()).on_click(
-                                move |_, _, cx| {
-                                    let _ = weak.update(cx, |this, cx| {
-                                        this.network_focus = Some(ip.clone());
-                                        this.network_page = 0;
-                                        cx.notify();
-                                    });
-                                },
-                            ));
-                        }
-                        menu
-                    }),
-            );
-        for (id, label, forward) in [
-            ("network-prev-ip", "Previous IP", false),
-            ("network-next-ip", "Next IP", true),
-        ] {
-            controls = controls.child(
-                Button::new(id)
-                    .xsmall()
-                    .ghost()
-                    .label(label)
-                    .disabled(self.network.addresses.is_empty())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let ips: Vec<_> = this.network.addresses.keys().cloned().collect();
-                        let at = this
-                            .network_focus
-                            .as_ref()
-                            .and_then(|ip| ips.iter().position(|v| v == ip))
-                            .unwrap_or(0);
-                        let next = if forward {
-                            (at + 1) % ips.len()
-                        } else {
-                            (at + ips.len() - 1) % ips.len()
-                        };
-                        this.network_focus = ips.get(next).cloned();
-                        this.network_page = 0;
-                        cx.notify();
-                    })),
-            );
-        }
-        controls = controls.child(
-            Button::new("network-investigate")
-                .small()
-                .label("Analyze network")
-                .disabled(
-                    self.evidence().is_none() || self.installation.is_none() || self.is_working(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.analyze_network(window, cx))),
-        );
-        root = root.child(controls);
-
-        let filter = Filter {
-            focus: focus.clone(),
+    fn network_filter(&self, cx: &App) -> Filter {
+        Filter {
+            focus: self.network_focus.clone(),
             text: self.query.read(cx).value().to_ascii_lowercase(),
             protocol: self.network_protocol.clone(),
             state: self.network_state.clone(),
-        };
+            hide_system: self.network_hide_system,
+            hide_noise: self.network_hide_noise,
+            interesting_only: self.network_interesting,
+            all_sources: self.network_all_sources,
+        }
+    }
+
+    pub(in crate::ui) fn render_network(&self, cx: &mut Context<Self>) -> AnyElement {
+        let filter = self.network_filter(cx);
         let mut cache = self.network_cache.borrow_mut();
         if cache
             .overview
@@ -266,46 +189,319 @@ impl Workspace {
             .as_ref()
             .expect("network overview initialized")
             .1;
-        let peers = &overview.peers;
-        let references = &overview.references;
-        let visible_entries = overview.matching;
-        let page = self
-            .network_page
-            .min(peers.len().saturating_sub(1) / PEERS_PER_PAGE);
-        let mut graph = div().relative().w(px(800.)).min_h(px(340.));
-        let page_peers: Vec<_> = peers
+        let focus = overview.focus.clone();
+        let addresses: Vec<_> = overview.addresses.iter().cloned().collect();
+        let all_sources = self.network_all_sources;
+        let selected_ip = focus.clone();
+        let weak = cx.entity().downgrade();
+        let picker_width = if !all_sources && focus.as_ref().is_some_and(|ip| ip.contains(':')) {
+            390.
+        } else {
+            190.
+        };
+        let filters = div().flex().flex_wrap().flex_1().min_w_0().items_center().gap_2()
+            .child(self.network_filter_menu(true, cx))
+            .child(self.network_filter_menu(false, cx))
+            .child(Checkbox::new("network-hide-system").label("Hide common system processes")
+                .checked(self.network_hide_system).on_change(cx.listener(|this, checked, _, cx| {
+                    this.network_hide_system = *checked;
+                    this.network_sidebar_page = 0;
+                    this.network_scroll.set_offset(Point::default());
+                    cx.notify();
+                })))
+            .child(Checkbox::new("network-hide-noise").label("Hide local / empty endpoints")
+                .checked(self.network_hide_noise).on_change(cx.listener(|this, checked, _, cx| {
+                    this.network_hide_noise = *checked;
+                    this.network_sidebar_page = 0;
+                    this.network_scroll.set_offset(Point::default());
+                    cx.notify();
+                })))
+            .child(Button::new("network-interesting").small().ghost().label("Interesting Traffic")
+                .selected(self.network_interesting)
+                .tooltip("Recovered configurations and commands, SMB and remote administration connections. Recovers missing network findings from the saved inventories and acquisition.")
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_interesting_network(window, cx))));
+        let mut navigation = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .flex_shrink_0();
+        for (id, label, table) in [
+            ("network-graph-view", "Graph", false),
+            ("network-table-view", "Table", true),
+        ] {
+            navigation = navigation.child(
+                Button::new(id)
+                    .small()
+                    .ghost()
+                    .label(label)
+                    .selected(self.network_table_view == table)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.network_table_view = table;
+                        cx.notify();
+                    })),
+            );
+        }
+        if !self.network_table_view {
+            let previous = volgui::network::adjacent_address(&addresses, focus.as_deref(), false);
+            let next = volgui::network::adjacent_address(&addresses, focus.as_deref(), true);
+            navigation = navigation.child(
+                Button::new("network-focus-picker")
+                    .small()
+                    .ghost()
+                    .dropdown_caret(true)
+                    .w(px(picker_width))
+                    .flex_shrink_0()
+                    .label(if all_sources {
+                        "All source IPs".into()
+                    } else {
+                        focus.unwrap_or_else(|| "Choose IP".into())
+                    })
+                    .dropdown_menu(move |mut menu, _, _| {
+                        menu = menu.scrollable(true).max_h(px(400.));
+                        let weak_all = weak.clone();
+                        menu = menu
+                            .item(
+                                PopupMenuItem::new("All source IPs")
+                                    .checked(all_sources)
+                                    .on_click(move |_, _, cx| {
+                                        let _ = weak_all.update(cx, |this, cx| {
+                                            this.network_all_sources = true;
+                                            this.network_scroll.set_offset(Point::default());
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .separator();
+                        for ip in &addresses {
+                            let ip = ip.clone();
+                            let weak = weak.clone();
+                            let selected = !all_sources && selected_ip.as_ref() == Some(&ip);
+                            let item = if selected {
+                                let label = ip.clone();
+                                PopupMenuItem::element(move |_, cx| {
+                                    div()
+                                        .w_full()
+                                        .rounded_md()
+                                        .px_2()
+                                        .py_1()
+                                        .bg(cx.theme().primary.opacity(0.2))
+                                        .text_color(cx.theme().primary)
+                                        .child(label.clone())
+                                })
+                            } else {
+                                PopupMenuItem::new(ip.clone())
+                            };
+                            menu = menu.item(item.checked(selected).on_click(move |_, _, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.network_focus = Some(ip.clone());
+                                    this.network_all_sources = false;
+                                    this.network_scroll.set_offset(Point::default());
+                                    cx.notify();
+                                });
+                            }));
+                        }
+                        menu
+                    }),
+            );
+            for (id, label, target) in [
+                ("network-prev-ip", "Previous IP", previous),
+                ("network-next-ip", "Next IP", next),
+            ] {
+                navigation = navigation.child(
+                    Button::new(id)
+                        .small()
+                        .ghost()
+                        .label(label)
+                        .disabled(all_sources || target.is_none())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(ip) = &target {
+                                this.network_focus = Some(ip.clone());
+                                this.network_all_sources = false;
+                                this.network_scroll.set_offset(Point::default());
+                                cx.notify();
+                            }
+                        })),
+                );
+            }
+        }
+        let recovering = self.case.as_ref().and_then(|case| {
+            case.document.runs.iter().rev().find(|run| {
+                Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                    && run.plugin == volgui::analysis::NETWORK
+                    && matches!(run.status, RunStatus::Queued | RunStatus::Running)
+            })
+        });
+        let mut root = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(self.render_results_toolbar(cx))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .flex_shrink_0()
+                    .child(filters)
+                    .child(
+                        Button::new("network-investigate")
+                            .small()
+                            .label("Analyze network")
+                            .flex_shrink_0()
+                            .disabled(
+                                self.evidence().is_none()
+                                    || self.installation.is_none()
+                                    || self.is_working(),
+                            )
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.analyze_network(window, cx)),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("network-navigation")
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .overflow_x_scroll()
+                    .px_3()
+                    .py_1()
+                    .child(navigation),
+            );
+        if let Some(run) = recovering {
+            root = root.child(div().px_3().py_1().text_xs().child(format!("Network evidence recovery {}. Configuration and command findings will appear here when it finishes.", run.status.label().to_lowercase())));
+        }
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(div().px_3().py_1().text_xs().flex_shrink_0().child(format!(
+                "{} IPs · {} of {} entries · {} peers · {} unplotted",
+                overview.addresses.len(),
+                overview.matching,
+                self.network.entries.len(),
+                overview.peers.len(),
+                self.network.unplotted
+            )));
+        if self.network_loading {
+            body = body.child(div().p_4().child("Loading network entries..."));
+        } else if self.network_table_view {
+            self.sync_network_table(overview.indices.clone(), cx);
+            body = body.child(
+                div()
+                    .id("network-table")
+                    .aria_label("Network connection table")
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .p_2()
+                    .child(
+                        DataTable::new(&self.network_table)
+                            .small()
+                            .header_row_height(px(32.)),
+                    ),
+            );
+        } else if overview.matching == 0 {
+            body = body.child(div().p_4().child("No network entries match these filters. Clear the search or turn off filters to see more entries."));
+        } else {
+            body = body.child(self.render_network_canvas(overview, cx));
+        }
+        drop(cache);
+        let content = if self.content_sidebar_visible {
+            h_resizable("network-endpoint-split")
+                .child(
+                    resizable_panel()
+                        .size_range(px(280.)..Pixels::MAX)
+                        .child(body),
+                )
+                .child(
+                    resizable_panel()
+                        .size(px(365.))
+                        .size_range(px(280.)..px(800.))
+                        .flex_none()
+                        .fixed()
+                        .child(self.render_network_sidebar(cx)),
+                )
+                .into_any_element()
+        } else {
+            body.into_any_element()
+        };
+        root.child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_hidden()
+                .child(content),
+        )
+        .into_any_element()
+    }
+
+    fn render_network_canvas(&self, overview: &Overview, cx: &mut Context<Self>) -> AnyElement {
+        // Lay out every peer, but instantiate controls only around the visible viewport.
+        let top = -f32::from(self.network_scroll.offset().y);
+        let viewport_height = f32::from(self.network_scroll.bounds().size.height).max(600.);
+        let visible = (top - 200.)..(top + viewport_height + 200.);
+        let mut layout = Vec::new();
+        let mut spans = std::collections::BTreeMap::<String, (f32, f32)>::new();
+        let mut y = 20.;
+        for (key, links) in &overview.peers {
+            let height = if key.0.is_none() {
+                160.
+            } else {
+                (links.len().clamp(1, PORTS_PER_PEER) as f32 * 34. + 48.).max(160.)
+            };
+            if let Some(source) = &key.0 {
+                spans
+                    .entry(source.clone())
+                    .and_modify(|span| span.1 = y + height)
+                    .or_insert((y, y + height));
+            }
+            layout.push((key, links, y, height));
+            y += height;
+        }
+        let height = (y + 30.).max(340.);
+        let hubs: std::collections::BTreeMap<_, _> = spans
             .iter()
-            .skip(page * PEERS_PER_PAGE)
-            .take(PEERS_PER_PAGE)
+            .map(|(source, (start, end))| (source, (top + 140.).clamp(start + 70., end - 70.)))
             .collect();
-        let heights: Vec<_> = page_peers
-            .iter()
-            .map(|(_, links)| (links.len().clamp(1, PORTS_PER_PEER) as f32 * 34. + 48.).max(120.))
-            .collect();
-        let height = heights.iter().sum::<f32>().max(340.) + 30.;
-        let hub_y = 140.;
-        graph = graph.h(px(height));
         let color = cx.theme().muted_foreground;
         let accent = cx.theme().primary;
+        let mut nodes = div().relative().w(px(800.)).h(px(height));
         let mut lines = Vec::new();
-        let mut y = 20.;
-        let mut port_id = 0;
-        for (peer_index, ((ip, links), block_height)) in page_peers.iter().zip(heights).enumerate()
-        {
+        for (peer_index, ((source, ip), links, y, block_height)) in layout.iter().enumerate() {
+            if y + block_height < visible.start || *y > visible.end {
+                continue;
+            }
             let center = y + block_height / 2.;
-            graph = graph.child(div().absolute().left(px(605.)).top(px(center - 50.)).child(
+            nodes = nodes.child(div().absolute().left(px(605.)).top(px(center - 50.)).child(
                 self.network_node(
-                    (*ip).clone(),
-                    if links.is_empty() {
-                        "Text reference"
-                    } else {
+                    ip.clone(),
+                    if source.is_some() {
                         "Peer IP"
+                    } else {
+                        "Text reference"
                     },
                     peer_index,
                     cx,
                 ),
             ));
-            if let Some(ports) = references.get(*ip) {
+            let mut port_id = peer_index * PORTS_PER_PEER * 3;
+            if source.is_none()
+                && let Some(ports) = overview.references.get(ip)
+            {
                 let mut buttons = div()
                     .absolute()
                     .left(px(605.))
@@ -315,7 +511,7 @@ impl Workspace {
                 for port in ports.iter().take(PORTS_PER_PEER) {
                     buttons = buttons.child(self.network_port(
                         Endpoint {
-                            address: (*ip).clone(),
+                            address: ip.clone(),
                             port: *port,
                         },
                         port_id,
@@ -323,7 +519,7 @@ impl Workspace {
                     ));
                     port_id += 1;
                 }
-                graph = graph.child(buttons);
+                nodes = nodes.child(buttons);
             }
             for (i, (local, remote, protocol)) in links.iter().take(PORTS_PER_PEER).enumerate() {
                 let row_y = y + 24. + i as f32 * 34.;
@@ -331,8 +527,10 @@ impl Workspace {
                     selected == &Selection::Endpoint(local.clone())
                         || selected == &Selection::Endpoint(remote.clone())
                 });
-                lines.push((row_y, center, highlighted));
-                graph = graph
+                if let Some(source) = source {
+                    lines.push((hubs[source], row_y, center, highlighted));
+                }
+                nodes = nodes
                     .child(
                         div()
                             .absolute()
@@ -356,16 +554,12 @@ impl Workspace {
                             .top(px(row_y - 17.))
                             .text_xs()
                             .text_color(color)
-                            .child(if protocol.is_empty() {
-                                "Text reference".into()
-                            } else {
-                                protocol.clone()
-                            }),
+                            .child(protocol.clone()),
                     );
                 port_id += 2;
             }
             if links.len() > PORTS_PER_PEER {
-                graph = graph.child(
+                nodes = nodes.child(
                     div()
                         .absolute()
                         .left(px(220.))
@@ -377,16 +571,15 @@ impl Workspace {
                         )),
                 );
             }
-            y += block_height;
         }
         let paths = canvas(
             move |bounds, _, _| bounds,
             move |bounds, _, window, _| {
-                for (row_y, center, selected) in &lines {
+                for (hub_y, row_y, center, selected) in &lines {
                     let p = |x, y| bounds.origin + point(px(x), px(y));
                     let mut path = PathBuilder::stroke(px(if *selected { 2. } else { 1. }));
-                    path.move_to(p(195., hub_y));
-                    path.curve_to(p(214., *row_y), p(204., hub_y));
+                    path.move_to(p(195., *hub_y));
+                    path.curve_to(p(214., *row_y), p(204., *hub_y));
                     path.move_to(p(278., *row_y));
                     path.line_to(p(510., *row_y));
                     path.move_to(p(575., *row_y));
@@ -406,139 +599,79 @@ impl Workspace {
         )
         .absolute()
         .size_full();
-        // Paint links first; controls remain clickable above the canvas.
-        graph = div()
+        let mut graph = div()
             .relative()
             .w(px(800.))
             .h(px(height))
             .child(paths)
-            .child(graph);
-        if let Some(ip) = &focus {
+            .child(nodes);
+        for (i, (source, (start, end))) in spans.iter().enumerate() {
+            if *end < visible.start || *start > visible.end {
+                continue;
+            }
             graph = graph.child(
                 div()
                     .absolute()
                     .left(px(15.))
-                    .top(px(hub_y - 50.))
-                    .child(self.network_node(ip.clone(), "Focus IP", usize::MAX, cx)),
+                    .top(px(hubs[source] - 50.))
+                    .child(self.network_node(
+                        source.clone(),
+                        if self.network_all_sources {
+                            "Source IP"
+                        } else {
+                            "Focus IP"
+                        },
+                        usize::MAX - i,
+                        cx,
+                    )),
             );
         }
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .size_full()
+        div()
+            .relative()
+            .flex_1()
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
-                    .text_xs()
-                    .text_color(color)
-                    .child(format!(
-                        "{} IPs · {visible_entries} matching entries · {} peers · {} unplotted",
-                        self.network.addresses.len(),
-                        peers.len(),
-                        self.network.unplotted
-                    ))
-                    .child(
-                        Button::new("network-prev-page")
-                            .xsmall()
-                            .ghost()
-                            .label("Previous peers")
-                            .disabled(page == 0)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.network_page = this.network_page.saturating_sub(1);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("network-next-page")
-                            .xsmall()
-                            .ghost()
-                            .label("Next peers")
-                            .disabled((page + 1) * PEERS_PER_PAGE >= peers.len())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.network_page += 1;
-                                cx.notify();
-                            })),
-                    ),
-            );
-        body = if self.network_loading {
-            body.child(div().p_4().child("Loading network graph..."))
-        } else if self.network.addresses.is_empty() {
-            body.child(div().p_4().child("No IP endpoints recovered. Run Analyze network, select socket analyses, or clear the search. Other records remain available in the endpoint sidebar."))
-        } else {
-            body.child(
-                div()
                     .id("network-graph-scroll")
-                    .aria_label("Network IP graph")
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .w_full()
+                    .aria_label("Network connection canvas")
+                    .size_full()
                     .overflow_scroll()
                     .track_scroll(&self.network_scroll)
+                    .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
                     .child(graph),
             )
-        };
-        drop(cache);
-        root = if self.content_sidebar_visible {
-            root.child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .w_full()
-                    .overflow_hidden()
-                    .child(
-                        h_resizable("network-endpoint-split")
-                            .child(
-                                resizable_panel()
-                                    .size_range(px(280.)..Pixels::MAX)
-                                    .child(body),
-                            )
-                            .child(
-                                resizable_panel()
-                                    .size(px(365.))
-                                    .size_range(px(280.)..px(800.))
-                                    .flex_none()
-                                    .fixed()
-                                    .child(self.render_network_sidebar(cx)),
-                            ),
-                    ),
-            )
-        } else {
-            root.child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .child(body),
-            )
-        };
-        root.into_any_element()
+            .child(Scrollbar::vertical(&self.network_scroll).mode(ScrollbarMode::Always))
+            .child(Scrollbar::horizontal(&self.network_scroll).mode(ScrollbarMode::Always))
+            .into_any_element()
     }
 
     fn render_network_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let endpoint = self.network_endpoint.as_ref();
+        let filter = self.network_filter(cx);
         let mut cache = self.network_cache.borrow_mut();
         if cache
             .sidebar
             .as_ref()
-            .is_none_or(|(key, _)| key.as_ref() != endpoint)
+            .is_none_or(|(key, selection, _)| key != &filter || selection.as_ref() != endpoint)
         {
-            cache.sidebar = Some((endpoint.cloned(), self.network.selected_indices(endpoint)));
+            let indices = cache
+                .overview
+                .as_ref()
+                .map(|(_, overview)| overview.indices.as_ref().clone())
+                .unwrap_or_default();
+            let indices = indices
+                .into_iter()
+                .filter(|i| endpoint.is_none_or(|s| s.matches(&self.network.entries[*i])))
+                .collect();
+            cache.sidebar = Some((filter, endpoint.cloned(), indices));
         }
         let entries = &cache
             .sidebar
             .as_ref()
             .expect("network sidebar initialized")
-            .1;
+            .2;
         let page = self
             .network_sidebar_page
             .min(entries.len().saturating_sub(1) / ENTRIES_PER_PAGE);
@@ -706,17 +839,23 @@ impl Workspace {
                 }
             }
         }
-        let mut actions = div().flex().items_center().gap_2().child(
-            Button::new(key("network-inspect", &id.to_string()))
-                .xsmall()
-                .ghost()
-                .label("Inspect record")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.detail = DetailTab::Overview;
-                    this.show_record((*source).clone(), window, cx);
-                })),
-        );
+        let mut actions = div()
+            .flex()
+            .flex_wrap()
+            .min_w_0()
+            .items_center()
+            .gap_2()
+            .child(
+                Button::new(key("network-inspect", &id.to_string()))
+                    .xsmall()
+                    .ghost()
+                    .label("Inspect record")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.detail = DetailTab::Overview;
+                        this.show_record((*source).clone(), window, cx);
+                    })),
+            );
         if known(&pid) {
             actions = actions.child(
                 Button::new(key("network-process", &id.to_string()))

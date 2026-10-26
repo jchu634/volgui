@@ -72,8 +72,11 @@ pub struct Entry {
     pub owner: String,
     pub created: String,
     pub finding: bool,
+    pub interesting: bool,
     search_text: String,
     priority: u8,
+    system_process: bool,
+    noise: bool,
 }
 
 impl Entry {
@@ -96,7 +99,7 @@ impl Entry {
         } else {
             3
         };
-        Self {
+        let mut entry = Self {
             local: endpoint(
                 r,
                 &["LocalAddr", "LocalAddress", "SrcAddr", "Source"],
@@ -127,9 +130,52 @@ impl Entry {
             created: field(r, &["Created", "CreateTime", "StartTime"]),
             source: Arc::new(source),
             finding,
+            interesting: false,
             search_text,
             priority,
-        }
+            system_process: false,
+            noise: false,
+        };
+        let owner = entry
+            .owner
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        entry.system_process = matches!(
+            owner.as_str(),
+            "system"
+                | "idle"
+                | "system idle process"
+                | "registry"
+                | "memory compression"
+                | "smss.exe"
+                | "csrss.exe"
+                | "wininit.exe"
+                | "winlogon.exe"
+                | "services.exe"
+                | "lsass.exe"
+                | "svchost.exe"
+                | "fontdrvhost.exe"
+                | "spoolsv.exe"
+                | "dwm.exe"
+        );
+        entry.noise = entry.remote.is_none()
+            || [&entry.local, &entry.remote]
+                .into_iter()
+                .flatten()
+                .any(|endpoint| endpoint.port == Some(0) || local_address(&endpoint.address));
+        entry.interesting = finding
+            || [&entry.local, &entry.remote]
+                .into_iter()
+                .flatten()
+                .any(|endpoint| {
+                    matches!(
+                        endpoint.port,
+                        Some(22 | 23 | 139 | 445 | 3389 | 5985 | 5986)
+                    )
+                });
+        entry
     }
     pub fn matches(&self, address: &str, port: Option<u16>) -> bool {
         [&self.local, &self.remote]
@@ -139,12 +185,69 @@ impl Entry {
     }
 }
 
+fn local_address(address: &str) -> bool {
+    if address == "*" {
+        return true;
+    }
+    let ip = address
+        .split('%')
+        .next()
+        .unwrap_or(address)
+        .parse::<IpAddr>();
+    match ip {
+        Ok(IpAddr::V4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Ok(IpAddr::V6(ip)) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|ip| ip.is_loopback() || ip.is_unspecified())
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn field(r: &Record, aliases: &[&str]) -> String {
     aliases
         .iter()
         .map(|name| r.text(name))
         .find(|s| !s.is_empty() && s != "N/A" && s != "Unreadable")
         .unwrap_or_default()
+}
+
+pub fn adjacent_address(
+    addresses: &[String],
+    current: Option<&str>,
+    forward: bool,
+) -> Option<String> {
+    let at = addresses
+        .iter()
+        .position(|address| Some(address.as_str()) == current)?;
+    let next = if forward {
+        at.checked_add(1)?
+    } else {
+        at.checked_sub(1)?
+    };
+    addresses.get(next).cloned()
+}
+
+/// Acquisition coordinates belong only to recovered byte evidence, never engine addresses.
+pub fn source_offset(record: &Record) -> Option<u64> {
+    if !matches!(
+        record.text("Source type").as_str(),
+        "Residual memory string" | "Validated acquisition configuration"
+    ) && record.text("Finding") != "Meterpreter TCP configuration"
+    {
+        return None;
+    }
+    [
+        "Match offset",
+        "Acquisition offset",
+        "Offset",
+        "Configuration offset",
+    ]
+    .into_iter()
+    .find_map(|key| record.fields.get(key).and_then(|value| value.as_u64()))
 }
 
 fn endpoint(r: &Record, addresses: &[&str], ports: &[&str]) -> Option<Endpoint> {
@@ -191,13 +294,38 @@ pub struct Filter {
     pub text: String,
     pub protocol: Option<String>,
     pub state: Option<String>,
+    pub hide_system: bool,
+    pub hide_noise: bool,
+    pub interesting_only: bool,
+    pub all_sources: bool,
 }
+
+impl Filter {
+    pub fn matches(&self, entry: &Entry) -> bool {
+        // Noise rules are reversible viewing heuristics. Never suppress analysis findings.
+        (entry.finding
+            || ((!self.hide_system || !entry.system_process) && (!self.hide_noise || !entry.noise)))
+            && (!self.interesting_only || entry.interesting)
+            && self.protocol.as_ref().is_none_or(|p| p == &entry.protocol)
+            && self.state.as_ref().is_none_or(|s| s == &entry.state)
+            && if let Some(pid) = self.text.strip_prefix("pid:") {
+                entry.pid == pid.trim()
+            } else {
+                self.text.is_empty() || entry.search_text.contains(&self.text)
+            }
+    }
+}
+
+pub type PeerLinks = BTreeSet<(Endpoint, Endpoint, String)>;
 
 #[derive(Default)]
 pub struct Overview {
-    pub peers: BTreeMap<String, BTreeSet<(Endpoint, Endpoint, String)>>,
+    pub peers: BTreeMap<(Option<String>, String), PeerLinks>,
     pub references: BTreeMap<String, BTreeSet<Option<u16>>>,
     pub matching: usize,
+    pub focus: Option<String>,
+    pub indices: Arc<Vec<usize>>,
+    pub addresses: BTreeSet<String>,
 }
 
 impl Graph {
@@ -262,21 +390,38 @@ impl Graph {
 
     pub fn overview(&self, filter: &Filter) -> Overview {
         let mut view = Overview::default();
-        for entry in &self.entries {
-            if filter
-                .protocol
-                .as_ref()
-                .is_some_and(|p| p != &entry.protocol)
-                || filter.state.as_ref().is_some_and(|s| s != &entry.state)
-                || (if let Some(pid) = filter.text.strip_prefix("pid:") {
-                    entry.pid != pid.trim()
-                } else {
-                    !filter.text.is_empty() && !entry.search_text.contains(&filter.text)
-                })
-            {
-                continue;
+        let mut indices: Vec<_> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| filter.matches(entry))
+            .map(|(i, _)| i)
+            .collect();
+        indices.sort_by_key(|i| self.entries[*i].priority);
+        let mut local_counts = BTreeMap::<String, usize>::new();
+        for i in &indices {
+            let entry = &self.entries[*i];
+            if let Some(local) = &entry.local {
+                *local_counts.entry(local.address.clone()).or_default() += 1;
             }
-            view.matching += 1;
+            for endpoint in [&entry.local, &entry.remote].into_iter().flatten() {
+                view.addresses.insert(endpoint.address.clone());
+            }
+        }
+        view.focus = filter
+            .focus
+            .as_ref()
+            .filter(|ip| view.addresses.contains(*ip))
+            .cloned()
+            .or_else(|| {
+                local_counts
+                    .into_iter()
+                    .max_by_key(|(_, count)| *count)
+                    .map(|(ip, _)| ip)
+            })
+            .or_else(|| view.addresses.first().cloned());
+        for i in &indices {
+            let entry = &self.entries[*i];
             if entry.finding
                 && let Some(remote) = &entry.remote
             {
@@ -284,11 +429,16 @@ impl Graph {
                     .entry(remote.address.clone())
                     .or_default()
                     .insert(remote.port);
-                view.peers.entry(remote.address.clone()).or_default();
+                view.peers
+                    .entry((None, remote.address.clone()))
+                    .or_default();
             }
-            let Some(focus) = &filter.focus else {
-                continue;
+            let focus = if filter.all_sources {
+                entry.local.as_ref().map(|endpoint| &endpoint.address)
+            } else {
+                view.focus.as_ref()
             };
+            let Some(focus) = focus else { continue };
             let pair = match (&entry.local, &entry.remote) {
                 (Some(local), Some(remote)) if &local.address == focus => Some((local, remote)),
                 (Some(local), Some(remote)) if &remote.address == focus => Some((remote, local)),
@@ -296,11 +446,13 @@ impl Graph {
             };
             if let Some((local, remote)) = pair {
                 view.peers
-                    .entry(remote.address.clone())
+                    .entry((Some(focus.clone()), remote.address.clone()))
                     .or_default()
                     .insert((local.clone(), remote.clone(), entry.protocol.clone()));
             }
         }
+        view.matching = indices.len();
+        view.indices = Arc::new(indices);
         view
     }
 }

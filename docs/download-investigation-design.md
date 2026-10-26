@@ -48,8 +48,10 @@ browser memory findings remain useful as explicitly labelled URL leads.
 Residual process recovery supports a known Windows x64 EPROCESS layout only
 after matching multiple independent process inventory records, including their
 PID, name and creation timestamp. A carved copy is a candidate, not proof that
-the process was active at acquisition. Explicit connection strings remain
-unattributed unless a source establishes process ownership.
+the process was active at acquisition. Validated Meterpreter TCP configurations belong to Network. The download parser
+scans only for residual process candidates; it no longer emits standalone raw
+connection text. Historical configuration rows appear in Network with their
+original provenance and are excluded from the download presentation.
 
 ## Synthesis decision
 

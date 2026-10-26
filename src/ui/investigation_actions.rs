@@ -52,15 +52,7 @@ impl Workspace {
     pub(super) fn load_network_bytes(&mut self, cx: &mut Context<Self>) {
         let target = self.case.as_ref().and_then(|case| {
             let record = self.selected.as_ref()?;
-            if record.record.text("Source type") != "Residual memory string" {
-                return None;
-            }
-            let offset = record
-                .record
-                .fields
-                .get("Match offset")
-                .or_else(|| record.record.fields.get("Offset"))?
-                .as_u64()?;
+            let offset = volgui::network::source_offset(&record.record)?;
             let run = case.document.runs.iter().find(|r| r.id == record.run_id)?;
             let evidence = case
                 .document
@@ -73,6 +65,36 @@ impl Workspace {
             self.open_hex_file(vec![path.clone()], path, offset, cx);
         }
     }
+    pub(super) fn toggle_interesting_network(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.network_interesting = !self.network_interesting;
+        self.network_sidebar_page = 0;
+        self.network_endpoint = None;
+        self.network_scroll.set_offset(Point::default());
+        if self.network_interesting {
+            self.scope = self.group_runs(ArtifactGroup::Network);
+            self.scope_label = ArtifactGroup::Network.label().into();
+            let recovery = self
+                .case
+                .as_ref()
+                .zip(self.evidence())
+                .filter(|(case, evidence)| {
+                    analysis::network::needs_recovery(&case.document, &evidence.id)
+                })
+                .map(|(_, evidence)| analysis::prepare(evidence, analysis::NETWORK, vec![]));
+            match recovery {
+                Some(Ok(run)) => self.queue_investigation(vec![run], window, cx),
+                Some(Err(error)) => self.error = Some(error),
+                None => {}
+            }
+            self.start_query(cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn analyze_network(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| {
             let evidence = self.evidence().ok_or("Select evidence first")?;

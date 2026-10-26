@@ -136,7 +136,8 @@ impl Workspace {
         self.network_endpoint = None;
         self.network_protocol = None;
         self.network_state = None;
-        self.network_page = 0;
+        self.network_interesting = false;
+        self.network_all_sources = false;
         self.network_sidebar_page = 0;
         self.column_filters.clear();
         self.scope = runs;
@@ -194,6 +195,26 @@ impl Workspace {
         };
         let query = self.active_query(cx);
         let group = self.result_group();
+        let mut network_query = query.clone();
+        if group == Some(ArtifactGroup::Network)
+            && self.scope_label == ArtifactGroup::Network.label()
+        {
+            // Existing cases retain the original download run and offsets as provenance.
+            // network_ids selects only payload configurations from those historical reports.
+            if let Some(case) = &self.case {
+                network_query.runs.extend(
+                    case.document
+                        .runs
+                        .iter()
+                        .filter(|run| {
+                            Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                                && run.status == RunStatus::Completed
+                                && run.plugin == volgui::analysis::DOWNLOADS
+                        })
+                        .map(|run| run.id.clone()),
+                );
+            }
+        }
         let file_context = self
             .case
             .as_ref()
@@ -321,7 +342,7 @@ impl Workspace {
             });
             let _ = tx.send(Event::Indexed(epoch, result));
             if group == Some(ArtifactGroup::Network) {
-                let graph = volgui::network::Graph::load(&store, &query, epoch, &token);
+                let graph = volgui::network::Graph::load(&store, &network_query, epoch, &token);
                 let _ = tx.send(Event::NetworkLoaded(epoch, graph));
             }
         });

@@ -29,6 +29,7 @@ pub struct Installation {
     pub settings: Settings,
     pub version: String,
     pub plugins: Vec<Plugin>,
+    pub user_memory_dumps: bool,
 }
 
 impl Installation {
@@ -112,11 +113,27 @@ impl Installation {
         if plugins.is_empty() {
             return Err("Volatility returned no plugins. Check its supporting files.".into());
         }
-        Ok(Self {
+        let mut installation = Self {
             settings,
             version,
             plugins,
-        })
+            user_memory_dumps: false,
+        };
+        // Probe the installed binary rather than assuming a version has the extension.
+        if installation.version.starts_with("vol-rs ")
+            && installation
+                .plugins
+                .iter()
+                .any(|p| p.id == "windows.memmap.Memmap")
+        {
+            installation.user_memory_dumps = installation
+                .help("windows.memmap.Memmap", cancel)
+                .is_ok_and(|help| help.split_whitespace().any(|word| word == "--user-memory"));
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Engine validation cancelled".into());
+            }
+        }
+        Ok(installation)
     }
 
     pub fn prepare(

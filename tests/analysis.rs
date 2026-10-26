@@ -22,6 +22,7 @@ fn setup() -> (tempfile::TempDir, Case, Installation) {
         case.add_evidence(evidence).unwrap();
     }
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "Fixture".into(),
         plugins: [
@@ -478,6 +479,156 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
     assert!(csv.contains("what is gluten") && csv.contains("Tor Browser"));
     assert!(csv.contains("Search variants") && csv.contains("tracking=variant"));
     assert_eq!(reopened.document.evidence.len(), 2);
+}
+
+#[test]
+fn browser_and_application_jobs_select_user_memory_and_reuse_both_scopes_after_reopening() {
+    use volgui::analysis::{APPLICATION, application};
+    for supported in [false, true] {
+        let (_temp, mut case, mut engine) = setup();
+        engine.user_memory_dumps = supported;
+        engine.plugins.push(Plugin {
+            id: application::VADINFO.into(),
+            description: String::new(),
+        });
+        save(
+            &mut case,
+            0,
+            application::INVENTORY[0],
+            vec![],
+            json!([{"PID":42,"ImageFileName":"msedge.exe"}]),
+        );
+        save(
+            &mut case,
+            0,
+            application::INVENTORY[1],
+            vec![],
+            json!([{"PID":42,"Args":"msedge.exe"}]),
+        );
+        let options = vec!["--pid".into(), "42".into()];
+        let application_jobs = application::recovery_runs(
+            &case.directory,
+            &case.document,
+            &case.document.evidence[0],
+            &engine,
+            &options,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let browser_jobs = analysis::browser_memory_runs(
+            &case.directory,
+            &case.document,
+            &case.document.evidence[0],
+            &engine,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let dump = application_jobs
+            .iter()
+            .find(|r| r.plugin == application::MEMMAP)
+            .unwrap();
+        assert_eq!(dump.arguments.contains(&"--user-memory".into()), supported);
+        assert_eq!(browser_jobs[0].arguments, dump.arguments);
+        assert!(dump.command.ends_with(&dump.arguments));
+
+        // Low x64 user mappings can lie above 2 GiB without any mapping above 4 GiB.
+        let address = if supported { 0x9000_0000u64 } else { 65536 };
+        let bytes = b"https://example.test/user-memory\0unsaved editor text from private memory\0";
+        let mut mapping = json!({"File output":"pid.42.dmp","Offset in File":0,
+            "Virtual":address,"Size":bytes.len()});
+        if supported {
+            mapping["User address limit"] = json!(1u64 << 47);
+        }
+        let mapping = json!([mapping]);
+        let collected = save(
+            &mut case,
+            0,
+            application::MEMMAP,
+            dump.arguments.clone(),
+            mapping.clone(),
+        );
+        fs::create_dir_all(case.run_dir(&collected.id)).unwrap();
+        fs::write(case.run_dir(&collected.id).join("pid.42.dmp"), bytes).unwrap();
+        fs::write(
+            case.run_dir(&collected.id).join("stdout.json"),
+            serde_json::to_vec(&mapping).unwrap(),
+        )
+        .unwrap();
+        volgui::object_store::ObjectStore::at(&case.directory)
+            .capture_run(&collected.id, &AtomicBool::new(false))
+            .unwrap();
+        save(
+            &mut case,
+            0,
+            application::VADINFO,
+            options.clone(),
+            json!([
+                {"PID":42,"PrivateMemory":1,"Protection":"PAGE_READWRITE",
+                 "Start VPN":address,"End VPN":address+bytes.len() as u64-1}
+            ]),
+        );
+        let directory = case.directory.clone();
+        drop(case);
+        let case = Case::open(&directory).unwrap();
+
+        // Even an older selected engine can reuse a complete scoped dump already saved.
+        engine.user_memory_dumps = !supported;
+        let jobs = application::recovery_runs(
+            &directory,
+            &case.document,
+            &case.document.evidence[0],
+            &engine,
+            &options,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            jobs.len(),
+            1,
+            "Both full and user dumps satisfy these readers"
+        );
+        assert_eq!(jobs[0].plugin, APPLICATION);
+        let outcome = analysis::execute(
+            &directory,
+            &case.document,
+            &jobs[0],
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+        assert!(
+            outcome
+                .table
+                .unwrap()
+                .rows
+                .iter()
+                .any(|r| r.text("Text").contains("unsaved editor text"))
+        );
+        let jobs = analysis::browser_memory_runs(
+            &directory,
+            &case.document,
+            &case.document.evidence[0],
+            &engine,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(jobs.len(), 1);
+        let outcome = analysis::execute(
+            &directory,
+            &case.document,
+            &jobs[0],
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+        let rows = outcome.table.unwrap().rows;
+        assert!(
+            rows.iter()
+                .any(|r| r.text("URL") == "https://example.test/user-memory"),
+            "supported={supported}: {} rows={rows:?}",
+            outcome.message
+        );
+    }
 }
 
 #[test]

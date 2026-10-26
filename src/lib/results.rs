@@ -103,11 +103,16 @@ impl ResultStore {
             .join(",");
         let mut statement = db
             .prepare(&format!(
-                "SELECT id FROM records WHERE run_id IN ({marks}) ORDER BY run_id,row_index,id"
+                "SELECT r.id FROM records r JOIN scans s USING(run_id) WHERE r.run_id IN ({marks})
+                 AND (s.plugin != ? OR json_extract(r.fields_json,'$.Finding') = ?)
+                 ORDER BY r.run_id,r.row_index,r.id"
             ))
             .map_err(|e| e.to_string())?;
+        let mut values = runs.to_vec();
+        values.push(crate::analysis::DOWNLOADS.into());
+        values.push("Meterpreter TCP configuration".into());
         statement
-            .query_map(params_from_iter(runs), |r| r.get(0))
+            .query_map(params_from_iter(values), |r| r.get(0))
             .map_err(|e| e.to_string())?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())
@@ -477,6 +482,11 @@ impl ResultStore {
         let mut sql = format!("SELECT r.id FROM records r WHERE r.run_id IN ({marks})");
         let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
         append_representatives(&mut sql, &mut values, &query.runs, "r");
+        if groups.len() == 1 && groups.contains(&ArtifactGroup::Downloads) {
+            // Older download reports kept payload configuration alongside download findings.
+            // Keep the immutable source row, but present it through Network instead.
+            sql.push_str(" AND COALESCE(json_extract(r.fields_json,'$.Finding'),'') != 'Meterpreter TCP configuration'");
+        }
         if !all_handles && groups.len() == 1 && groups.contains(&ArtifactGroup::Files) {
             sql.push_str(" AND (r.run_id NOT IN (SELECT run_id FROM scans WHERE plugin='windows.handles.Handles') OR json_extract(r.fields_json,'$.Type')='File')");
         }

@@ -453,6 +453,18 @@ impl Workspace {
                                 this.retry_all_failed(window, cx);
                             })),
                     )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("queue-clear-failed")
+                            .small()
+                            .outline()
+                            .label("Clear failed")
+                            .tooltip("Clear failed and interrupted jobs from the queue. History and results are kept.")
+                            .disabled(!has_failed)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clear_queue(QueueClearScope::Failed, cx);
+                            })),
+                    )
                     .child(
                         Button::new("queue-clear-finished")
                             .small()

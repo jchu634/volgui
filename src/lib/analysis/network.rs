@@ -1,5 +1,7 @@
 //! Correlate explicit network commands and share references in collected engine records.
 //! Text findings retain their provenance and never masquerade as observed sockets.
+mod memory;
+
 use super::{record, table};
 use crate::{
     case::{CaseSnapshot, Run, RunStatus},
@@ -18,7 +20,7 @@ use std::{
 };
 
 pub const MAX_FINDINGS: usize = 20_000;
-pub const PARSER_VERSION: &str = "network-v2-records";
+pub const PARSER_VERSION: &str = "network-v3-configurations";
 pub const SOURCES: &[&str] = &[
     "windows.netscan.NetScan",
     "windows.netstat.NetStat",
@@ -28,6 +30,17 @@ pub const SOURCES: &[&str] = &[
     "windows.consoles.Consoles",
     "windows.handles.Handles",
 ];
+
+/// Socket inventories alone cannot contain recovered payload configuration.
+/// Reuse a completed current parser, or let the existing queued parser finish.
+pub fn needs_recovery(document: &CaseSnapshot, evidence_id: &str) -> bool {
+    !document.runs.iter().any(|run| {
+        run.evidence_id == evidence_id
+            && run.plugin == super::NETWORK
+            && (matches!(run.status, RunStatus::Queued | RunStatus::Running)
+                || (run.status == RunStatus::Completed && run.message.contains(PARSER_VERSION)))
+    })
+}
 
 fn unc_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -208,7 +221,7 @@ pub fn analyze(
         .iter()
         .find(|e| e.id == run.evidence_id)
         .ok_or("Missing evidence")?;
-    let mut rows = Vec::new();
+    let (mut rows, configuration_coverage) = memory::scan(&evidence.path, cancel, progress)?;
     let mut seen = BTreeSet::new();
     // Pin interpretation to inventories preceding this parser job, never later results.
     let preceding = document.runs.iter().take_while(|r| r.id != run.id);
@@ -228,10 +241,11 @@ pub fn analyze(
         "All supported source inventories completed.".to_string()
     } else {
         format!(
-            "Source inventories unavailable or not completed: {}. Only collected records are inspected; the acquisition is not scanned for strings.",
+            "Source inventories unavailable or not completed: {}. Command and credential recovery uses collected records only.",
             missing.join(", ")
         )
     };
+    let coverage = format!("{coverage} {configuration_coverage}");
     let source_runs: Vec<_> = preceding
         .into_iter()
         .filter(|r| {
@@ -309,7 +323,7 @@ pub fn analyze(
 
 fn finish(rows: Vec<Record>, limited: bool) -> (Table, String) {
     let message = format!(
-        "{} network text findings. {}Parser: {PARSER_VERSION}. Correlated collected engine records only; no raw memory string scan. Credentials are extracted only from explicit network drive commands. Recovered command text does not prove execution. Socket records remain separate in Network.",
+        "{} network findings. {}Parser: {PARSER_VERSION}. Correlated collected engine records and validated payload configurations. Credentials are extracted only from explicit network drive commands. Recovered command text does not prove execution. Socket records remain separate in Network.",
         rows.len(),
         if limited {
             "Stopped at the 20,000 finding limit. "

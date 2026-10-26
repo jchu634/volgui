@@ -19,7 +19,7 @@ use std::{
 };
 
 pub const PENDING: &str = "Waiting to recover download evidence after inventories";
-pub const HELP: &str = "Recover download URLs and local filenames from NTFS Zone.Identifier and cached Chromium download history, then find matching executions and remote sockets. Collects available process lists, process scan, hidden-process cross-check, command lines, DLL paths, FileScan, ADS, NetScan and NetStat automatically. Recovers browser profile files when DumpFiles is available. Also scans acquisition bytes for explicit connection commands and residual process candidates, validating the supported Windows x64 layout against collected processes first. Filename matches, residual bytes and PID-only socket matches retain their limits and sources. Ports alone never establish a reverse shell. No custom arguments.";
+pub const HELP: &str = "Recover download URLs and local filenames from NTFS Zone.Identifier and cached Chromium download history, then find matching executions and remote sockets. Collects available process lists, process scan, hidden-process cross-check, command lines, DLL paths, FileScan, ADS, NetScan and NetStat automatically. Recovers browser profile files when DumpFiles is available. Also scans acquisition bytes for residual process candidates, validating the supported Windows x64 layout against collected processes first. Filename matches, residual bytes and PID-only socket matches retain their limits and sources. Ports alone never establish a reverse shell. No custom arguments.";
 pub const SOURCES: &[&str] = &[
     "windows.pslist.PsList",
     "windows.psscan.PsScan",
@@ -32,7 +32,7 @@ pub const SOURCES: &[&str] = &[
     "windows.netstat.NetStat",
 ];
 const MAX_ROWS: usize = 10_000;
-const VERSION: &str = "downloads-v1";
+const VERSION: &str = "downloads-v2";
 
 fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
@@ -452,7 +452,7 @@ pub fn analyze(
         .map(|(r, _)| r.text("Filename"))
         .filter(|s| !s.is_empty())
         .collect::<BTreeSet<_>>();
-    let (residual, mut leads, memory_message) =
+    let (residual, memory_message) =
         memory::scan(&evidence.path, &names, &anchors, cancel, progress)?;
     for row in residual {
         processes.push(Process { pid:number(&row,"PID").unwrap(),name:row.text("Process"),path:String::new(),
@@ -651,7 +651,6 @@ pub fn analyze(
         }
     }
     rows.sort_by_key(|row| (row.text("PID").is_empty(), row.text("Filename")));
-    rows.append(&mut leads);
     let limited = rows.len() > MAX_ROWS;
     rows.truncate(MAX_ROWS);
     let unowned = sockets

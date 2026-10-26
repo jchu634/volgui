@@ -159,16 +159,16 @@ pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -
     Ok(runs)
 }
 
-/// The common investigation tasks shown before the full plugin catalog.
+/// Inputs consumed by investigation views or their recovery pipelines.
+/// System information is also basic as a useful preprocessing overview.
+/// Bulk file recovery and other generic artifact shortcuts remain extended.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
         crate::analysis::NETWORK => "Network investigation and correlation",
         crate::analysis::DOWNLOADS => "Download and execution investigation",
         crate::analysis::BROWSER => "Browser recovery and analysis",
-        crate::analysis::APPLICATION => "Process Memory recovery and analysis",
-        crate::analysis::FILES => "File and document recovery",
-        REGISTRY_ALL => "All registry subkeys",
         "windows.info.Info" => "System information",
+        REGISTRY_ALL => "All registry subkeys",
         "windows.pslist.PsList" | "linux.pslist.PsList" | "mac.pslist.PsList" => "Processes",
         "windows.pstree.PsTree" | "linux.pstree.PsTree" | "mac.pstree.PsTree" => "Process tree",
         "windows.psscan.PsScan" => "Process scan",
@@ -189,12 +189,8 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.registry.hivelist.HiveList" | "windows.registry.hivescan.HiveScan" => {
             "Registry hives"
         }
-        "linux.bash.Bash" | "mac.bash.Bash" => "Shell history",
-        "windows.malware.malfind.Malfind" => "Suspicious memory",
-        "windows.modules.Modules" | "linux.lsmod.Lsmod" | "mac.lsmod.Lsmod" => "Loaded modules",
         "windows.consoles.Consoles" => "Console history",
         "windows.cmdscan.CmdScan" => "Scanned command history",
-        "windows.sessions.Sessions" => "User sessions",
         _ => return None,
     })
 }
@@ -211,11 +207,11 @@ pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
         },
         Plugin {
             id: crate::analysis::FILES.into(),
-            description: "Collect FileScan and file handles, then attempt recovery of each distinct file object. Prepare cached files for hex, text, SQLite inspection and export. Hide confirmed unavailable files with the Files toggle. Large captures can queue many extraction jobs. Optional --physical uses older FileScan physical offsets.".into(),
+            description: "File and document recovery. Collect FileScan and file handles, then attempt recovery of each distinct file object. Prepare cached files for hex, text, SQLite inspection and export. Hide confirmed unavailable files with the Files toggle. Large captures can queue many extraction jobs. Optional --physical uses older FileScan physical offsets.".into(),
         },
         Plugin {
             id: crate::analysis::NETWORK.into(),
-            description: "Collect available Windows sockets, processes, command lines, console history and handles. Correlate SMB shares and explicit connection commands in collected records. Credentials are read only when present in a network drive command. Does not scan raw memory for strings. Findings retain source run and row provenance.".into(),
+            description: "Collect available Windows sockets, processes, command lines, console history and handles. Correlate SMB shares and explicit connection commands in collected records. Credentials are read only when present in a network drive command. Also recovers structurally validated Meterpreter TCP configurations from acquisition bytes. Does not search raw memory for credentials or arbitrary connection strings. Findings retain source record provenance or acquisition offsets.".into(),
         },
         Plugin {
             id: crate::analysis::APPLICATION.into(),
@@ -313,7 +309,10 @@ pub fn chooser_plugins(
     let mut plugins: Vec<_> = plugins
         .iter()
         .filter(|plugin| {
-            (os.accepts(&plugin.id)
+            !matches!(
+                plugin.id.as_str(),
+                crate::analysis::APPLICATION | crate::analysis::STRINGS
+            ) && (os.accepts(&plugin.id)
                 && (!is_recovery_analysis(&plugin.id)
                     || matches!(os, OperatingSystem::Windows | OperatingSystem::Unknown)))
                 && (extended || basic_label(&plugin.id).is_some())

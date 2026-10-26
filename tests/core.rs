@@ -64,11 +64,29 @@ fn discovery_handles_wrapped_help_without_confusing_descriptions_for_plugins() {
     assert_eq!(plugins[1].id, "windows.pslist.PsList");
 }
 
+#[cfg(feature = "test-engine")]
+#[test]
+fn discovery_probes_user_memory_support_instead_of_assuming_a_version() {
+    let temp = tempfile::tempdir().unwrap();
+    for (name, supported) in [("vol-rs-legacy", false), ("vol-rs-user-memory", true)] {
+        let path = temp
+            .path()
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        fs::copy(env!("CARGO_BIN_EXE_volgui-test-engine"), &path).unwrap();
+        let installation = engine(path);
+        assert_eq!(installation.version, "vol-rs 1.0.2");
+        assert_eq!(installation.user_memory_dumps, supported);
+    }
+    let installation = engine(env!("CARGO_BIN_EXE_volgui-test-engine").into());
+    assert!(!installation.user_memory_dumps);
+}
+
 #[test]
 fn vol_rs_commands_supply_cache_and_symbols_without_unix_environment_variables() {
     let temp = tempfile::tempdir().unwrap();
     let image = evidence(&temp.path().join("image.raw"));
     let mut engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "vol-rs 1.0.2".into(),
         plugins: vec![volgui::volatility::Plugin {
