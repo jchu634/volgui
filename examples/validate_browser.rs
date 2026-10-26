@@ -3,8 +3,9 @@ use std::{collections::BTreeSet, path::PathBuf, sync::atomic::AtomicBool};
 use volgui::{
     analysis,
     case::{Case, CaseSnapshot, RunStatus, now},
+    results::ResultStore,
     settings::Settings,
-    volatility::{Installation, Table},
+    volatility::Installation,
 };
 
 fn main() -> Result<(), String> {
@@ -30,17 +31,12 @@ fn main() -> Result<(), String> {
         if let Some(run) = document.runs.iter().rev().find(|r| {
             r.plugin == plugin && r.evidence_id == evidence.id && r.status == RunStatus::Completed
         }) {
-            let table = Table::read(&source.join("analyses").join(&run.id).join("stdout.json"))?;
+            let table = ResultStore::at(&source).table(&run.id)?;
             let mut imported = run.clone();
             imported.status = RunStatus::Queued;
             case.queue(imported)?;
             let directory = case.run_dir(&run.id);
             std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-            std::fs::copy(
-                source.join("analyses").join(&run.id).join("stdout.json"),
-                directory.join("stdout.json"),
-            )
-            .map_err(|e| e.to_string())?;
             case.finish(
                 &run.id,
                 &volgui::volatility::Outcome {

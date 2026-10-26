@@ -97,6 +97,7 @@ fn dump_case() -> (tempfile::TempDir, Case, Installation, StoredRecord) {
             .unwrap();
     }
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: ["windows.filescan.FileScan", DUMP_FILES]

@@ -44,6 +44,9 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
+                    .flex_wrap()
+                    .min_w_0()
+                    .overflow_hidden()
                     .gap_2()
                     .px_3()
                     .py_1()
@@ -63,6 +66,7 @@ impl Workspace {
                     .when(group == ArtifactGroup::Processes, |header| {
                         header.child(
                             Checkbox::new("show-process-file-handles")
+                                .xsmall()
                                 .label("Show file handles")
                                 .checked(self.show_file_handles)
                                 .on_click(cx.listener(|this, checked, _, cx| {
@@ -74,10 +78,27 @@ impl Workspace {
                                 })),
                         )
                     })
+                    .when(
+                        matches!(group, ArtifactGroup::Files | ArtifactGroup::Processes),
+                        |header| {
+                            header.child(
+                                Checkbox::new("show-unavailable-files")
+                                    .xsmall()
+                                    .label("Show unavailable files")
+                                    .checked(self.show_unavailable_files)
+                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                        this.show_unavailable_files = *checked;
+                                        this.selection_epoch += 1;
+                                        this.tree_cursor = None;
+                                        this.result_tree = ResultTree::default();
+                                        this.start_query(cx);
+                                    })),
+                            )
+                        },
+                    )
                     .child(
-                        Button::new("tree-expand-all")
+                        app_button("tree-expand-all")
                             .xsmall()
-                            .ghost()
                             .label("Expand all")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.result_tree.expand_all(true);
@@ -85,9 +106,8 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("tree-collapse-all")
+                        app_button("tree-collapse-all")
                             .xsmall()
-                            .ghost()
                             .label("Collapse all")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.result_tree.expand_all(false);
@@ -177,6 +197,11 @@ impl Workspace {
             .pl(px(8. + depth as f32 * 18.))
             .pr(px(20.))
             .text_xs()
+            .when(
+                id.and_then(|id| self.file_recovery_states.get(&id))
+                    .is_some_and(|state| state.unavailable()),
+                |row| row.text_color(cx.theme().muted_foreground),
+            )
             .cursor_pointer()
             .bg(if selected {
                 cx.theme().accent
@@ -198,9 +223,9 @@ impl Workspace {
                 }
             }))
             .child(if branch {
-                Button::new(("tree-toggle", i))
-                    .xsmall()
+                app_button(("tree-toggle", i))
                     .ghost()
+                    .xsmall()
                     .icon(if expanded {
                         IconName::ChevronDown
                     } else {

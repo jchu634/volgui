@@ -95,6 +95,29 @@ impl Workspace {
         if self.result_group() == Some(ArtifactGroup::Applications) {
             return self.render_application_memory(cx);
         }
+        if self.result_group() == Some(ArtifactGroup::Network) {
+            return div()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .overflow_hidden()
+                .child(
+                    v_resizable("network-workspace-split")
+                        .child(
+                            resizable_panel()
+                                .size_range(px(240.)..Pixels::MAX)
+                                .child(self.render_network(cx)),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size(px(240.))
+                                .size_range(px(150.)..px(1000.))
+                                .fixed()
+                                .child(self.render_details(cx)),
+                        ),
+                )
+                .into_any_element();
+        }
         let results = if self.content_sidebar_visible {
             h_resizable("artifact-hex-split")
                 .child(
@@ -154,6 +177,7 @@ impl Workspace {
             .child(
                 div()
                     .id("artifact-results-table")
+                    .p_3()
                     .aria_label("Artifact results")
                     .flex_1()
                     .min_h_0()
@@ -166,7 +190,7 @@ impl Workspace {
             )
             .into_any_element()
     }
-    pub(in crate::ui) fn render_results_toolbar(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::ui) fn render_results_toolbar(&self, _cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .items_center()
@@ -176,7 +200,11 @@ impl Workspace {
             .child(div().flex_1().min_w_0().text_sm().truncate().child(format!(
                 "{} · {} results{}",
                 self.scope_label,
-                self.index.ids.len(),
+                if self.result_group() == Some(ArtifactGroup::Network) {
+                    self.network.entries.len()
+                } else {
+                    self.index.ids.len()
+                },
                 if self.loading { " · searching" } else { "" }
             )))
             .child(
@@ -187,14 +215,6 @@ impl Workspace {
                         .small()
                         .cleanable(true),
                 ),
-            )
-            .child(
-                Button::new("export-csv")
-                    .small()
-                    .ghost()
-                    .label("Export CSV")
-                    .disabled(self.scope.is_empty())
-                    .on_click(cx.listener(|this, _, window, cx| this.export(false, window, cx))),
             )
     }
     pub(in crate::ui) fn results_empty_message(&self, cx: &App) -> String {

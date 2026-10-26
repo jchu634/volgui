@@ -200,9 +200,8 @@ impl Workspace {
                     .gap_1()
                     .child(cell.child(format!("{selected_count}/{count} selected")))
                     .child(
-                        Button::new(key("analysis-group", group.label()))
+                        app_button(key("analysis-group", group.label()))
                             .xsmall()
-                            .ghost()
                             .icon(if expanded {
                                 IconName::ChevronDown
                             } else {
@@ -279,9 +278,8 @@ impl Workspace {
                         "Extended"
                     })
                     .into_any_element(),
-                _ => Button::new(key("analysis-options", &id))
+                _ => app_button(key("analysis-options", &id))
                     .xsmall()
-                    .ghost()
                     .label("Options")
                     .tooltip(format!("Options for {id}"))
                     .on_click(cx.listener(move |workspace, _, window, cx| {

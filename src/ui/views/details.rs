@@ -10,7 +10,7 @@ impl Workspace {
             let executable = self.imhex_path.clone();
             let file = page.path.clone();
             return div().flex().items_center().mb_2().child(
-                Button::new("hex-open-imhex")
+                app_button("hex-open-imhex")
                     .small()
                     .label("Open in ImHex")
                     .disabled(executable.is_none())
@@ -26,17 +26,7 @@ impl Workspace {
                     })),
             );
         }
-        if self
-            .case
-            .as_ref()
-            .zip(self.selected.as_ref())
-            .is_some_and(|(case, record)| {
-                volgui::extracted_files::completed_dump(case, record, self.file_offset_physical)
-                    .is_some()
-            })
-        {
-            return div();
-        }
+        let attempted = self.selected_file_dump().is_some();
         let prefix = "details";
         let target = self.selected.as_ref().and_then(|record| {
             let run = self
@@ -57,16 +47,17 @@ impl Workspace {
                 .iter()
                 .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
         }) && self.busy.is_none();
-        let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+        let mut actions = div().flex().items_center().gap_2().mb_2();
         if target.needs_address_space() {
             actions = actions.child(
-                    Button::new(key("file-offset-space", prefix))
+                    app_button(key("file-offset-space", prefix))
                         .small()
-                        .ghost()
+
                         .label(if self.file_offset_physical { "Physical offset" } else { "Virtual offset" })
                         .tooltip("Click to switch. FileScan uses virtual offsets on Windows 10 and later, physical offsets on older Windows.")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.file_offset_physical = !this.file_offset_physical;
+                            this.start_query(cx);
                             this.reset_hex();
                             if this.content_sidebar_visible { this.load_hex(cx); }
                             cx.notify();
@@ -74,9 +65,13 @@ impl Workspace {
                 );
         }
         actions.child(
-            Button::new(key("dump-selected-file", prefix))
+            app_button(key("dump-selected-file", prefix))
                 .small()
-                .label("Dump file")
+                .label(if attempted {
+                    "Retry extraction"
+                } else {
+                    "Dump file"
+                })
                 .disabled(!available)
                 .tooltip(if available {
                     "Extract only this file from memory"
@@ -94,7 +89,7 @@ impl Workspace {
             return div().child("Select an analysis to view its extracted files.");
         };
         let mut content = div().flex().flex_col().gap_2().child(
-            Button::new("refresh-extracted-files")
+            app_button("refresh-extracted-files")
                 .self_start()
                 .small()
                 .label("Refresh files")
@@ -145,7 +140,7 @@ impl Workspace {
                 .py_1()
                 .child(div().flex_1().text_sm().child(name))
                 .child(
-                    Button::new(("hex-extracted", i))
+                    app_button(("hex-extracted", i))
                         .small()
                         .label("View hex")
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -153,7 +148,7 @@ impl Workspace {
                         })),
                 )
                 .child(
-                    Button::new(("save-extracted", i))
+                    app_button(("save-extracted", i))
                         .small()
                         .label("Save as...")
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -168,6 +163,91 @@ impl Workspace {
         content
     }
 
+    fn render_browser_overview(
+        &self,
+        record: &volgui::volatility::Record,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let field = |label: &str, text: String| {
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(heading(label.to_owned(), cx))
+                .child(div().text_sm().child(text))
+        };
+        let separator = || div().h_px().w_full().my_2().bg(cx.theme().border);
+        let pid = record.text("PID");
+        let process = record.text("Process");
+        let mut processes = div().flex().gap_4().child(field(
+            "Process",
+            if pid.is_empty() {
+                process
+            } else {
+                format!("{process} ({pid})")
+            },
+        ));
+        if let Some(parent) = &self.relations.parent {
+            processes = processes.child(field("Process parent", parent.title.clone()));
+        } else if !record.text("PPID").is_empty() {
+            processes = processes.child(field("Process parent", record.text("PPID")));
+        }
+        let command = ["Command", "CommandLine", "Command line", "Args"]
+            .iter()
+            .map(|name| record.text(name))
+            .find(|text| !text.is_empty())
+            .unwrap_or_default();
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(processes)
+            .child(field("Command", command))
+            .child(separator())
+            .child(
+                div()
+                    .flex()
+                    .gap_4()
+                    .child(field("Browser", record.text("Browser")))
+                    .child(field("Domain", record.text("Domain"))),
+            )
+            .child(field("URL", record.text("URL")));
+        if !record.text("Search engine").is_empty() || !record.text("Search terms").is_empty() {
+            content = content.child(
+                div()
+                    .flex()
+                    .gap_4()
+                    .child(field("Search engine", record.text("Search engine")))
+                    .child(field("Search term", record.text("Search terms"))),
+            );
+        }
+        let source = record.text("Source file");
+        let path = self.case.as_ref().map(|case| case.directory.join(&source));
+        content
+            .child(separator())
+            .child(field("Kind", record.text("Kind")))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(field("Source file", source))
+                    .when_some(path, |row, path| {
+                        row.child(
+                            app_button("reveal-browser-source")
+                                .small()
+                                .label("Show in Explorer")
+                                .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                        )
+                    }),
+            )
+    }
+
     pub(in crate::ui) fn render_details(&self, cx: &mut Context<Self>) -> AnyElement {
         let record = self.selected.as_ref();
         let marked = self
@@ -177,7 +257,6 @@ impl Workspace {
             .is_some_and(|a| a.bookmarked);
         let mut tabs = div()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap_1()
             .px_3()
@@ -190,10 +269,26 @@ impl Workspace {
             ("files", "Extracted files", DetailTab::Files),
             ("handles", "Handles", DetailTab::Handles),
         ] {
+            if (tab == DetailTab::Files
+                && !matches!(
+                    self.result_group(),
+                    Some(
+                        ArtifactGroup::Files
+                            | ArtifactGroup::Processes
+                            | ArtifactGroup::Modules
+                            | ArtifactGroup::Registry
+                            | ArtifactGroup::Applications
+                    )
+                ))
+                || (tab == DetailTab::Handles
+                    && self.result_group() != Some(ArtifactGroup::Processes))
+            {
+                continue;
+            }
             tabs = tabs.child(
-                Button::new(id)
-                    .small()
+                app_button(id)
                     .ghost()
+                    .small()
                     .label(label)
                     .selected(self.detail == tab)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -211,7 +306,26 @@ impl Workspace {
             .overflow_scroll()
             .p_3()
             .size_full();
-        if matches!(self.detail, DetailTab::Overview | DetailTab::Files) {
+        if self.result_group() == Some(ArtifactGroup::Network) {
+            let has_bytes =
+                record.is_some_and(|r| volgui::network::source_offset(&r.record).is_some());
+            tabs = tabs.child(
+                app_button("network-source-bytes")
+                    .ghost()
+                    .small()
+                    .label("Source bytes")
+                    .selected(self.detail == DetailTab::SourceBytes)
+                    .disabled(!has_bytes)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.detail = DetailTab::SourceBytes;
+                        this.load_network_bytes(cx);
+                    })),
+            );
+        }
+        if matches!(self.detail, DetailTab::Overview | DetailTab::Files)
+            && !(self.detail == DetailTab::Overview
+                && self.result_group() == Some(ArtifactGroup::Processes))
+        {
             content = content.child(self.render_file_actions(false, cx));
         }
         if self.detail == DetailTab::Overview
@@ -223,12 +337,11 @@ impl Workspace {
             content = content.child(
                 div()
                     .flex()
-                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .mb_2()
                     .child(
-                        Button::new("scan-selected-process-memory")
+                        app_button("scan-selected-process-memory")
                             .small()
                             .label("Analyse Process Memory")
                             .disabled(self.installation.is_none() || self.busy.is_some())
@@ -237,7 +350,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("dump-process-files")
+                        app_button("dump-process-files")
                             .small()
                             .label("Dump Files")
                             .disabled(self.installation.is_none() || self.busy.is_some())
@@ -246,7 +359,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("find-process-file-handles")
+                        app_button("find-process-file-handles")
                             .small()
                             .label("Find file handles")
                             .disabled(self.installation.is_none() || self.busy.is_some())
@@ -257,6 +370,9 @@ impl Workspace {
             );
         }
         match self.detail {
+            DetailTab::SourceBytes => {
+                content = content.child(self.render_hex_panel(cx));
+            }
             DetailTab::Handles => {
                 content = content.child(self.render_handles(cx));
             }
@@ -264,24 +380,114 @@ impl Workspace {
                 if let Some(record) = record {
                     let browser = self.result_group() == Some(ArtifactGroup::Web);
                     let application = self.result_group() == Some(ArtifactGroup::Applications);
-                    let mut actions = div().flex().flex_wrap().items_center().gap_2().mb_2();
+                    let downloads = self.result_group() == Some(ArtifactGroup::Downloads);
+                    let mut actions = div().flex().items_center().gap_2().mb_2();
+                    if downloads {
+                        if let Some(pid) = record.record.fields.get("PID").and_then(|v| v.as_u64())
+                        {
+                            let network_pid = pid.to_string();
+                            actions = actions
+                                .child(
+                                    app_button("download-process")
+                                        .small()
+
+                                        .label(format!("Process {pid}"))
+                                        .disabled(record.record.text("Execution evidence").starts_with("Residual"))
+                                        .tooltip("Open a collected process. Residual process candidates can be inspected using their source bytes.")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.open_process(pid.to_string(), cx)
+                                        })),
+                                )
+                                .child(
+                                    app_button("download-process-network")
+                                        .small()
+
+                                        .label("Network for PID")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.investigate_pid_network(
+                                                network_pid.clone(),
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                );
+                        }
+                        if let Some(sources) = record
+                            .record
+                            .fields
+                            .get("Sources")
+                            .and_then(|v| v.as_array())
+                        {
+                            for (i, source) in sources.iter().enumerate() {
+                                let role = source
+                                    .get("Role")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Evidence");
+                                if let Some(offset) = source.get("Offset").and_then(|v| v.as_u64())
+                                {
+                                    actions = actions.child(
+                                        app_button(("download-source-bytes", i))
+                                            .small()
+                                            .label(format!("{role} bytes"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.open_investigation_bytes(offset, cx)
+                                            })),
+                                    );
+                                } else if let Some(run) = source
+                                    .get("Run")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    let run = run.to_string();
+                                    let row = source.get("Row").and_then(|v| v.as_u64());
+                                    actions = actions.child(
+                                        app_button(("download-source", i))
+                                            .small()
+                                            .label(format!("{role} source"))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if let Some(row) = row {
+                                                    this.load_annotation(
+                                                        run.clone(),
+                                                        row as usize,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                } else {
+                                                    this.select_run(run.clone(), window, cx);
+                                                }
+                                            })),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if matches!(
                         record.record.text("Kind").as_str(),
                         "Memory URL" | "Memory search"
                     ) {
                         actions = actions.child(
-                            Button::new("view-browser-url-bytes")
+                            app_button("view-browser-url-bytes")
                                 .small()
-                                .ghost()
                                 .label("View URL bytes")
                                 .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
                         );
                     }
+                    if self.result_group() == Some(ArtifactGroup::Strings) {
+                        actions = actions.child(
+                            app_button("view-string-memory")
+                                .small()
+                                .label("View surrounding memory")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.content_encoding =
+                                        volgui::extracted_files::ContentEncoding::Hex;
+                                    this.load_hex(cx);
+                                })),
+                        );
+                    }
                     if application {
                         actions = actions.child(
-                            Button::new("view-application-text-bytes")
+                            app_button("view-application-text-bytes")
                                 .small()
-                                .ghost()
                                 .label("View text bytes")
                                 .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
                         );
@@ -294,9 +500,8 @@ impl Workspace {
                     {
                         let source = source.to_string();
                         actions = actions.child(
-                            Button::new("open-finding-source")
+                            app_button("open-finding-source")
                                 .small()
-                                .ghost()
                                 .label("Open source extraction")
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.select_run(source.clone(), window, cx)
@@ -310,24 +515,39 @@ impl Workspace {
                         .fields
                         .iter()
                         .filter(|(name, _)| {
-                            !browser
-                                || (!matches!(
-                                    name.as_str(),
-                                    "Source run" | "Observation" | "String boundary"
-                                ) && !(name.as_str() == "URL parameters"
-                                    && !record.record.text("Search terms").is_empty()))
+                            !(self.result_group() == Some(ArtifactGroup::Processes)
+                                && (name.starts_with("Fact provenance")
+                                    || matches!(name.as_str(), "File output" | "Handles")))
+                                && (!browser
+                                    || (!matches!(
+                                        name.as_str(),
+                                        "Source run" | "Observation" | "String boundary"
+                                    ) && !(name.as_str() == "URL parameters"
+                                        && !record.record.text("Search terms").is_empty())))
                         })
                         .collect();
                     if browser {
+                        content = content.child(self.render_browser_overview(&record.record, cx));
+                        ordered.clear();
+                    }
+                    if downloads {
                         let priority = [
-                            "PID",
-                            "Browser",
-                            "Process",
-                            "Process role",
+                            "Finding",
+                            "Website URL",
                             "URL",
-                            "Search terms",
-                            "URL parameters",
-                            "Domain",
+                            "Filename",
+                            "Path",
+                            "PID",
+                            "Remote IP",
+                            "Remote port",
+                            "Download evidence",
+                            "Execution evidence",
+                            "Match basis",
+                            "Network evidence",
+                            "Interpretation",
+                            "CreateTime",
+                            "ExitTime",
+                            "Sources",
                         ];
                         ordered.sort_by_key(|(name, _)| {
                             priority
@@ -436,9 +656,9 @@ impl Workspace {
                                         }),
                                 )
                                 .child(
-                                    Button::new(("copy-field", i))
-                                        .xsmall()
+                                    app_button(("copy-field", i))
                                         .ghost()
+                                        .xsmall()
                                         .icon(IconName::Copy)
                                         .tooltip("Copy value")
                                         .on_click(move |_, _, cx| {
@@ -484,13 +704,12 @@ impl Workspace {
                                     .map(|i| {
                                         let child = &children[i];
                                         let id = child.id;
-                                        Button::new(key("child-process", &id.to_string()))
+                                        app_button(key("child-process", &id.to_string()))
                                             .small()
-                                            .ghost()
                                             .justify_start()
                                             .h(px(28.))
                                             .label(format!(
-                                                "{} · PID {}",
+                                                "└ {} · PID {}",
                                                 child.title,
                                                 child.pid.as_deref().unwrap_or("")
                                             ))
@@ -530,9 +749,8 @@ impl Workspace {
                             .gap_2()
                             .mb_2()
                             .child(
-                                Button::new("toggle-json-expansion")
+                                app_button("toggle-json-expansion")
                                     .xsmall()
-                                    .ghost()
                                     .label(if self.raw_expand_all {
                                         "Collapse all"
                                     } else {
@@ -545,9 +763,8 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                Button::new("copy-json")
+                                app_button("copy-json")
                                     .xsmall()
-                                    .ghost()
                                     .icon(IconName::Copy)
                                     .label("Copy JSON")
                                     .on_click({
@@ -589,20 +806,12 @@ impl Workspace {
                         serde_json::to_string_pretty(&run.command).unwrap_or_default(),
                         run.message
                     );
-                    let output = self.case.as_ref().unwrap().run_dir(&run.id);
-                    content = content
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_family("Consolas")
-                                .child(SelectableText::new("run-diagnostics", text)),
-                        )
-                        .child(
-                            Button::new("show-output")
-                                .small()
-                                .label("Show output directory")
-                                .on_click(move |_, _, cx| cx.reveal_path(&output)),
-                        );
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .font_family("Consolas")
+                            .child(SelectableText::new("run-diagnostics", text)),
+                    );
                 }
             }
         }
@@ -628,9 +837,9 @@ impl Workspace {
                     )
                     .when(record.is_some(), |header| {
                         header.child(
-                            Button::new("bookmark")
-                                .xsmall()
+                            app_button("bookmark")
                                 .ghost()
+                                .xsmall()
                                 .icon(if marked {
                                     Icon::default().data(include_bytes!(
                                         "../../../assets/icons/bookmark-filled.svg"
@@ -685,9 +894,9 @@ impl Workspace {
         if expandable {
             let path = path.to_string();
             row = row.child(
-                Button::new(key("json-toggle", &path))
-                    .xsmall()
+                app_button(key("json-toggle", &path))
                     .ghost()
+                    .xsmall()
                     .icon(if expanded {
                         IconName::ChevronDown
                     } else {

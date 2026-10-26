@@ -68,6 +68,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let available = !self.group_runs(group).is_empty();
+        let selected = self.view == View::Workspace && self.result_group() == Some(group);
         let label = if available {
             format!("{} · {}", group.label(), self.group_count(group))
         } else {
@@ -83,10 +84,10 @@ impl Workspace {
                 cx.notify();
             }))
             .trigger(
-                Button::new(key("artifact-dropdown", group.label()))
+                app_button(key("artifact-dropdown", group.label()))
+                    .ghost()
                     .accessibility_label(format!("Related analyses for {}", group.label()))
                     .xsmall()
-                    .ghost()
                     .icon(IconName::ChevronDown)
                     .tooltip("Related analyses"),
             )
@@ -95,12 +96,18 @@ impl Workspace {
             .flex()
             .items_center()
             .w_full()
+            .rounded_md()
+            .when(selected, |row| row.bg(cx.theme().accent))
             .child(
                 ActionButton::new(key("shortcut", group.label()))
                     .accessibility_label(format!("Open matching {} results", group.label()))
                     .h(px(30.))
                     .px_2()
                     .rounded_md()
+                    .self_center()
+                    .flex_1()
+                    .min_w_0()
+                    .selected(selected)
                     .hover(|style| style.bg(cx.theme().muted))
                     .text_color(if available {
                         cx.theme().foreground
@@ -113,7 +120,6 @@ impl Workspace {
                             .items_center()
                             .justify_start()
                             .gap_2()
-                            .w_full()
                             .child(Icon::new(Self::group_icon(group)).size_4())
                             .child(
                                 div()
@@ -125,8 +131,6 @@ impl Workspace {
                                     .child(label),
                             ),
                     )
-                    .flex_1()
-                    .min_w_0()
                     .justify_start()
                     .disabled(!available)
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -197,13 +201,13 @@ impl Workspace {
             .when(plugins.is_empty(),|panel|panel.child(div().text_sm().child("No matching analyses in the configured installation. Check the evidence OS and engine settings.")))
             .child(list)
             .child(div().flex().gap_2()
-                .child(Button::new("artifact-queue-selected").small().primary().label(format!("Queue selected ({count})")).disabled(blocked || count==0).on_click(cx.listener(move|this,_,window,cx|{
+                .child(app_button("artifact-queue-selected").small().primary().label(format!("Queue selected ({count})")).disabled(blocked || count==0).on_click(cx.listener(move|this,_,window,cx|{
                     if this.prepare_artifact_selection(group,false) { this.queue_analyses(window,cx); if this.analysis_error.is_none(){this.artifact_open=None;} }
                 })))
-                .child(Button::new("artifact-queue-all").small().label(format!("Queue all ({})",plugins.len())).disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
+                .child(app_button("artifact-queue-all").small().label(format!("Queue all ({})",plugins.len())).disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
                     if this.prepare_artifact_selection(group,true) {this.queue_analyses(window,cx);if this.analysis_error.is_none(){this.artifact_open=None;}}
                 }))))
-            .child(Button::new("artifact-review-options").small().ghost().label("Review selection and options...").disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
+            .child(app_button("artifact-review-options").small().label("Review selection and options...").disabled(blocked).on_click(cx.listener(move|this,_,window,cx|{
                 let selected=this.artifact_choices.get(&group).cloned().unwrap_or_default();
                 this.artifact_open=None;
                 this.open_analysis_dialog(this.selected_evidence.iter().cloned().collect(),window,cx);
@@ -213,6 +217,13 @@ impl Workspace {
             .into_any_element()
     }
     fn render_queue(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Keep only display data; a run can contain large arguments and diagnostics.
+        struct QueueRow {
+            id: String,
+            plugin: String,
+            status: RunStatus,
+            row_count: usize,
+        }
         let mut runs = self
             .case
             .as_ref()
@@ -220,7 +231,12 @@ impl Workspace {
                 case.document
                     .queue_runs()
                     .rev()
-                    .cloned()
+                    .map(|run| QueueRow {
+                        id: run.id.clone(),
+                        plugin: run.plugin.clone(),
+                        status: run.status,
+                        row_count: run.row_count,
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -247,129 +263,158 @@ impl Workspace {
         let has_finished = runs
             .iter()
             .any(|run| QueueClearScope::Finished.includes(run.status));
-        let mut list = div().id("queue-analyses").flex().flex_col().w_full().pr_3();
-        if runs.is_empty() {
-            list = list.child(
-                div()
-                    .h(px(32.))
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No jobs in the queue"),
-            );
-        }
-        for run in runs {
-            let id = run.id.clone();
-            let cancel = id.clone();
-            let retry = id.clone();
-            let remove = id.clone();
-            let cancel_label = format!("Cancel {}", run.plugin);
-            let active = matches!(run.status, RunStatus::Running | RunStatus::Queued);
-            let color = match run.status {
-                RunStatus::Running => Some(cx.theme().primary),
-                RunStatus::Queued => Some(cx.theme().warning),
-                RunStatus::Failed | RunStatus::Interrupted => Some(cx.theme().danger),
-                RunStatus::Cancelled => Some(cx.theme().muted_foreground),
-                _ => None,
-            };
-            let status = run.status.label();
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .h(px(32.))
-                    .flex_shrink_0()
-                    .when_some(color, |row, color| row.text_color(color))
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .id(key("queue-run", &id))
-                            .role(Role::Button)
-                            .aria_label(format!("{} · {status}", run.plugin))
-                            .flex_1()
-                            .min_w_0()
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().min_w_0().text_sm().truncate().child(run.plugin))
-                            .when(
-                                !matches!(
-                                    run.status,
-                                    RunStatus::Failed
-                                        | RunStatus::Cancelled
-                                        | RunStatus::Interrupted
-                                ),
-                                |row| {
+        let list = if runs.is_empty() {
+            div()
+                .h(px(32.))
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("No jobs in the queue")
+                .into_any_element()
+        } else {
+            uniform_list(
+                "queue-analyses",
+                runs.len(),
+                cx.processor(move |_, range: Range<usize>, _, cx| {
+                    range
+                        .map(|index| {
+                            let run = &runs[index];
+                            let id = run.id.clone();
+                            let cancel = id.clone();
+                            let retry = id.clone();
+                            let remove = id.clone();
+                            let cancel_label = format!("Cancel {}", run.plugin);
+                            let active =
+                                matches!(run.status, RunStatus::Running | RunStatus::Queued);
+                            let color = match run.status {
+                                RunStatus::Running => Some(cx.theme().primary),
+                                RunStatus::Queued => Some(cx.theme().warning),
+                                RunStatus::Failed | RunStatus::Interrupted => {
+                                    Some(cx.theme().danger)
+                                }
+                                RunStatus::Cancelled => Some(cx.theme().muted_foreground),
+                                _ => None,
+                            };
+                            let status = run.status.label();
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .h(px(32.))
+                                .flex_shrink_0()
+                                .when_some(color, |row, color| row.text_color(color))
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .id(key("queue-run", &id))
+                                        .role(Role::Button)
+                                        .aria_label(format!("{} · {status}", run.plugin))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .text_sm()
+                                                .truncate()
+                                                .child(run.plugin.clone()),
+                                        )
+                                        .when(
+                                            !matches!(
+                                                run.status,
+                                                RunStatus::Failed
+                                                    | RunStatus::Cancelled
+                                                    | RunStatus::Interrupted
+                                            ),
+                                            |row| {
+                                                row.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .flex_shrink_0()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(format!(
+                                                            "{} records",
+                                                            run.row_count
+                                                        )),
+                                                )
+                                            },
+                                        )
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .flex_shrink_0()
+                                                .whitespace_nowrap()
+                                                .text_color(
+                                                    color.unwrap_or(cx.theme().muted_foreground),
+                                                )
+                                                .child(status),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.queue_open = false;
+                                            this.select_run(id.clone(), window, cx);
+                                        })),
+                                )
+                                .when(
+                                    matches!(
+                                        run.status,
+                                        RunStatus::Failed
+                                            | RunStatus::Interrupted
+                                            | RunStatus::Cancelled
+                                    ),
+                                    |row| {
+                                        row.child(
+                                            app_button(key("retry-queued-run", &retry))
+                                                .xsmall()
+                                                .label("Retry")
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.retry_run(&retry, window, cx)
+                                                    },
+                                                )),
+                                        )
+                                    },
+                                )
+                                .when(!active, |row| {
                                     row.child(
-                                        div()
-                                            .text_xs()
-                                            .flex_shrink_0()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("{} records", run.row_count)),
+                                        app_button(key("remove-queued-run", &remove))
+                                            .ghost()
+                                            .accessibility_label(
+                                                "Remove finished analysis from queue",
+                                            )
+                                            .xsmall()
+                                            .icon(IconName::X)
+                                            .tooltip("Remove from queue")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.remove_queue_run(&remove, cx)
+                                            })),
                                     )
-                                },
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .flex_shrink_0()
-                                    .whitespace_nowrap()
-                                    .text_color(color.unwrap_or(cx.theme().muted_foreground))
-                                    .child(status),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.queue_open = false;
-                                this.select_run(id.clone(), window, cx);
-                            })),
-                    )
-                    .when(
-                        matches!(
-                            run.status,
-                            RunStatus::Failed | RunStatus::Interrupted | RunStatus::Cancelled
-                        ),
-                        |row| {
-                            row.child(
-                                Button::new(key("retry-queued-run", &retry))
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Retry")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.retry_run(&retry, window, cx)
-                                    })),
-                            )
-                        },
-                    )
-                    .when(!active, |row| {
-                        row.child(
-                            Button::new(key("remove-queued-run", &remove))
-                                .accessibility_label("Remove finished analysis from queue")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::X)
-                                .tooltip("Remove from queue")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_queue_run(&remove, cx)
-                                })),
-                        )
-                    })
-                    .when(active, |row| {
-                        row.child(
-                            Button::new(key("cancel-queued-run", &cancel))
-                                .accessibility_label(cancel_label)
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::X)
-                                .tooltip("Cancel analysis")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.cancel_run(cancel.clone(), cx)
-                                })),
-                        )
-                    }),
-            );
-        }
+                                })
+                                .when(active, |row| {
+                                    row.child(
+                                        app_button(key("cancel-queued-run", &cancel))
+                                            .ghost()
+                                            .accessibility_label(cancel_label)
+                                            .xsmall()
+                                            .icon(IconName::X)
+                                            .tooltip("Cancel analysis")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.cancel_run(cancel.clone(), cx)
+                                            })),
+                                    )
+                                })
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.queue_scroll)
+            .size_full()
+            .pr_3()
+            .into_any_element()
+        };
         div()
             .w(px(400.))
             .p_3()
@@ -382,14 +427,7 @@ impl Workspace {
                     .relative()
                     .h(list_height)
                     .flex_shrink_0()
-                    .child(
-                        div()
-                            .id("queue-scroll-viewport")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.queue_scroll)
-                            .child(list),
-                    )
+                    .child(list)
                     .child(Scrollbar::vertical(&self.queue_scroll).mode(ScrollbarMode::Always)),
             )
             .child(
@@ -398,7 +436,7 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .child(
-                        Button::new("queue-history")
+                        app_button("queue-history")
                             .small()
                             .outline()
                             .label("History")
@@ -408,7 +446,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("queue-retry-all-failed")
+                        app_button("queue-retry-all-failed")
                             .small()
                             .outline()
                             .label("Retry all failed")
@@ -418,8 +456,20 @@ impl Workspace {
                                 this.retry_all_failed(window, cx);
                             })),
                     )
+                    .child(div().flex_1())
                     .child(
-                        Button::new("queue-clear-finished")
+                        app_button("queue-clear-failed")
+                            .small()
+                            .outline()
+                            .label("Clear failed")
+                            .tooltip("Clear failed and interrupted jobs from the queue. History and results are kept.")
+                            .disabled(!has_failed)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clear_queue(QueueClearScope::Failed, cx);
+                            })),
+                    )
+                    .child(
+                        app_button("queue-clear-finished")
                             .small()
                             .outline()
                             .label("Clear")

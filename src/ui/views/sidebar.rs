@@ -8,6 +8,7 @@ impl Workspace {
             ArtifactGroup::Network => IconName::Network,
             ArtifactGroup::Files => IconName::Folder,
             ArtifactGroup::Web => IconName::Network,
+            ArtifactGroup::Downloads => IconName::Search,
             ArtifactGroup::Applications => IconName::Layers,
             ArtifactGroup::Strings => IconName::Search,
             ArtifactGroup::Registry => IconName::Database,
@@ -69,11 +70,12 @@ impl Workspace {
             } else {
                 group.label()
             };
-            let button = Button::new(key("browser", label))
-                .small()
-                .ghost()
-                .accessibility_label(label)
+            let button = app_button(key("browser", label))
+                .self_start()
                 .w_full()
+                .ghost()
+                .small()
+                .accessibility_label(label)
                 .child(
                     div()
                         .flex()
@@ -83,13 +85,16 @@ impl Workspace {
                         .child(Icon::new(Self::group_icon(group)).size_4())
                         .child(label),
                 )
-                .selected(self.view == View::Workspace && self.browser_group == group)
+                .selected(self.view == View::Workspace && self.result_group() == Some(group))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.choose_group(group, window, cx);
                 }));
             if matches!(
                 group,
-                ArtifactGroup::Web | ArtifactGroup::Applications | ArtifactGroup::Registry
+                ArtifactGroup::Downloads
+                    | ArtifactGroup::Web
+                    | ArtifactGroup::Applications
+                    | ArtifactGroup::Registry
             ) {
                 browser_registry = browser_registry.child(button);
             } else {
@@ -97,10 +102,11 @@ impl Workspace {
             }
         }
         tabs = tabs.child(
-            Button::new("nav-bookmarks")
-                .small()
-                .ghost()
+            app_button("nav-bookmarks")
+                .self_start()
                 .w_full()
+                .ghost()
+                .small()
                 .accessibility_label("Bookmarks")
                 .child(
                     div()
@@ -143,10 +149,10 @@ impl Workspace {
                     .justify_between()
                     .child(heading("EVIDENCE", cx))
                     .child(
-                        Button::new("add-evidence")
+                        app_button("add-evidence")
+                            .ghost()
                             .accessibility_label("Add evidence files")
                             .xsmall()
-                            .ghost()
                             .icon(IconName::Plus)
                             .tooltip("Add evidence files")
                             .disabled(self.is_working())

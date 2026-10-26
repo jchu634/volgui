@@ -213,6 +213,7 @@ pub struct CaseSnapshot {
 #[derive(Clone, Copy)]
 pub enum QueueClearScope {
     Completed,
+    Failed,
     Finished,
 }
 
@@ -220,6 +221,7 @@ impl QueueClearScope {
     pub fn includes(self, status: RunStatus) -> bool {
         match self {
             Self::Completed => matches!(status, RunStatus::Completed | RunStatus::Cancelled),
+            Self::Failed => matches!(status, RunStatus::Failed | RunStatus::Interrupted),
             Self::Finished => !matches!(status, RunStatus::Queued | RunStatus::Running),
         }
     }

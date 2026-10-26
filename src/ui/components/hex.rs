@@ -84,9 +84,8 @@ impl Workspace {
             .enumerate()
         {
             encodings = encodings.child(
-                Button::new(("content-encoding", i))
+                app_button(("content-encoding", i))
                     .xsmall()
-                    .ghost()
                     .label(encoding.label())
                     .selected(self.content_encoding == encoding)
                     .on_click(
@@ -98,9 +97,8 @@ impl Workspace {
         for (i, file) in files.iter().enumerate() {
             let path = file.clone();
             choices = choices.child(
-                Button::new(("hex-cache-file", i))
+                app_button(("hex-cache-file", i))
                     .xsmall()
-                    .ghost()
                     .label(
                         file.file_name()
                             .unwrap_or_default()
@@ -127,14 +125,18 @@ impl Workspace {
         let mut content = div().flex().flex_col().gap_2().text_sm();
         match &self.hex_view {
             HexView::Idle => {
-                content = content.child("Select a file and choose Dump file in its details to read its cached contents. Existing per-file extractions are reused. Contents may be incomplete or unavailable in the capture.");
+                content = content.child(if matches!(self.result_group(), Some(ArtifactGroup::Files | ArtifactGroup::Processes)) {
+                    "Cached contents have not been recovered. Use Dump file in record details, or choose File and document recovery in New analysis."
+                } else {
+                    "No sidebar view is available for this content."
+                });
             }
             HexView::Loading => {
                 content = content.child("Loading file contents...");
             }
             HexView::Error(error) => {
                 content = content.child(error.clone()).child(
-                    Button::new("retry-hex")
+                    app_button("retry-hex")
                         .small()
                         .label("Retry")
                         .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
@@ -161,9 +163,9 @@ impl Workspace {
                         .items_center()
                         .gap_2()
                         .child(
-                            Button::new("hex-previous")
+                            app_button("hex-previous")
                                 .xsmall()
-                                .ghost()
+
                                 .label("Previous")
                                 .disabled(page.offset == 0)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -177,9 +179,9 @@ impl Workspace {
                             page.total
                         )))
                         .child(
-                            Button::new("hex-next")
+                            app_button("hex-next")
                                 .xsmall()
-                                .ghost()
+
                                 .label("Next")
                                 .disabled(next >= page.total)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -187,7 +189,7 @@ impl Workspace {
                                 })),
                         )
                         .child(Input::new(&self.hex_offset).id("hex-offset-input").aria_label("Hex viewer byte offset").small().w(px(140.)))
-                        .child(Button::new("hex-go").xsmall().ghost().label("Go to offset")
+                        .child(app_button("hex-go").xsmall().label("Go to offset")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let value = this.hex_offset.read(cx).value();
                                 let value = value.trim();
@@ -239,9 +241,8 @@ impl Workspace {
             let table = table.clone();
             let path = page.path.clone();
             choices = choices.child(
-                Button::new(("database-table", i))
+                app_button(("database-table", i))
                     .xsmall()
-                    .ghost()
                     .label(table.clone())
                     .selected(table == page.table)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -269,9 +270,9 @@ impl Workspace {
         });
         content = content.child(choices).child(div().text_xs().child("Read-only snapshot. 100 rows per page, cells limited to 1024 characters. Detached WAL data is not included."))
             .child(div().flex().items_center().gap_2()
-                .child(Button::new("database-previous").xsmall().ghost().label("Previous rows").disabled(page.offset == 0).on_click(cx.listener(move |this,_,_,cx| this.load_database(previous_path.clone(),Some(previous_table.clone()),previous,cx))))
+                .child(app_button("database-previous").xsmall().label("Previous rows").disabled(page.offset == 0).on_click(cx.listener(move |this,_,_,cx| this.load_database(previous_path.clone(),Some(previous_table.clone()),previous,cx))))
                 .child(format!("{} rows at offset {}",page.rows.len(),page.offset))
-                .child(Button::new("database-next").xsmall().ghost().label("Next rows").disabled(!page.more).on_click(cx.listener(move |this,_,_,cx| this.load_database(next_path.clone(),Some(next_table.clone()),next,cx)))))
+                .child(app_button("database-next").xsmall().label("Next rows").disabled(!page.more).on_click(cx.listener(move |this,_,_,cx| this.load_database(next_path.clone(),Some(next_table.clone()),next,cx)))))
             .child(div().id("database-rows").h(px(280.)).min_w_0()
                 .child(DataTable::new(&self.database_table).small()));
         content.into_any_element()

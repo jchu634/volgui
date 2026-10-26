@@ -64,11 +64,29 @@ fn discovery_handles_wrapped_help_without_confusing_descriptions_for_plugins() {
     assert_eq!(plugins[1].id, "windows.pslist.PsList");
 }
 
+#[cfg(feature = "test-engine")]
+#[test]
+fn discovery_probes_user_memory_support_instead_of_assuming_a_version() {
+    let temp = tempfile::tempdir().unwrap();
+    for (name, supported) in [("vol-rs-legacy", false), ("vol-rs-user-memory", true)] {
+        let path = temp
+            .path()
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        fs::copy(env!("CARGO_BIN_EXE_volgui-test-engine"), &path).unwrap();
+        let installation = engine(path);
+        assert_eq!(installation.version, "vol-rs 1.0.2");
+        assert_eq!(installation.user_memory_dumps, supported);
+    }
+    let installation = engine(env!("CARGO_BIN_EXE_volgui-test-engine").into());
+    assert!(!installation.user_memory_dumps);
+}
+
 #[test]
 fn vol_rs_commands_supply_cache_and_symbols_without_unix_environment_variables() {
     let temp = tempfile::tempdir().unwrap();
     let image = evidence(&temp.path().join("image.raw"));
     let mut engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "vol-rs 1.0.2".into(),
         plugins: vec![volgui::volatility::Plugin {
@@ -488,4 +506,40 @@ mod process_tests {
         assert!(recovered.document.runs[0].finished_at.is_some());
         assert!(!recovered.run_dir(&run.id).exists());
     }
+}
+
+#[test]
+fn result_reader_accepts_output_larger_than_the_text_viewer_limit() {
+    use std::io::{Read, Write};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("stdout.json");
+    let mut file = std::fs::File::create(&path).unwrap();
+    // Large whitespace keeps the regression test's memory use small.
+    std::io::copy(
+        &mut std::io::repeat(b' ').take(128 * 1024 * 1024 + 1),
+        &mut file,
+    )
+    .unwrap();
+    file.write_all(br#"[{"Name":"Registry value","__children":[{"Data":"value"}]}]"#)
+        .unwrap();
+    drop(file);
+    let table = volgui::volatility::Table::read(&path).unwrap();
+    assert_eq!(table.rows.len(), 2);
+    assert_eq!(table.rows[1].depth, 1);
+    assert_eq!(table.rows[1].text("Data"), "value");
+}
+
+#[test]
+fn result_reader_accepts_banner_and_bom_and_rejects_trailing_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("stdout.json");
+    std::fs::write(
+        &path,
+        "\u{feff} \nVolatility 3 Framework 2.0\n[{\"Name\":\"key\"}]",
+    )
+    .unwrap();
+    let table = volgui::volatility::Table::read(&path).unwrap();
+    assert_eq!(table.rows[0].text("Name"), "key");
+    std::fs::write(&path, "[] trailing").unwrap();
+    assert!(volgui::volatility::Table::read(&path).is_err());
 }

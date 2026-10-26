@@ -115,7 +115,16 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
             ("Search terms", &["Search terms"]),
             ("URL", &["URL"]),
             ("Virtual address", &["Virtual address"]),
-            ("Source file", &["Source file"]),
+        ],
+        Some(ArtifactGroup::Downloads) => &[
+            ("Finding", &["Finding"]),
+            ("Filename", &["Filename"]),
+            ("Website URL", &["Website URL"]),
+            ("Download URL", &["URL"]),
+            ("PID", &["PID"]),
+            ("Remote IP", &["Remote IP"]),
+            ("Remote port", &["Remote port"]),
+            ("Match basis", &["Match basis"]),
         ],
         Some(ArtifactGroup::Applications) => &[
             ("PID", &["PID"]),
@@ -129,9 +138,7 @@ pub fn columns(group: Option<ArtifactGroup>, available: &[String]) -> Vec<Column
         Some(ArtifactGroup::Strings) => &[
             ("Offset", &["Offset"]),
             ("Encoding", &["Encoding"]),
-            ("Match", &["Match"]),
             ("Context", &["Context"]),
-            ("Source file", &["Source file"]),
         ],
         Some(ArtifactGroup::Registry) => &[
             ("Name", &["Name", "FileFullPath", "File output"]),
@@ -304,11 +311,10 @@ mod tests {
             "Search terms",
             "URL",
             "Virtual address",
-            "Source file",
         ];
         let available = names
             .iter()
-            .chain(["Process role", "Observation", "Attribution"].iter())
+            .chain(["Source file", "Process role", "Observation", "Attribution"].iter())
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
         let actual = columns(Some(ArtifactGroup::Web), &available);

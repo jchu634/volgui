@@ -93,15 +93,33 @@ impl ObjectStore {
         // Collect after acquiring the lock so concurrent retries cannot capture a removed file.
         let mut files = Vec::new();
         collect(&directory, &directory, &mut files)?;
-        if files.is_empty() {
-            return Ok(());
-        }
         let db = database::connect(&self.root)?;
         let plugin: String = db
             .query_row("SELECT plugin FROM analysis_runs WHERE id=?1", [run], |r| {
                 r.get(0)
             })
             .map_err(|e| e.to_string())?;
+        // DumpFiles can name an output which antivirus removed before capture.
+        // Preserve that name even when directory enumeration cannot find it.
+        if plugin == crate::extracted_files::DUMP_FILES
+            && let Ok(json) = fs::read_to_string(directory.join("stdout.json"))
+            && let Ok(table) = crate::volatility::Table::parse(&json)
+        {
+            for row in table.rows {
+                let name = row.text("File output");
+                if name.starts_with("file.")
+                    && Path::new(&name).components().count() == 1
+                    && matches!(
+                        Path::new(&name).components().next(),
+                        Some(Component::Normal(_))
+                    )
+                {
+                    files.push(directory.join(name));
+                }
+            }
+            files.sort();
+            files.dedup();
+        }
         let pack_file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -146,12 +164,22 @@ impl ObjectStore {
             if plugin == crate::extracted_files::DUMP_FILES
                 && !matches!(name.as_str(), "stdout.json" | "stderr.log")
             {
-                blobs.push(PendingBlob::copy(
-                    path,
-                    name,
-                    &self.root.join(BLOBS),
-                    cancel,
-                )?);
+                match PendingBlob::copy(path.clone(), name.clone(), &self.root.join(BLOBS), cancel)
+                {
+                    Ok(blob) => blobs.push(blob),
+                    Err(error)
+                        if !cancel.load(Ordering::Relaxed)
+                            && (matches!(path.try_exists(), Ok(false))
+                                || error.contains("(os error 225)")
+                                || error.contains("(os error 226)")) =>
+                    {
+                        blocked.push((
+                            name,
+                            format!("Recovered output unavailable, possibly quarantined: {error}"),
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
                 continue;
             }
             let mut source = BufReader::with_capacity(

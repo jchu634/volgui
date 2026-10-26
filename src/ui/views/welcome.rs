@@ -22,7 +22,7 @@ impl Workspace {
                     .flex()
                     .gap_3()
                     .child(
-                        Button::new("welcome-new-case")
+                        app_button("welcome-new-case")
                             .primary()
                             .label("New case")
                             .disabled(!self.can_switch())
@@ -31,7 +31,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("welcome-open-case")
+                        app_button("welcome-open-case")
                             .label("Open case")
                             .disabled(!self.can_switch())
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -39,7 +39,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("welcome-recent-cases")
+                        app_button("welcome-recent-cases")
                             .label("Open recent case")
                             .disabled(!self.can_switch() || self.settings.recent_cases.is_empty())
                             .dropdown_caret(true)
@@ -67,7 +67,7 @@ impl Workspace {
             )
             .when(self.installation.is_none(), |s| {
                 s.child(
-                    Button::new("configure-engine")
+                    app_button("configure-engine")
                         .small()
                         .label("Configure analysis engine")
                         .on_click(
@@ -97,7 +97,7 @@ impl Render for WelcomePanel {
                     })
                     .when(workspace.view == View::NewCase, |s| {
                         s.child(
-                            Button::new("welcome-back")
+                            app_button("welcome-back")
                                 .label("Back")
                                 .disabled(!workspace.can_switch())
                                 .on_click(cx.listener(|this, _, _, cx| {

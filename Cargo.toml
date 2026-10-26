@@ -20,6 +20,7 @@ rusqlite = { version = "0.38", features = ["bundled", "hooks", "functions"] }
 url = "2"
 lz4_flex = "0.11"
 memchr = "2"
+regex = "1"
 
 [features]
 default = ["desktop"]
@@ -41,6 +42,20 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [profile.dev.package.sha2]
 opt-level = 3
+
+[profile.dev.package.memchr]
+opt-level = 3
+
+[profile.dev.package.lz4_flex]
+opt-level = 3
+
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# Compression and result processing instantiate hot generic code in this crate.
+# Keep it optimized during interactive development without optimizing GPUI's build.
+[profile.dev.package.volgui]
+opt-level = 2
 
 [patch.crates-io]
 # Propagate destroyed-window errors from Windows accessibility callbacks.

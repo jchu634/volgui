@@ -25,11 +25,21 @@ impl Workspace {
                         .truncate()
                         .child(node.label.clone()),
                 )
+                .when_some(
+                    id.and_then(|id| self.file_recovery_states.get(&id)),
+                    |row, state| {
+                        row.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(state.label()),
+                        )
+                    },
+                )
                 .when_some(id, |row, id| {
                     row.child(
-                        Button::new(("show-handle-in-files", i))
+                        app_button(("show-handle-in-files", i))
                             .xsmall()
-                            .ghost()
                             .label("Show in Files")
                             .disabled(!self.row_cache.contains_key(&id))
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -55,6 +65,7 @@ impl Workspace {
             })
             .unwrap_or_default();
         self.artifact_tree_row(i, depth, cx)
+            .when(depth > 0, |row| row.child("└"))
             .child(Icon::new(IconName::Cpu).size_4().flex_shrink_0())
             .child(div().flex_shrink_0().child(node.label.clone()))
             .when_some(node.pid.as_ref(), |row, pid| {

@@ -74,6 +74,7 @@ enum DetailTab {
     Diagnostics,
     Files,
     Handles,
+    SourceBytes,
 }
 
 struct FileDumpRequest {
@@ -99,6 +100,14 @@ enum HexView {
     },
     Error(String),
 }
+struct QueryResult {
+    index: ResultIndex,
+    rows: Vec<StoredRecord>,
+    tree: ResultTree,
+    file_states: HashMap<i64, volgui::analysis::files::RecoveryState>,
+    recovery: Option<volgui::analysis::files::RecoveryIndex>,
+}
+
 enum Event {
     Opened(std::result::Result<Case, String>),
     Validated(std::result::Result<Installation, String>),
@@ -112,9 +121,10 @@ enum Event {
     ),
     FileActionCompleted(PathBuf, std::result::Result<String, String>),
     ImHexLocated(Option<PathBuf>),
-    Indexed(
+    Indexed(u64, std::result::Result<QueryResult, String>),
+    NetworkLoaded(
         u64,
-        std::result::Result<(ResultIndex, Vec<StoredRecord>, ResultTree), String>,
+        std::result::Result<Option<volgui::network::Graph>, String>,
     ),
     Rows(
         u64,
@@ -170,6 +180,22 @@ pub struct Workspace {
     scope_label: String,
     index: ResultIndex,
     result_tree: ResultTree,
+    network: volgui::network::Graph,
+    network_table: Entity<TableState<components::network_data_table::NetworkTable>>,
+    network_table_view: bool,
+    network_hide_system: bool,
+    network_hide_noise: bool,
+    network_cache: RefCell<views::network::NetworkViewCache>,
+    network_loading: bool,
+    network_focus: Option<String>,
+    network_endpoint: Option<volgui::network::Selection>,
+    network_protocol: Option<String>,
+    network_state: Option<String>,
+    network_interesting: bool,
+    network_all_sources: bool,
+    network_sidebar_page: usize,
+    network_scroll: ScrollHandle,
+    network_sidebar_scroll: ScrollHandle,
     tree_cursor: Option<usize>,
     row_cache: HashMap<i64, Arc<StoredRecord>>,
     inflight: HashSet<i64>,
@@ -181,12 +207,15 @@ pub struct Workspace {
     selection_epoch: u64,
     browser_group: ArtifactGroup,
     show_file_handles: bool,
+    show_unavailable_files: bool,
+    file_recovery_states: HashMap<i64, volgui::analysis::files::RecoveryState>,
+    file_recovery: Option<volgui::analysis::files::RecoveryIndex>,
     result_scroll: UniformListScrollHandle,
     result_table: Entity<TableState<components::result_data_table::ResultTable>>,
     analysis_table: Entity<TableState<components::analysis_data_table::AnalysisTable>>,
     database_table: Entity<TableState<components::database_data_table::DatabaseTable>>,
     details_scroll: ScrollHandle,
-    queue_scroll: ScrollHandle,
+    queue_scroll: UniformListScrollHandle,
     relations_scroll: UniformListScrollHandle,
     column_widths: HashMap<String, Pixels>,
     column_fit_epoch: Arc<AtomicU64>,
@@ -335,6 +364,18 @@ impl Workspace {
             .loop_selection(false)
             .select_on_modifier_click(false)
         });
+        let network_table = cx.new(|cx| {
+            TableState::new(
+                components::network_data_table::NetworkTable::new(workspace.clone()),
+                window,
+                cx,
+            )
+            .col_movable(false)
+            .col_selectable(false)
+            .row_header(false)
+            .loop_selection(false)
+            .select_on_modifier_click(false)
+        });
         let analysis_table = cx.new(|cx| {
             TableState::new(
                 components::analysis_data_table::AnalysisTable::new(workspace.clone()),
@@ -358,6 +399,18 @@ impl Workspace {
             .row_header(false)
         });
         let subscriptions = vec![
+            cx.subscribe(&network_table, |this, table, event: &TableEvent, cx| {
+                if let TableEvent::SelectRow(row) = event
+                    && let Some(id) = table
+                        .read(cx)
+                        .delegate()
+                        .record_id(*row, &this.network.entries)
+                    && this.selected.as_ref().is_none_or(|record| record.id != id)
+                {
+                    this.detail = DetailTab::Overview;
+                    this.load_record(id, cx);
+                }
+            }),
             cx.subscribe(
                 &result_table,
                 |this, _, event: &TableEvent, cx| match event {
@@ -380,6 +433,10 @@ impl Workspace {
             ),
             cx.subscribe(&query, |this, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
+                    if this.result_group() == Some(ArtifactGroup::Network) {
+                        this.network_scroll.set_offset(Point::default());
+                        this.network_sidebar_page = 0;
+                    }
                     this.query_due = Some(Instant::now() + Duration::from_millis(180));
                     cx.notify();
                 }
@@ -443,6 +500,22 @@ impl Workspace {
             scope_label: "Artifacts".into(),
             index: ResultIndex::default(),
             result_tree: ResultTree::default(),
+            network: volgui::network::Graph::default(),
+            network_table,
+            network_table_view: false,
+            network_hide_system: true,
+            network_hide_noise: true,
+            network_cache: RefCell::default(),
+            network_loading: false,
+            network_focus: None,
+            network_endpoint: None,
+            network_protocol: None,
+            network_state: None,
+            network_interesting: false,
+            network_all_sources: false,
+            network_sidebar_page: 0,
+            network_scroll: ScrollHandle::default(),
+            network_sidebar_scroll: ScrollHandle::default(),
             tree_cursor: None,
             row_cache: HashMap::new(),
             inflight: HashSet::new(),
@@ -454,12 +527,15 @@ impl Workspace {
             selection_epoch: 0,
             browser_group: ArtifactGroup::Processes,
             show_file_handles: true,
+            show_unavailable_files: true,
+            file_recovery_states: HashMap::new(),
+            file_recovery: None,
             result_scroll: UniformListScrollHandle::default(),
             result_table,
             analysis_table,
             database_table,
             details_scroll: ScrollHandle::default(),
-            queue_scroll: ScrollHandle::default(),
+            queue_scroll: UniformListScrollHandle::default(),
             relations_scroll: UniformListScrollHandle::default(),
             column_widths: HashMap::new(),
             column_fit_epoch: Arc::new(AtomicU64::new(0)),
@@ -813,8 +889,21 @@ impl Workspace {
                                 }
                             }
                         }
-                    } else if self.scope.is_empty() || self.scope.contains(&id) {
-                        self.select_run(id, window, cx);
+                    } else if self.result_group() == Some(ArtifactGroup::Network)
+                        && self.scope_label == ArtifactGroup::Network.label()
+                        && self.case.as_ref().is_some_and(|case| {
+                            case.document.runs.iter().any(|run| {
+                                run.id == id
+                                    && Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                                    && ArtifactGroup::for_plugin(&run.plugin)
+                                        == ArtifactGroup::Network
+                            })
+                        })
+                    {
+                        self.scope = self.group_runs(ArtifactGroup::Network);
+                        self.start_query(cx);
+                    } else if self.scope.contains(&id) {
+                        self.start_query(cx);
                     } else if self.result_group() == Some(ArtifactGroup::Processes)
                         && self.case.as_ref().is_some_and(|case| {
                             case.document.runs.iter().any(|run| {
@@ -831,6 +920,60 @@ impl Workspace {
                     {
                         self.start_query(cx);
                     }
+                    if matches!(
+                        self.result_group(),
+                        Some(ArtifactGroup::Files | ArtifactGroup::Processes)
+                    ) && self.case.as_ref().is_some_and(|case| {
+                        case.document.runs.iter().any(|run| {
+                            run.id == id && run.plugin == volgui::extracted_files::DUMP_FILES
+                        })
+                    }) {
+                        self.tree_cursor = None;
+                        self.start_query(cx);
+                    }
+                }
+                Event::NetworkLoaded(epoch, result) => {
+                    if epoch != self.query_epoch.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    self.network_loading = false;
+                    match result {
+                        Ok(Some(graph)) => {
+                            self.network = graph;
+                            *self.network_cache.borrow_mut() = Default::default();
+                            if self
+                                .network_focus
+                                .as_ref()
+                                .is_none_or(|ip| !self.network.addresses.contains_key(ip))
+                            {
+                                let mut counts = std::collections::BTreeMap::<String, usize>::new();
+                                for entry in &self.network.entries {
+                                    if let Some(endpoint) = &entry.local {
+                                        *counts.entry(endpoint.address.clone()).or_default() += 1;
+                                    }
+                                }
+                                self.network_focus = counts
+                                    .iter()
+                                    .filter(|(ip, _)| {
+                                        !matches!(ip.as_str(), "0.0.0.0" | "::" | "*")
+                                            && !ip
+                                                .parse::<std::net::IpAddr>()
+                                                .is_ok_and(|ip| ip.is_loopback())
+                                    })
+                                    .max_by_key(|(_, n)| *n)
+                                    .or_else(|| counts.iter().max_by_key(|(_, n)| *n))
+                                    .map(|(ip, _)| ip.clone())
+                                    .or_else(|| self.network.addresses.keys().next().cloned());
+                            }
+                            if self.network_endpoint.as_ref().is_some_and(|selection| {
+                                !self.network.contains_selection(selection)
+                            }) {
+                                self.network_endpoint = None;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.error = Some(error),
+                    }
                 }
                 Event::Indexed(epoch, result) => {
                     if epoch != self.query_epoch.load(Ordering::Relaxed) {
@@ -838,7 +981,15 @@ impl Workspace {
                     }
                     self.loading = false;
                     match result {
-                        Ok((index, rows, tree)) => {
+                        Ok(QueryResult {
+                            index,
+                            rows,
+                            tree,
+                            file_states,
+                            recovery,
+                        }) => {
+                            self.file_recovery_states = file_states;
+                            self.file_recovery = recovery;
                             self.index = index;
                             self.result_tree = tree;
                             self.tree_cursor = None;
@@ -940,11 +1091,18 @@ impl Workspace {
                                 && self.selected_evidence.as_ref() != Some(&evidence)
                             {
                                 self.selected_evidence = Some(evidence);
+                                self.file_offset_physical = false;
                                 self.artifact_choices.clear();
                                 self.sync_os();
                             }
                             self.view = View::Workspace;
                             if !self.scope.contains(&r.run_id)
+                                && !(self.result_group() == Some(ArtifactGroup::Network)
+                                    && self
+                                        .network
+                                        .entries
+                                        .iter()
+                                        .any(|entry| entry.source.id == r.id))
                                 && !self
                                     .result_tree
                                     .nodes
@@ -988,6 +1146,7 @@ impl Workspace {
                     if epoch != self.hex_epoch {
                         continue;
                     }
+                    let failed_read = result.is_err();
                     self.hex_view = match result {
                         Ok((files, page)) => {
                             let offset = if self.result_group() == Some(ArtifactGroup::Applications)
@@ -1023,6 +1182,14 @@ impl Workspace {
                         }
                         Err(error) => HexView::Error(error),
                     };
+                    if failed_read
+                        && matches!(
+                            self.result_group(),
+                            Some(ArtifactGroup::Files | ArtifactGroup::Processes)
+                        )
+                    {
+                        self.start_query(cx);
+                    }
                     if self.content_encoding == volgui::extracted_files::ContentEncoding::Sqlite {
                         self.set_content_encoding(self.content_encoding, cx);
                     }
@@ -1049,4 +1216,9 @@ impl Workspace {
             cx.notify();
         }
     }
+}
+
+/// Keep action buttons compact, including when placed directly in a column.
+fn app_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id).self_center().flex_shrink_0()
 }

@@ -10,6 +10,7 @@ mod case_info;
 mod details;
 mod files;
 mod investigation;
+pub(in crate::ui) mod network;
 mod new_case;
 mod plugins;
 mod processes;

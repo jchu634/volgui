@@ -41,6 +41,66 @@ fn fixture_with_plugin(plugin: &str) -> (tempfile::TempDir, Case, Run) {
 }
 
 #[test]
+fn quarantined_dump_output_preserves_findings_and_healthy_outputs() {
+    let (_temp, mut case, run) = fixture_with_plugin(volgui::extracted_files::DUMP_FILES);
+    let directory = case.run_dir(&run.id);
+    let json = serde_json::json!([
+        {"FileObject":4096,"FileName":"runas.exe","File output":"file.quarantined.dat"},
+        {"FileObject":8192,"FileName":"healthy.txt","File output":"file.healthy.dat"}
+    ])
+    .to_string();
+    fs::write(directory.join("stdout.json"), &json).unwrap();
+    fs::write(directory.join("stderr.log"), "engine completed").unwrap();
+    fs::write(directory.join("file.healthy.dat"), b"healthy contents").unwrap();
+    // Defender removed the first output between extraction and archiving.
+    case.finish(
+        &run.id,
+        &volgui::volatility::Outcome {
+            status: RunStatus::Completed,
+            exit_code: Some(0),
+            message: String::new(),
+            table: Some(volgui::volatility::Table::parse(&json).unwrap()),
+        },
+    )
+    .unwrap();
+    assert_eq!(case.results(&run.id).unwrap().rows.len(), 2);
+    let outputs = object_store::output_metadata(&directory).unwrap();
+    assert!(
+        outputs[&directory.join("file.quarantined.dat")]
+            .blocked_reason
+            .is_some()
+    );
+    assert!(
+        outputs[&directory.join("file.healthy.dat")]
+            .sha256
+            .is_some()
+    );
+    assert!(
+        volgui::extracted_files::open_artifact(&directory.join("file.quarantined.dat")).is_err()
+    );
+    assert!(volgui::extracted_files::open_artifact(&directory.join("file.healthy.dat")).is_ok());
+    let store = volgui::results::ResultStore::at(&case.directory);
+    let ids = store
+        .query(&volgui::results::Query {
+            runs: vec![run.id.clone()],
+            ..Default::default()
+        })
+        .unwrap()
+        .ids;
+    let rows = store.fetch(&ids).unwrap();
+    let recovery =
+        volgui::analysis::files::RecoveryIndex::load(&case.directory, &case.document).unwrap();
+    assert_eq!(
+        recovery.state(&rows[0], false),
+        volgui::analysis::files::RecoveryState::Unavailable
+    );
+    assert_eq!(
+        recovery.state(&rows[1], false),
+        volgui::analysis::files::RecoveryState::Recovered
+    );
+}
+
+#[test]
 fn dumps_share_pages_and_preserve_exact_bytes_offsets_hashes_and_exports() {
     let (temp, case, run) = fixture();
     let a = vec![0x41; 4096];

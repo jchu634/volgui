@@ -16,8 +16,22 @@ fn main() -> Result<(), String> {
     );
     let mut case = Case::create(&directory, "Synthetic UI fixture")?;
     let path = case.directory.join("fixture.raw");
-    fs::write(&path, b"Synthetic UI fixture, not a memory acquisition.")
-        .map_err(|e| e.to_string())?;
+    let mut bytes = b"Synthetic UI fixture, not a memory acquisition.".to_vec();
+    let start = bytes.len();
+    bytes.resize(start + 48 + 1038, 0);
+    bytes[start + 8..start + 12].copy_from_slice(&0x56a2b5f0u32.to_le_bytes());
+    bytes[start + 12..start + 16].copy_from_slice(&604800u32.to_le_bytes());
+    bytes[start + 16..start + 32].fill(0x11);
+    let uri: Vec<_> = "tcp://203.0.113.200:5059"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    bytes[start + 48..start + 48 + uri.len()].copy_from_slice(&uri);
+    for (i, value) in [300u32, 3600, 10].into_iter().enumerate() {
+        bytes[start + 48 + 1024 + i * 4..start + 48 + 1028 + i * 4]
+            .copy_from_slice(&value.to_le_bytes());
+    }
+    fs::write(&path, bytes).map_err(|e| e.to_string())?;
     let mut evidence = Evidence::inspect(&path, &AtomicBool::new(false), |_, _| {})?;
     evidence.operating_system = OperatingSystem::Windows;
     let evidence_id = evidence.id.clone();
@@ -93,11 +107,25 @@ fn main() -> Result<(), String> {
         })
         .collect();
     save(&mut case, &evidence_id, "windows.pslist.PsList", processes)?;
-    let network = (0..10_000)
+    let mut network: Vec<_> = (0..10_000)
         .map(|i| Record {
             depth: 0,
             fields: BTreeMap::from([
                 ("PID".into(), json!(i % 5000 + 1)),
+                (
+                    "Owner".into(),
+                    json!(if i % 10 == 0 {
+                        "svchost.exe"
+                    } else {
+                        "fixture-client.exe"
+                    }),
+                ),
+                ("Proto".into(), json!("TCPv4")),
+                ("LocalPort".into(), json!(40000 + i)),
+                (
+                    "ForeignPort".into(),
+                    json!(if i % 10 == 1 { 0 } else { 443 }),
+                ),
                 (
                     "LocalAddr".into(),
                     json!(format!("192.0.2.{}", i % 250 + 1)),
@@ -107,7 +135,23 @@ fn main() -> Result<(), String> {
             ]),
         })
         .collect();
+    for i in 1..=40 {
+        network.extend(Table::parse(&json!([{"PID":42,"Owner":"fixture-client.exe","Proto":"TCPv4","LocalAddr":"192.0.2.250","LocalPort":51000+i,"ForeignAddr":format!("203.0.113.{i}"),"ForeignPort":445,"State":"ESTABLISHED"}]).to_string())?.rows);
+    }
+    network.extend(Table::parse(&json!([
+        {"PID":42,"Owner":"fixture-client.exe","Proto":"TCPv6","LocalAddr":"2001:db8:1234:5678:abcd:abcd:1234:5678","LocalPort":50000,"ForeignAddr":"2001:db8::1","ForeignPort":445,"State":"ESTABLISHED"}
+    ]).to_string())?.rows);
     save(&mut case, &evidence_id, "windows.netscan.NetScan", network)?;
+    save(
+        &mut case,
+        &evidence_id,
+        volgui::analysis::DOWNLOADS,
+        Table::parse(&json!([
+            {"Finding":"Download + process candidate; filename match", "Filename":"payload.exe", "Website URL":"https://example.test/tools", "URL":"https://example.test/payload.exe", "PID":42},
+            {"Finding":"Download origin; execution not established", "Filename":"AutoHotkey_2.0.4_setup.exe", "Website URL":"https://example.test/installer", "URL":"https://example.test/AutoHotkey_2.0.4_setup.exe"},
+            {"Finding":"Meterpreter TCP configuration", "IP":"192.0.2.5", "Port":5059, "Match offset":0, "Encoding":"UTF-16LE", "Parser version":"downloads-v1", "Interpretation":"Synthetic legacy finding for UI verification; no actual payload is present."}
+        ]).to_string())?.rows,
+    )?;
     let mut files: Vec<_> = (0..50_000)
         .map(|i| Record {
             depth: 0,

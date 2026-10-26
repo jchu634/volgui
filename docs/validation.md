@@ -1,5 +1,15 @@
 # Validation
 
+## Download investigation validation
+
+```powershell
+cargo run --locked --no-default-features --example validate_downloads -- <capture> <new-case-directory> <engine> [source-case-directory]
+```
+
+This executes the chooser's inventories, deferred profile recovery and native parser. An optional source case supplies the evidence fingerprint and latest successful unfiltered inventories through read-only queries. The source case is not changed. The new case retains results and `downloads.csv`; memory scanning still reads the acquisition. `tests/downloads.rs` and download parser unit tests cover origin streams, renamed targets, ordered redirects, older schemas, source boundaries, different evidence, reused PIDs, missing socket owners, cancellation, persistence, raw scan boundaries, structural validation and export.
+
+Open the output case, select **Download investigation**, search a filename and inspect its origin and execution evidence. Open each source and return with Back. Choose **Connection leads**, select an endpoint and inspect its source bytes. Confirm missing ownership stays missing. Use **Network for PID** and verify `pid:<number>` matches the PID exactly. Native UI checks must also confirm the new analysis is in the basic chooser and that it expands to the normal queue.
+
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests. Tests and the Windows accessibility regression share one Windows job to reuse compiled dependencies. Cargo commands use the committed lockfile. Run formatting, compilation checks, and Clippy locally alongside the tests:
 
 ```powershell
@@ -41,7 +51,7 @@ cargo run --example seed_workspace -- <new-case-directory>
 
 This generates a labelled synthetic case with 5,000 processes, 10,000 network records, 50,001 files, file and non-file handles, recovered browser data, registry keys and values, and multiple cache variants. Select PID 1 and open Handles to inspect File, Key, Mutant and Event objects. Select its History file child, enable Contents, choose SQLite tables, and inspect the visits table. Browser activity shows parsed history, a search and a saved session tab. Registry can reuse saved root and Microsoft subkey reads without an engine. Global string search for `Synthetic` should return a UTF-8 match in fixture.raw. Text/hex paging and Show in Files remain available.
 
-In Network, check the native data table with all 10,000 records. Sort PID in both directions, select rows with the mouse and Home/End keys, scroll beyond the initially cached rows, drag a column boundary, and double-click it to fit the contents. After scrolling away from a selected row, click both cell text and empty row space and confirm the viewport stays in place while details load. Repeat on partially clipped rows at the top and bottom of the viewport, in both selection directions. After releasing a click or text drag, move the pointer over either viewport edge without holding a button; the table must not auto-scroll. Home/End should still reveal the selected row, and dragging text should still select it. Search for a missing value to check the empty message, then clear the search. In New analysis, check group and individual checkboxes, shift selection, previously run plugins, and Options. The SQLite preview uses native columns while retaining its read-only 100-row pages.
+In Network, check IP nodes, protocol/state filters, peer paging and port selection. Select an endpoint with more than forty occurrences and page through the sidebar. Verify both local and remote endpoint selections, process links, record details and Back. Search an endpoint and confirm graph filtering does not remove sidebar records. Text references have no invented connection to the focus host. In a real capture case, run New analysis > Network investigation and correlation, then inspect share references and explicit network commands from collected records. Verify that preprocessing does not scan raw acquisition bytes. Older findings with acquisition offsets still support Source bytes. In New analysis, check group and individual checkboxes, shift selection, previously run plugins, and Options. The SQLite preview uses native columns while retaining its read-only 100-row pages.
 
 `tests/investigation.rs` exercises native job persistence/export, evidence separation,
 browser recovery queues, history/search parsing, offsets across string scan chunks,
@@ -124,3 +134,12 @@ user-range bytes before and after archival and reports logical output size,
 retained pack and catalog size, archival time, and full-file hashing plus range
 reads compared with verified chunk reads. It does not invoke Volatility or time
 the complete browser parser. Temporary files are removed when the test finishes.
+
+
+## Network capture validation
+
+```powershell
+cargo run --locked --no-default-features --example validate_network -- <capture> <new-case-directory> <engine>
+```
+
+This runs the same chooser expansion and native parser, retains the source inventories and exports network.csv. Use a new case directory. Parser tests are in tests/network.rs. Run a desktop build to verify node layout, endpoint paging, process navigation, Back restoration and source-byte decoding.

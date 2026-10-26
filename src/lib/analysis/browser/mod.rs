@@ -27,6 +27,27 @@ pub(super) fn analyze(
     cancel: &AtomicBool,
     progress: &impl Fn(String),
 ) -> Result<(Table, String), String> {
+    analyze_mode(directory, document, run, cancel, progress, true)
+}
+
+pub(super) fn analyze_profiles(
+    directory: &Path,
+    document: &CaseSnapshot,
+    run: &Run,
+    cancel: &AtomicBool,
+    progress: &impl Fn(String),
+) -> Result<(Table, String), String> {
+    analyze_mode(directory, document, run, cancel, progress, false)
+}
+
+fn analyze_mode(
+    directory: &Path,
+    document: &CaseSnapshot,
+    run: &Run,
+    cancel: &AtomicBool,
+    progress: &impl Fn(String),
+    include_memory: bool,
+) -> Result<(Table, String), String> {
     let candidates = super::browser_candidates(directory, document, &run.evidence_id, cancel)?;
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
@@ -169,15 +190,19 @@ pub(super) fn analyze(
             break;
         }
     }
-    let memory = memory::analyze(
-        directory,
-        document,
-        run,
-        cancel,
-        progress,
-        &mut rows,
-        &mut warnings,
-    )?;
+    let memory = if include_memory {
+        memory::analyze(
+            directory,
+            document,
+            run,
+            cancel,
+            progress,
+            &mut rows,
+            &mut warnings,
+        )?
+    } else {
+        0
+    };
     rows.sort_by_key(|row| match row.text("Kind").as_str() {
         "Memory search" | "Web search" => 0,
         "Web history" | "Session tab" => 1,
@@ -189,11 +214,19 @@ pub(super) fn analyze(
             "Stopped at the {MAX_ROWS} finding limit; some URLs may be omitted."
         ));
     }
-    let message = format!(
-        "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Matching memory searches and query prefixes are grouped under the longest query within each process, source, endpoint and query origin. Search variants retain the original URLs, addresses and counts; Grouped occurrences totals those counts. Prefix grouping does not establish which queries were submitted. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
-        rows.len(),
-        warnings.join("\n")
-    );
+    let message = if !include_memory {
+        format!(
+            "Recovered {} profile findings from {parsed} cached files. Standalone SQLite pages only; detached WAL pages are not merged.\n{}",
+            rows.len(),
+            warnings.join("\n")
+        )
+    } else {
+        format!(
+            "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Matching memory searches and query prefixes are grouped under the longest query within each process, source, endpoint and query origin. Search variants retain the original URLs, addresses and counts; Grouped occurrences totals those counts. Prefix grouping does not establish which queries were submitted. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
+            rows.len(),
+            warnings.join("\n")
+        )
+    };
     Ok((table(rows), message))
 }
 
@@ -230,7 +263,7 @@ pub(super) fn browser_name(path: &str) -> &'static str {
     }
 }
 
-fn timestamp(microseconds: i64, chrome: bool) -> String {
+pub(super) fn timestamp(microseconds: i64, chrome: bool) -> String {
     let unix = if chrome {
         microseconds.checked_sub(11_644_473_600_000_000)
     } else {
@@ -296,6 +329,10 @@ fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(
         )
         .unwrap_or(false)
     };
+    let downloads = has("downloads");
+    if downloads {
+        super::downloads::chromium_downloads(&db, rows, cancel)?;
+    }
     let (sql, browser, chrome) = if has("urls") && has("visits") {
         (
             "SELECT u.url, COALESCE(u.title,''), v.visit_time, v.id FROM visits v JOIN urls u ON u.id=v.url LIMIT 100000",
@@ -308,6 +345,8 @@ fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(
             "Firefox",
             false,
         )
+    } else if downloads {
+        return Ok(());
     } else {
         return Err("SQLite file has no supported Chromium or Firefox history tables".into());
     };

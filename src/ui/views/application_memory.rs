@@ -21,9 +21,8 @@ impl Workspace {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                Button::new("memory-previous-match")
+                app_button("memory-previous-match")
                     .small()
-                    .ghost()
                     .label("Previous match")
                     .disabled(position.is_none_or(|i| i == 0) || self.loading)
                     .on_click(cx.listener(|this, _, _, cx| this.step_application_match(false, cx))),
@@ -34,9 +33,8 @@ impl Workspace {
                 self.index.ids.len()
             )))
             .child(
-                Button::new("memory-next-match")
+                app_button("memory-next-match")
                     .small()
-                    .ghost()
                     .label("Next match")
                     .disabled(
                         self.loading || position.is_none_or(|i| i + 1 >= self.index.ids.len()),
@@ -44,9 +42,8 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| this.step_application_match(true, cx))),
             )
             .child(
-                Button::new("memory-bookmark")
+                app_button("memory-bookmark")
                     .small()
-                    .ghost()
                     .label(if marked {
                         "Remove bookmark"
                     } else {
@@ -95,9 +92,8 @@ impl Workspace {
         .enumerate()
         {
             encodings = encodings.child(
-                Button::new(("memory-text-encoding", i))
+                app_button(("memory-text-encoding", i))
                     .xsmall()
-                    .ghost()
                     .label(encoding.label())
                     .selected(self.content_encoding == encoding)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -258,9 +254,8 @@ impl Workspace {
             .child(message.to_owned())
             .when(matches!(self.hex_view, HexView::Error(_)), |s| {
                 s.child(
-                    Button::new("memory-hex-retry")
+                    app_button("memory-hex-retry")
                         .small()
-                        .ghost()
                         .label("Retry")
                         .on_click(cx.listener(|this, _, _, cx| this.load_hex(cx))),
                 )

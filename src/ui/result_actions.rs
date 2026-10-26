@@ -16,6 +16,12 @@ impl Workspace {
                     && ArtifactGroup::for_plugin(&r.plugin) == group
             })
             .map(|r| r.id.clone())
+            // The report is a complete source snapshot. Older interpretations remain in history.
+            .take(if group == ArtifactGroup::Downloads {
+                1
+            } else {
+                usize::MAX
+            })
             .collect()
     }
     pub(super) fn group_count(&self, group: ArtifactGroup) -> usize {
@@ -39,6 +45,7 @@ impl Workspace {
         self.artifact_choices.clear();
         self.artifact_open = None;
         self.selected_evidence = Some(id);
+        self.file_offset_physical = false;
         self.sync_os();
         self.selected = None;
         self.selected_row = None;
@@ -97,6 +104,7 @@ impl Workspace {
         if Some(&run.evidence_id) != self.selected_evidence.as_ref() {
             self.artifact_choices.clear();
             self.selected_evidence = Some(run.evidence_id.clone());
+            self.file_offset_physical = false;
             self.sync_os();
         }
         let open_memory = run.plugin == volgui::analysis::APPLICATION
@@ -122,6 +130,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let was_application = self.result_group() == Some(ArtifactGroup::Applications);
+        self.network = volgui::network::Graph::default();
+        *self.network_cache.borrow_mut() = Default::default();
+        self.network_focus = None;
+        self.network_endpoint = None;
+        self.network_protocol = None;
+        self.network_state = None;
+        self.network_interesting = false;
+        self.network_all_sources = false;
+        self.network_sidebar_page = 0;
         self.column_filters.clear();
         self.scope = runs;
         if !was_application && self.result_group() == Some(ArtifactGroup::Applications) {
@@ -132,6 +149,9 @@ impl Workspace {
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
         self.scope_label = label;
+        if self.result_group() == Some(ArtifactGroup::Network) {
+            self.content_sidebar_visible = true;
+        }
         self.selected = None;
         self.selected_row = None;
         self.selected_run = self.scope.first().cloned();
@@ -139,6 +159,8 @@ impl Workspace {
         self.index = ResultIndex::default();
         self.result_tree = ResultTree::default();
         self.row_cache.clear();
+        self.file_recovery_states.clear();
+        self.file_recovery = None;
         self.detail = DetailTab::Overview;
         self.reset_hex();
         self.handles = None;
@@ -154,7 +176,10 @@ impl Workspace {
     }
     pub(super) fn active_query(&self, cx: &App) -> Query {
         Query {
-            filters: if self.result_group() == Some(ArtifactGroup::Web) {
+            filters: if matches!(
+                self.result_group(),
+                Some(ArtifactGroup::Web | ArtifactGroup::Downloads)
+            ) {
                 self.column_filters.clone()
             } else {
                 Default::default()
@@ -170,6 +195,33 @@ impl Workspace {
         };
         let query = self.active_query(cx);
         let group = self.result_group();
+        let mut network_query = query.clone();
+        if group == Some(ArtifactGroup::Network)
+            && self.scope_label == ArtifactGroup::Network.label()
+        {
+            // Existing cases retain the original download run and offsets as provenance.
+            // network_ids selects only payload configurations from those historical reports.
+            if let Some(case) = &self.case {
+                network_query.runs.extend(
+                    case.document
+                        .runs
+                        .iter()
+                        .filter(|run| {
+                            Some(&run.evidence_id) == self.selected_evidence.as_ref()
+                                && run.status == RunStatus::Completed
+                                && run.plugin == volgui::analysis::DOWNLOADS
+                        })
+                        .map(|run| run.id.clone()),
+                );
+            }
+        }
+        let file_context = self
+            .case
+            .as_ref()
+            .filter(|_| matches!(group, Some(ArtifactGroup::Files | ArtifactGroup::Processes)))
+            .map(|case| (case.directory.clone(), case.document.clone()));
+        let physical = self.file_offset_physical;
+        let show_unavailable = self.show_unavailable_files;
         let file_runs: Vec<_> = if group == Some(ArtifactGroup::Processes) && self.show_file_handles
         {
             self.group_runs(ArtifactGroup::Files)
@@ -192,6 +244,7 @@ impl Workspace {
         let epoch = self.query_epoch.fetch_add(1, Ordering::Relaxed) + 1;
         let token = self.query_epoch.clone();
         self.loading = true;
+        self.network_loading = group == Some(ArtifactGroup::Network);
         self.inflight.clear();
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -199,9 +252,25 @@ impl Workspace {
                 return;
             }
             let result = store.query(&query).and_then(|mut index| {
+                let recovery = file_context
+                    .as_ref()
+                    .map(|(directory, document)| {
+                        volgui::analysis::files::RecoveryIndex::load(directory, document)
+                    })
+                    .transpose()?;
+                let mut file_states = HashMap::new();
                 let tree = match group {
                     Some(ArtifactGroup::Processes) => {
-                        let files = store.tree_entries(&file_runs)?;
+                        let mut files = store.tree_entries(&file_runs)?;
+                        if let Some(recovery) = &recovery {
+                            (files, file_states) = volgui::analysis::files::filter_entries(
+                                &store,
+                                recovery,
+                                files,
+                                physical,
+                                show_unavailable,
+                            )?;
+                        }
                         let file_matches = store.query(&Query {
                             runs: file_runs,
                             text: query.text.clone(),
@@ -229,7 +298,19 @@ impl Workspace {
                         tree
                     }
                     Some(ArtifactGroup::Files) => {
-                        ResultTree::files(store.tree_entries(&query.runs)?, &index.ids)
+                        let mut files = store.tree_entries(&query.runs)?;
+                        if let Some(recovery) = &recovery {
+                            (files, file_states) = volgui::analysis::files::filter_entries(
+                                &store,
+                                recovery,
+                                files,
+                                physical,
+                                show_unavailable,
+                            )?;
+                        }
+                        let visible: HashSet<_> = files.iter().map(|entry| entry.id).collect();
+                        index.ids.retain(|id| visible.contains(id));
+                        ResultTree::files(files, &index.ids)
                     }
                     Some(ArtifactGroup::Registry) => {
                         ResultTree::registry(store.registry_entries(&query.runs)?, &index.ids)
@@ -251,9 +332,19 @@ impl Workspace {
                     ids.push(*id);
                 }
                 let rows = store.fetch_enriched(&ids)?;
-                Ok((index, rows, tree))
+                Ok(QueryResult {
+                    index,
+                    rows,
+                    tree,
+                    file_states,
+                    recovery,
+                })
             });
             let _ = tx.send(Event::Indexed(epoch, result));
+            if group == Some(ArtifactGroup::Network) {
+                let graph = volgui::network::Graph::load(&store, &network_query, epoch, &token);
+                let _ = tx.send(Event::NetworkLoaded(epoch, graph));
+            }
         });
         cx.notify();
     }
@@ -319,19 +410,37 @@ impl Workspace {
         });
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let _ = tx.send(Event::Selected(epoch, store.process_record(&runs, &pid)));
+            let result=store.process_record(&runs,&pid).and_then(|record| match record {
+                Some(record)=>Ok(Some(record)),
+                None=>Err(format!("PID {pid} is not uniquely present in the collected process inventories. Collect processes or inspect the network record's source; the process may have exited or its PID may have been reused.")),
+            });
+            let _ = tx.send(Event::Selected(epoch, result));
         });
     }
-    pub(super) fn load_annotation(&mut self, run: String, row: usize, cx: &mut Context<Self>) {
+    pub(super) fn load_annotation(
+        &mut self,
+        run: String,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(store) = self.store() else {
             return;
         };
-        self.remember_location(cx);
+        self.select_run(run.clone(), window, cx);
         self.selection_epoch += 1;
         let epoch = self.selection_epoch;
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let _ = tx.send(Event::Selected(epoch, store.record(&run, row)));
+            let _ = tx.send(Event::Selected(
+                epoch,
+                store.record(&run, row).and_then(|record| match record {
+                    Some(record) => store
+                        .fetch_enriched(&[record.id])
+                        .map(|mut rows| rows.pop()),
+                    None => Ok(None),
+                }),
+            ));
         });
     }
     pub(super) fn show_record(
@@ -344,10 +453,14 @@ impl Workspace {
         self.handles = None;
         self.handles_loading = false;
         self.handle_epoch += 1;
-        self.file_offset_physical = false;
         self.selected_run = Some(record.run_id.clone());
         self.selected_row = Some(record.row);
         self.selected = Some(Arc::new(record));
+        if self.result_group() == Some(ArtifactGroup::Network)
+            && self.detail == DetailTab::SourceBytes
+        {
+            self.load_network_bytes(cx);
+        }
         if self.result_group() == Some(ArtifactGroup::Applications) {
             let row = &self.selected.as_ref().unwrap().record;
             self.content_encoding = match row.text("Encoding").as_str() {
@@ -364,7 +477,9 @@ impl Workspace {
             self.load_handles(0, cx);
         }
         self.hex_scroll.set_offset(Point::default());
-        if self.content_sidebar_visible || self.result_group() == Some(ArtifactGroup::Applications)
+        if self.result_group() != Some(ArtifactGroup::Network)
+            && (self.content_sidebar_visible
+                || self.result_group() == Some(ArtifactGroup::Applications))
         {
             self.load_hex(cx);
         }

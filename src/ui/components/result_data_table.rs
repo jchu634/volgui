@@ -253,10 +253,22 @@ impl TableDelegate for ResultTable {
     ) -> impl IntoElement {
         let column = &self.columns[col];
         let weak = self.workspace.clone();
-        let filterable = weak
-            .upgrade()
-            .is_some_and(|workspace| workspace.read(cx).result_group() == Some(ArtifactGroup::Web))
-            && matches!(column.key.as_str(), "PID" | "Browser" | "Kind" | "Domain");
+        let filterable = weak.upgrade().is_some_and(|workspace| {
+            matches!(
+                workspace.read(cx).result_group(),
+                Some(ArtifactGroup::Web | ArtifactGroup::Downloads)
+            )
+        }) && matches!(
+            column.key.as_str(),
+            "PID"
+                | "Browser"
+                | "Kind"
+                | "Domain"
+                | "Finding"
+                | "Filename"
+                | "Remote IP"
+                | "Remote port"
+        );
         let header = div()
             .flex()
             .items_center()
@@ -286,9 +298,9 @@ impl TableDelegate for ResultTable {
                         }
                     })
                     .trigger(
-                        Button::new(key("column-filter", &column))
-                            .xsmall()
+                        app_button(key("column-filter", &column))
                             .ghost()
+                            .xsmall()
                             .icon(IconName::ChevronDown)
                             .selected(active)
                             .tooltip(format!("Filter {label}"))

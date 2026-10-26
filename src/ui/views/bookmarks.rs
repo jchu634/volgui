@@ -12,6 +12,18 @@ impl Workspace {
             .flex_col()
             .gap_3()
             .child(div().text_xl().child("Bookmarks"));
+        if self
+            .case
+            .as_ref()
+            .is_none_or(|case| !case.document.annotations.iter().any(|a| a.bookmarked))
+        {
+            page = page.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No bookmarks yet. Bookmark a result to find it here."),
+            );
+        }
         if let Some(case) = &self.case {
             for (i, a) in case
                 .document
@@ -48,11 +60,11 @@ impl Workspace {
                             ),
                         )
                         .child(
-                            Button::new(("open-bookmark", i))
+                            app_button(("open-bookmark", i))
                                 .small()
                                 .label("Open")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.load_annotation(run.clone(), row, cx)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.load_annotation(run.clone(), row, window, cx)
                                 })),
                         ),
                 );

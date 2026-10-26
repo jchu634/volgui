@@ -32,11 +32,39 @@ pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<us
 fn is_recovery_analysis(plugin: &str) -> bool {
     matches!(
         plugin,
-        crate::analysis::BROWSER | crate::analysis::APPLICATION
+        crate::analysis::BROWSER
+            | crate::analysis::APPLICATION
+            | crate::analysis::NETWORK
+            | crate::analysis::FILES
+            | crate::analysis::DOWNLOADS
     )
 }
 
 pub const APPLICATION_RECOVERY_PENDING: &str = "Waiting to prepare process memory recovery";
+
+pub fn prepare_file_recovery(case: &Case, engine: &Installation, run: &Run) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let mut document = case.document.clone();
+    if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
+        document.runs.truncate(index);
+    }
+    let mut runs = crate::analysis::files::recovery_runs(
+        &case.directory,
+        &document,
+        evidence,
+        engine,
+        &run.arguments,
+    )?;
+    let parser = runs.last_mut().ok_or("Missing file recovery report")?;
+    parser.id = run.id.clone();
+    parser.created_at = run.created_at.clone();
+    Ok(runs)
+}
 
 /// Replace a deferred application job with its pinned inputs and parser job.
 pub fn prepare_application_recovery(
@@ -72,6 +100,44 @@ pub fn prepare_application_recovery(
 pub const BROWSER_RECOVERY_PENDING: &str =
     "Waiting to prepare browser recovery after prerequisites";
 
+pub fn prepare_download_recovery(
+    case: &Case,
+    engine: &Installation,
+    run: &Run,
+) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let mut document = case.document.clone();
+    if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
+        document.runs.truncate(index);
+    }
+    let mut runs = if engine
+        .plugins
+        .iter()
+        .any(|p| p.id == crate::extracted_files::DUMP_FILES)
+    {
+        crate::analysis::browser_recovery_runs(
+            &case.directory,
+            &document,
+            evidence,
+            engine,
+            false,
+            &std::sync::atomic::AtomicBool::new(false),
+        )?
+    } else {
+        Vec::new()
+    };
+    runs.retain(|r| r.plugin != crate::analysis::BROWSER);
+    let mut report = run.clone();
+    report.message.clear();
+    runs.push(report);
+    Ok(runs)
+}
+
 /// Resolve a deferred browser job using results from the jobs ahead of it.
 pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -> Result<Vec<Run>> {
     let evidence = case
@@ -93,17 +159,22 @@ pub fn prepare_browser_recovery(case: &Case, engine: &Installation, run: &Run) -
     Ok(runs)
 }
 
-/// The common investigation tasks shown before the full plugin catalog.
+/// Inputs consumed by investigation views or their recovery pipelines.
+/// System information is also basic as a useful preprocessing overview.
+/// Bulk file recovery and other generic artifact shortcuts remain extended.
 pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
+        crate::analysis::NETWORK => "Network investigation and correlation",
+        crate::analysis::DOWNLOADS => "Download and execution investigation",
         crate::analysis::BROWSER => "Browser recovery and analysis",
-        crate::analysis::APPLICATION => "Process Memory recovery and analysis",
-        REGISTRY_ALL => "All registry subkeys",
         "windows.info.Info" => "System information",
+        REGISTRY_ALL => "All registry subkeys",
         "windows.pslist.PsList" | "linux.pslist.PsList" | "mac.pslist.PsList" => "Processes",
         "windows.pstree.PsTree" | "linux.pstree.PsTree" | "mac.pstree.PsTree" => "Process tree",
         "windows.psscan.PsScan" => "Process scan",
         "windows.cmdline.CmdLine" => "Command lines",
+        "windows.mftscan.ADS" => "Download origins and alternate data streams",
+        "windows.malware.psxview.PsXView" => "Cross-check hidden processes",
         "windows.netscan.NetScan"
         | "windows.netstat.NetStat"
         | "linux.sockstat.Sockstat"
@@ -118,11 +189,8 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.registry.hivelist.HiveList" | "windows.registry.hivescan.HiveScan" => {
             "Registry hives"
         }
-        "linux.bash.Bash" | "mac.bash.Bash" => "Shell history",
-        "windows.malware.malfind.Malfind" => "Suspicious memory",
-        "windows.modules.Modules" | "linux.lsmod.Lsmod" | "mac.lsmod.Lsmod" => "Loaded modules",
         "windows.consoles.Consoles" => "Console history",
-        "windows.sessions.Sessions" => "User sessions",
+        "windows.cmdscan.CmdScan" => "Scanned command history",
         _ => return None,
     })
 }
@@ -133,6 +201,18 @@ pub const REGISTRY_ALL: &str = "windows.registry.AllSubkeys";
 pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
     let mut catalog = plugins.to_vec();
     catalog.extend([
+        Plugin {
+            id: crate::analysis::DOWNLOADS.into(),
+            description: crate::analysis::downloads::HELP.into(),
+        },
+        Plugin {
+            id: crate::analysis::FILES.into(),
+            description: "File and document recovery. Collect FileScan and file handles, then attempt recovery of each distinct file object. Prepare cached files for hex, text, SQLite inspection and export. Hide confirmed unavailable files with the Files toggle. Large captures can queue many extraction jobs. Optional --physical uses older FileScan physical offsets.".into(),
+        },
+        Plugin {
+            id: crate::analysis::NETWORK.into(),
+            description: "Collect available Windows sockets, processes, command lines, console history and handles. Correlate SMB shares and explicit connection commands in collected records. Credentials are read only when present in a network drive command. Also recovers structurally validated Meterpreter TCP configurations from acquisition bytes. Does not search raw memory for credentials or arbitrary connection strings. Findings retain source record provenance or acquisition offsets.".into(),
+        },
         Plugin {
             id: crate::analysis::APPLICATION.into(),
             description: "Choose a PID to recover text from that process's memory. Automatically collects processes, command lines, memory regions and dumps. Inspect hex and decoded text together, including old edits and partial buffers.".into(),
@@ -193,6 +273,12 @@ pub fn queue_retries_with_engine(
                 if previous.plugin == crate::analysis::APPLICATION {
                     run.message = APPLICATION_RECOVERY_PENDING.into();
                 }
+                if previous.plugin == crate::analysis::FILES {
+                    run.message = crate::analysis::files::PENDING.into();
+                }
+                if previous.plugin == crate::analysis::DOWNLOADS {
+                    run.message = crate::analysis::downloads::PENDING.into();
+                }
                 return Ok(run);
             }
             engine.ok_or("Configure Volatility in settings")?.prepare(
@@ -223,7 +309,10 @@ pub fn chooser_plugins(
     let mut plugins: Vec<_> = plugins
         .iter()
         .filter(|plugin| {
-            (os.accepts(&plugin.id)
+            !matches!(
+                plugin.id.as_str(),
+                crate::analysis::APPLICATION | crate::analysis::STRINGS
+            ) && (os.accepts(&plugin.id)
                 && (!is_recovery_analysis(&plugin.id)
                     || matches!(os, OperatingSystem::Windows | OperatingSystem::Unknown)))
                 && (extended || basic_label(&plugin.id).is_some())
@@ -303,8 +392,16 @@ impl AnalysisDraft {
         let mut ordinary = self.clone();
         let browser = ordinary.selected.remove(crate::analysis::BROWSER);
         let application = ordinary.selected.remove(crate::analysis::APPLICATION);
+        let network = ordinary.selected.remove(crate::analysis::NETWORK);
+        let files = ordinary.selected.remove(crate::analysis::FILES);
+        let downloads = ordinary.selected.remove(crate::analysis::DOWNLOADS);
         let registry = ordinary.selected.remove(REGISTRY_ALL);
-        for id in [crate::analysis::BROWSER, REGISTRY_ALL] {
+        for id in [
+            crate::analysis::BROWSER,
+            crate::analysis::NETWORK,
+            crate::analysis::DOWNLOADS,
+            REGISTRY_ALL,
+        ] {
             if self.selected.contains(id)
                 && self
                     .arguments
@@ -315,6 +412,80 @@ impl AnalysisDraft {
             }
         }
         let mut runs = ordinary.prepare(engine, evidence, &case.directory.join("analyses"))?;
+        if files {
+            if self.os != OperatingSystem::Windows {
+                return Err("File and document recovery requires Windows evidence".into());
+            }
+            if !engine
+                .plugins
+                .iter()
+                .any(|p| p.id == crate::extracted_files::DUMP_FILES)
+            {
+                return Err("File recovery requires the windows.dumpfiles.DumpFiles plugin".into());
+            }
+            let arguments = parse_arguments(
+                self.arguments
+                    .get(crate::analysis::FILES)
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            )?;
+            let mut report = crate::analysis::prepare(evidence, crate::analysis::FILES, arguments)?;
+            for plugin in crate::analysis::files::SOURCES {
+                if !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                    r.evidence_id == evidence.id
+                        && r.plugin == plugin
+                        && r.arguments.is_empty()
+                        && matches!(
+                            r.status,
+                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                        )
+                }) {
+                    // FileScan is required. Handles add process ownership when supported.
+                    if plugin == crate::analysis::files::SOURCES[0]
+                        || engine.plugins.iter().any(|p| p.id == plugin)
+                    {
+                        runs.push(engine.prepare(
+                            evidence,
+                            plugin,
+                            vec![],
+                            &case.directory.join("analyses"),
+                        )?);
+                    }
+                }
+            }
+            report.message = crate::analysis::files::PENDING.into();
+            runs.push(report);
+        }
+        if network {
+            if self.os != OperatingSystem::Windows {
+                return Err("Network investigation currently requires Windows evidence".into());
+            }
+            for plugin in crate::analysis::network::SOURCES {
+                if engine.plugins.iter().any(|p| p.id == *plugin)
+                    && !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                        r.evidence_id == evidence.id
+                            && r.plugin == *plugin
+                            && r.arguments.is_empty()
+                            && matches!(
+                                r.status,
+                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            )
+                    })
+                {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            runs.push(crate::analysis::prepare(
+                evidence,
+                crate::analysis::NETWORK,
+                vec![],
+            )?);
+        }
         if application {
             if self.os != OperatingSystem::Windows {
                 return Err("Process Memory recovery requires Windows evidence".into());
@@ -371,6 +542,35 @@ impl AnalysisDraft {
                 vec!["--recurse".into()],
                 &case.directory.join("analyses"),
             )?);
+        }
+        if downloads {
+            if self.os != OperatingSystem::Windows {
+                return Err("Download investigation requires Windows evidence".into());
+            }
+            for plugin in crate::analysis::downloads::SOURCES {
+                if engine.plugins.iter().any(|p| p.id == *plugin)
+                    && !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                        r.evidence_id == evidence.id
+                            && r.plugin == *plugin
+                            && r.arguments.is_empty()
+                            && matches!(
+                                r.status,
+                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            )
+                    })
+                {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            let mut report =
+                crate::analysis::prepare(evidence, crate::analysis::DOWNLOADS, vec![])?;
+            report.message = crate::analysis::downloads::PENDING.into();
+            runs.push(report);
         }
         if browser {
             if self.os != OperatingSystem::Windows {

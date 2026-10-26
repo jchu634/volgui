@@ -511,9 +511,8 @@ impl Render for HexEditor {
                             .w(px(150.)),
                     )
                     .child(
-                        Button::new("hex-editor-go")
+                        app_button("hex-editor-go")
                             .xsmall()
-                            .ghost()
                             .label("Go to offset")
                             .on_click(cx.listener(|this, _, window, cx| this.jump(window, cx))),
                     )
@@ -533,9 +532,8 @@ impl Render for HexEditor {
                         .text_color(cx.theme().danger)
                         .child(error)
                         .child(
-                            Button::new("hex-editor-retry")
+                            app_button("hex-editor-retry")
                                 .xsmall()
-                                .ghost()
                                 .label("Retry")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.blocks.retain(|_, result| result.is_ok());
@@ -554,14 +552,14 @@ impl Render for HexEditor {
                     .child(
                         div()
                             .id("hex-editor-horizontal")
+                            .p_2()
                             .size_full()
                             .overflow_x_scroll()
                             .track_scroll(&self.horizontal)
                             .child(
                                 div()
                                     .h_full()
-                                    .w_full()
-                                    .min_w(px(720.))
+                                    .w(px(ADDRESS_WIDTH + HEX_WIDTH * 16. + UTF8_WIDTH * 16. + 16.))
                                     .flex()
                                     .flex_col()
                                     .font_family("Consolas")

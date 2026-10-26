@@ -91,6 +91,32 @@ pub struct HandlePage {
 }
 
 impl ResultStore {
+    /// Every run/row occurrence in the requested network scope, including repeated findings.
+    /// Unlike the general result browser, an endpoint investigation must not collapse runs.
+    pub fn network_ids(&self, runs: &[String]) -> Result<Vec<i64>> {
+        if runs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.connect()?;
+        let marks = std::iter::repeat_n("?", runs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = db
+            .prepare(&format!(
+                "SELECT r.id FROM records r JOIN scans s USING(run_id) WHERE r.run_id IN ({marks})
+                 AND (s.plugin != ? OR json_extract(r.fields_json,'$.Finding') = ?)
+                 ORDER BY r.run_id,r.row_index,r.id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let mut values = runs.to_vec();
+        values.push(crate::analysis::DOWNLOADS.into());
+        values.push("Meterpreter TCP configuration".into());
+        statement
+            .query_map(params_from_iter(values), |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
+    }
     pub fn open(directory: &Path) -> Result<Self> {
         let store = Self {
             path: directory.join(DATABASE),
@@ -456,6 +482,11 @@ impl ResultStore {
         let mut sql = format!("SELECT r.id FROM records r WHERE r.run_id IN ({marks})");
         let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
         append_representatives(&mut sql, &mut values, &query.runs, "r");
+        if groups.len() == 1 && groups.contains(&ArtifactGroup::Downloads) {
+            // Older download reports kept payload configuration alongside download findings.
+            // Keep the immutable source row, but present it through Network instead.
+            sql.push_str(" AND COALESCE(json_extract(r.fields_json,'$.Finding'),'') != 'Meterpreter TCP configuration'");
+        }
         if !all_handles && groups.len() == 1 && groups.contains(&ArtifactGroup::Files) {
             sql.push_str(" AND (r.run_id NOT IN (SELECT run_id FROM scans WHERE plugin='windows.handles.Handles') OR json_extract(r.fields_json,'$.Type')='File')");
         }
@@ -1188,7 +1219,7 @@ fn append_representatives(
 fn filter_expression(column: &str) -> Result<String> {
     match column {
         "Domain" => Ok("COALESCE(NULLIF(json_extract(r.fields_json,'$.Domain'),''),browser_domain(json_extract(r.fields_json,'$.URL')))".into()),
-        "PID" | "Browser" | "Kind" => Ok(format!("COALESCE(CAST(json_extract(r.fields_json,'$.{column}') AS TEXT),'')")),
+        "PID" | "Browser" | "Kind" | "Finding" | "Filename" | "Remote IP" | "Remote port" => Ok(format!("COALESCE(CAST(json_extract(r.fields_json,'$.\"{column}\"') AS TEXT),'')")),
         _ => Err("Unknown filter column".into()),
     }
 }

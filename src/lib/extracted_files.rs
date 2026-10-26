@@ -202,6 +202,29 @@ pub struct FileDumpTarget {
 
 impl FileDumpTarget {
     pub fn from_record(plugin: &str, record: &Record) -> Option<Self> {
+        if crate::analysis::files::pseudo_file(&crate::analysis::files::file_path(record)) {
+            return None;
+        }
+        if plugin == crate::analysis::FILES {
+            let source = record.text("Source plugin");
+            return crate::analysis::files::SOURCES
+                .contains(&source.as_str())
+                .then(|| Self::from_record(&source, record))
+                .flatten();
+        }
+        let path = crate::analysis::files::file_path(record).to_ascii_lowercase();
+        if [
+            r"\device\namedpipe",
+            r"\device\mailslot",
+            r"\device\tcp",
+            r"\device\udp",
+            r"\device\afd",
+        ]
+        .iter()
+        .any(|device| path == *device || path.starts_with(&format!("{device}\\")))
+        {
+            return None;
+        }
         let fields: &[(&str, Option<&str>)] = match plugin {
             "windows.filescan.FileScan" => &[
                 ("Offset(V)", Some("--virtaddr")),

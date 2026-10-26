@@ -1,8 +1,11 @@
 //! Application analyses use the case queue and record store, just like engine jobs.
 pub mod application;
 mod browser;
+pub mod downloads;
+pub mod files;
 mod process_memory;
 pub use browser::memory::recovery_runs as browser_memory_runs;
+pub mod network;
 pub mod registry;
 pub mod strings;
 
@@ -20,9 +23,15 @@ use std::{
 pub const BROWSER: &str = "volgui.browser.Activity";
 pub const APPLICATION: &str = "volgui.application.Memory";
 pub const STRINGS: &str = "volgui.strings.Search";
+pub const NETWORK: &str = "volgui.network.Investigation";
+pub const FILES: &str = "volgui.files.Recovery";
+pub const DOWNLOADS: &str = "volgui.downloads.Investigation";
 
 pub fn is_native(plugin: &str) -> bool {
-    matches!(plugin, BROWSER | APPLICATION | STRINGS)
+    matches!(
+        plugin,
+        BROWSER | APPLICATION | STRINGS | NETWORK | FILES | DOWNLOADS
+    )
 }
 
 pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Result<Run, String> {
@@ -35,6 +44,15 @@ pub fn prepare(evidence: &Evidence, plugin: &str, arguments: Vec<String>) -> Res
     }
     if plugin == APPLICATION {
         application::validate(&arguments)?;
+    }
+    if plugin == FILES {
+        files::physical_offset(&arguments)?;
+    }
+    if plugin == NETWORK && !arguments.is_empty() {
+        return Err("Network investigation does not accept custom arguments".into());
+    }
+    if plugin == DOWNLOADS && !arguments.is_empty() {
+        return Err("Download investigation does not accept custom arguments".into());
     }
     Ok(Run {
         id: uuid::Uuid::new_v4().to_string(),
@@ -74,6 +92,9 @@ pub fn execute(
             BROWSER => browser::analyze(directory, document, run, cancel, &progress),
             APPLICATION => application::analyze(directory, document, run, cancel, &progress),
             STRINGS => strings::search(&evidence.path, &run.arguments, cancel, &progress),
+            NETWORK => network::analyze(directory, document, run, cancel, &progress),
+            FILES => files::analyze(directory, document, run, cancel, &progress),
+            DOWNLOADS => downloads::analyze(directory, document, run, cancel, &progress),
             _ => Err("Unknown application analysis".into()),
         }
     })();

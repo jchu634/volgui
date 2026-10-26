@@ -125,12 +125,7 @@ impl Workspace {
             }
             for path in &recent {
                 menu = menu.item(Self::file_item(
-                    path.parent()
-                        .unwrap_or(path)
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
+                    path.to_string_lossy().into_owned(),
                     FileCommand::Recent(path.clone()),
                     disabled,
                     recent_weak.clone(),
@@ -209,16 +204,16 @@ impl Workspace {
             .child(heading("Maximum simultaneous jobs",cx))
             .child(div().flex().gap_2()
                 .child(Input::new(&self.job_limit).id("job-limit").aria_label("Maximum simultaneous jobs").flex_1())
-                .child(Button::new("save-job-limit").small().label("Save job limit").on_click(cx.listener(|this,_,window,cx|this.save_job_limit(window,cx)))))
+                .child(app_button("save-job-limit").small().label("Save job limit").on_click(cx.listener(|this,_,window,cx|this.save_job_limit(window,cx)))))
             .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("Current limit: {}. Default: 2. Lowering the limit lets active jobs finish before starting more.", self.settings.max_concurrent_jobs)))
             .child(heading("ANALYSIS ENGINE",cx))
             .child(div().text_sm().child("Select a separately installed Volatility 3 or vol-rs CLI. Its supporting files stay beside the executable."))
-            .child(heading("Executable",cx)).child(div().flex().gap_2().child(Input::new(&self.engine_path).id("engine-path").aria_label("Volatility or vol-rs executable").flex_1()).child(Button::new("browse-engine").small().label("Browse").disabled(self.is_working()).on_click(cx.listener(|this,_,window,cx|this.choose_path("engine",window,cx)))))
-            .child(heading("Symbols directory",cx)).child(div().flex().gap_2().child(Input::new(&self.symbol_path).id("symbol-path").aria_label("Symbols directory").flex_1()).child(Button::new("browse-symbols").small().label("Browse").disabled(self.is_working()).on_click(cx.listener(|this,_,window,cx|this.choose_path("symbols",window,cx)))))
-            .child(Button::new("offline-mode").small().label(if self.offline{"Offline mode enabled"}else{"Online symbol lookup enabled"}).selected(self.offline).disabled(self.is_working()).on_click(cx.listener(|this,_,_,cx|{this.offline = !this.offline;cx.notify();})))
+            .child(heading("Executable",cx)).child(div().flex().gap_2().child(Input::new(&self.engine_path).id("engine-path").aria_label("Volatility or vol-rs executable").flex_1()).child(app_button("browse-engine").small().label("Browse").disabled(self.is_working()).on_click(cx.listener(|this,_,window,cx|this.choose_path("engine",window,cx)))))
+            .child(heading("Symbols directory",cx)).child(div().flex().gap_2().child(Input::new(&self.symbol_path).id("symbol-path").aria_label("Symbols directory").flex_1()).child(app_button("browse-symbols").small().label("Browse").disabled(self.is_working()).on_click(cx.listener(|this,_,window,cx|this.choose_path("symbols",window,cx)))))
+            .child(app_button("offline-mode").small().label(if self.offline{"Offline mode enabled"}else{"Online symbol lookup enabled"}).selected(self.offline).disabled(self.is_working()).on_click(cx.listener(|this,_,_,cx|{this.offline = !this.offline;cx.notify();})))
             .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Offline mode requires symbols for the capture's kernel to be installed already. Enable online symbol lookup to let the engine download missing symbols. Click Validate and save to apply changes."))
-            .child(div().flex().gap_2().child(Button::new("validate-engine").small().primary().label("Validate and save").disabled(self.is_working()||self.has_queued()).on_click(cx.listener(|this,_,_,cx|this.validate_engine(cx))))
-                .when(self.busy.is_some(),|s|s.child(Button::new("cancel-settings-job").small().label("Cancel check").on_click(cx.listener(|this,_,_,cx|{if let Some(b)=&this.busy{b.cancel.store(true,Ordering::Relaxed);}cx.notify();})))))
+            .child(div().flex().gap_2().child(app_button("validate-engine").small().primary().label("Validate and save").disabled(self.is_working()||self.has_queued()).on_click(cx.listener(|this,_,_,cx|this.validate_engine(cx))))
+                .when(self.busy.is_some(),|s|s.child(app_button("cancel-settings-job").small().label("Cancel check").on_click(cx.listener(|this,_,_,cx|{if let Some(b)=&this.busy{b.cancel.store(true,Ordering::Relaxed);}cx.notify();})))))
             .when_some(self.installation.as_ref(),|s,e|s.child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{} · {} plugins",e.version,e.plugins.len()))))
             .into_any_element()
     }

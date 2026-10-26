@@ -14,6 +14,8 @@ jobs:
     name: Windows x86_64
     runs-on: windows-2022
     timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -45,3 +47,24 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+      - name: Publish nightly prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = "nightly-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $archive = "volgui-nightly-windows-x86_64.zip"
+          Compress-Archive -Path dist/* -DestinationPath $archive
+          $notes = Join-Path $env:RUNNER_TEMP "nightly-release-notes.md"
+          @(
+            "Windows x86_64 nightly build."
+            ""
+            "Commit: $env:GITHUB_SHA"
+            "Ref: $env:GITHUB_REF"
+            "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            ""
+            "The ZIP includes the executable, documentation, build details, and SHA256SUMS."
+            "Volatility is not bundled."
+          ) | Set-Content $notes
+          gh release create $tag $archive --target $env:GITHUB_SHA --title "Nightly $tag" --notes-file $notes --prerelease --latest=false

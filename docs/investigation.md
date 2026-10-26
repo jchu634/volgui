@@ -1,8 +1,57 @@
 # Investigation tools
 
+## Download investigation
+
+1. In **New analysis**, select **Download and execution investigation** for Windows evidence. It collects available PsList, PsScan, CmdLine, DLL paths, PsXView, FileScan, ADS, NetScan and NetStat. Existing completed unfiltered inventories are reused. Browser profile files are recovered after inventories finish, when DumpFiles is available.
+2. Open **Download investigation** and search a website or filename. The grid shows the local filename, website and download URLs, matching process PID and owned remote sockets. The selected row's details contain the match rule, timestamps, paths and source links. Chromium download targets, redirects and referrers are preserved; the browser's opened flag is not treated as execution evidence.
+3. Select **Download source**, **Process source**, **Command line source** or **Socket source** to inspect the original record. **Residual process bytes** opens the acquisition at a recovered process structure. **Network for PID** uses an exact `pid:<number>` search in Network. Back restores the investigation.
+4. Open **All network connections**, then **Interesting Traffic**, to inspect validated legacy Meterpreter TCP configurations. These belong to Network, including configurations saved in older download reports. **All findings** clears download column filters.
+
+The report never assigns an unowned socket or global memory string to a process by proximity. A matching filename can refer to a different file. A configured reverse connection endpoint does not establish a successful connection or identify which executable owned it. Those gaps remain visible. Findings support bookmarks, case persistence and CSV export.
+
+Residual process recovery currently supports the Windows x64 EPROCESS 19041 layout. It activates only after at least five timestamped inventory PIDs corroborate that layout. It scans downloaded names up to 15 bytes and bounds additional raw name searches to 128. Carved copies can survive after exit and do not prove that a process was active at acquisition. Other layouts and longer names rely on collected engine inventories. Download recovery retains at most 2,000 residual process candidates. Payload configuration recovery runs separately through Network. The report retains at most 10,000 findings plus coverage. Partial cached databases, missing sources and limits appear in coverage and Run details.
+
 Select a memory image in the sidebar before using these tools. Results belong to
 that evidence capture. Application analyses appear in the same queue and case
 history as Volatility jobs, and their findings support bookmarks and CSV export.
+
+## File and document recovery
+
+Choose **File and document recovery** in New analysis to prepare file contents
+before browsing. It collects missing FileScan and available Process handles
+inventories, then attempts each distinct file object. Existing completed attempts
+are reused. Each extraction keeps its own queue entry and diagnostics, so a large
+capture can take time to process. FileScan, Dump files and Process handles are
+basic analyses.
+
+The report retains the source run and row, extraction run and recovery status.
+Open recovered contents with the Sidebar to inspect hex, decoded text or SQLite
+tables, or use Save as to export a cache variant. Recovery can produce partial
+contents and does not guarantee that a document is complete.
+
+**Show unavailable files** in the Files and Processes tree headers includes failed,
+uncached and unsupported Windows file objects. It is enabled by default so failed
+recovery or antivirus quarantine does not conceal file observations.
+Untested files stay visible until an extraction establishes their status.
+Directory pseudo-files such as `$Directory` and `$I30` directory-index streams
+are always omitted from these trees. Original records remain in the case.
+
+File recovery also searches the evidence bytes for absolute Windows executable
+paths in UTF-8, UTF-16LE and UTF-16BE, retaining up to 10,000 distinct paths.
+These rows say **Path reference only** and record the evidence byte offset.
+They can reveal names whose file objects no longer survive, but do not establish
+that the file was present, recoverable, or malicious. They cannot be passed to
+DumpFiles as file-object addresses.
+
+When an extracted file disappears before archiving or Windows reports a malware
+block, the output name remains recorded as unavailable. Other outputs and parsed
+findings are retained. VolGUI does not restore quarantined files.
+
+Use **Retry extraction** in record details to retry a selected file. For older
+captures whose unlabelled FileScan offsets are physical, pass `--physical` to the
+recovery analysis or switch the selected file's offset button. Explicit virtual
+and physical address columns take precedence. Status is matched by evidence,
+address space and file-object address, rather than by path.
 
 ## Browser activity
 
@@ -203,3 +252,18 @@ Offsets refer to the evidence file, not process virtual addresses. At 10,000
 matches the analysis stops and records the limit in Run details. Narrow the
 string to inspect additional matches. Exact Unicode matching is supported;
 case-insensitive matching folds ASCII characters only.
+
+
+## Network investigation
+
+Network offers **Graph** and **Table** views. Graph shows IP nodes with clickable local and remote port labels. Table uses virtualized rows, sortable columns and horizontal scrolling for large result sets. Both views share search, protocol/state filters and two independent noise toggles. **Hide common system processes** uses a process-name list, including System and svchost.exe. **Hide local / empty endpoints** hides loopback, wildcard or unspecified endpoints, port 0 and records without remote endpoints. Both toggles start enabled. Turn either off to include those records. Private network addresses, missing owners and unknown ports remain visible. Noise toggles never hide analysis findings; search and protocol/state filters still apply to them.
+
+Choose a focus IP or **All source IPs** from the IP dropdown. The canvas scrolls continuously through every peer, with controls created around the visible area. The IP picker has fixed widths for IPv4 and IPv6, highlights the current address, and stops Previous/Next at the first and last addresses. Click a port to list matching network entries in the endpoint sidebar. Click an IP for all its ports. The sidebar follows the same filters and retains repeated source runs. Credentials and payload configuration candidates appear first. Process buttons open the process view; clicking a card or table row opens its original record in the bottom details. Source bytes shows acquisition evidence at its saved offset. Back restores the view, noise filters and graph selection.
+
+Run **New analysis > Network investigation and correlation**, or **Analyze network** in Network. This queues available Windows NetScan, NetStat, PsList, CmdLine, CmdScan, Consoles and Handles plugins, then correlates their collected records. CmdScan is a basic analysis choice. Completed unfiltered inventories are reused. Unavailable or failed inventories are listed in parser diagnostics.
+
+Preprocessing reads IP-based SMB references, explicit net use credentials, TCP transport URLs and reverse-shell command candidates only from collected engine records. Each finding retains its source run, row and field. Credentials must appear in an explicit network drive command associated with that share. It also scans acquisition bytes for legacy Meterpreter TCP configurations, validating the session, URL padding, exit function, UUID and timeouts before reporting an endpoint. This scan retains at most 2,000 configurations and records acquisition offsets and evidence fingerprints. It does not search raw memory for credentials or arbitrary connection strings. Use Global string search or Process Memory for general text searches. Recovered command text can be stale or unexecuted and does not establish a live connection.
+
+Select **Interesting Traffic** to filter recovered findings, SMB and common remote administration connections such as SSH, RDP and WinRM. If no completed current network parser exists, the button queues native recovery against saved inventories and the acquisition. Queued or running jobs are reused. New findings refresh the open Network view automatically. This recovery does not require another engine collection pass. Historical configurations from download reports appear in the evidence-wide Network view with their original source run, row and offsets. Saved records remain unchanged. New runs use parser version network-v3-configurations.
+
+Recovered plaintext credentials are saved with the case and included in exports of those findings.

@@ -2,7 +2,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::Read,
+    io::{BufRead, BufReader, Read},
     path::Path,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -29,6 +29,7 @@ pub struct Installation {
     pub settings: Settings,
     pub version: String,
     pub plugins: Vec<Plugin>,
+    pub user_memory_dumps: bool,
 }
 
 impl Installation {
@@ -112,11 +113,27 @@ impl Installation {
         if plugins.is_empty() {
             return Err("Volatility returned no plugins. Check its supporting files.".into());
         }
-        Ok(Self {
+        let mut installation = Self {
             settings,
             version,
             plugins,
-        })
+            user_memory_dumps: false,
+        };
+        // Probe the installed binary rather than assuming a version has the extension.
+        if installation.version.starts_with("vol-rs ")
+            && installation
+                .plugins
+                .iter()
+                .any(|p| p.id == "windows.memmap.Memmap")
+        {
+            installation.user_memory_dumps = installation
+                .help("windows.memmap.Memmap", cancel)
+                .is_ok_and(|help| help.split_whitespace().any(|word| word == "--user-memory"));
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Engine validation cancelled".into());
+            }
+        }
+        Ok(installation)
     }
 
     pub fn prepare(
@@ -598,7 +615,37 @@ pub struct Table {
 
 impl Table {
     pub fn read(path: &Path) -> Result<Self> {
-        Self::parse(&read_text(path, 128 * 1024 * 1024)?)
+        let file = crate::extracted_files::open_artifact(path)
+            .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+        let mut reader = BufReader::new(file);
+        if reader
+            .fill_buf()
+            .map_err(|e| e.to_string())?
+            .starts_with(b"\xef\xbb\xbf")
+        {
+            reader.consume(3);
+        }
+        loop {
+            let buffer = reader.fill_buf().map_err(|e| e.to_string())?;
+            let whitespace = buffer
+                .iter()
+                .take_while(|b| b.is_ascii_whitespace())
+                .count();
+            if whitespace == 0 {
+                break;
+            }
+            reader.consume(whitespace);
+        }
+        if reader
+            .fill_buf()
+            .map_err(|e| e.to_string())?
+            .starts_with(b"Volatility 3 Framework")
+        {
+            // Discard the optional engine banner without buffering the JSON output.
+            reader.skip_until(b'\n').map_err(|e| e.to_string())?;
+        }
+        let value = serde_json::from_reader(reader).map_err(|e| format!("Invalid JSON: {e}"))?;
+        Self::from_value(value)
     }
 
     pub fn parse(text: &str) -> Result<Self> {
@@ -609,11 +656,17 @@ impl Table {
             text
         };
         let value: Value = serde_json::from_str(text).map_err(|e| format!("Invalid JSON: {e}"))?;
-        let nodes = value.as_array().ok_or("Expected a Volatility JSON array")?;
+        Self::from_value(value)
+    }
+
+    fn from_value(value: Value) -> Result<Self> {
+        let Value::Array(nodes) = value else {
+            return Err("Expected a Volatility JSON array".into());
+        };
         let mut rows = vec![];
         let mut columns = BTreeSet::new();
         fn visit(
-            nodes: &[Value],
+            nodes: Vec<Value>,
             depth: usize,
             rows: &mut Vec<Record>,
             columns: &mut BTreeSet<String>,
@@ -628,21 +681,18 @@ impl Table {
                             .into(),
                     );
                 }
-                let object = node.as_object().ok_or("Expected an artifact object")?;
-                let fields: BTreeMap<_, _> = object
-                    .iter()
-                    .filter(|(k, _)| k.as_str() != "__children")
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
+                let Value::Object(mut object) = node else {
+                    return Err("Expected an artifact object".into());
+                };
+                let children = object.remove("__children");
+                let fields: BTreeMap<_, _> = object.into_iter().collect();
                 columns.extend(fields.keys().cloned());
                 rows.push(Record { fields, depth });
-                if let Some(children) = object.get("__children") {
-                    visit(
-                        children.as_array().ok_or("Invalid __children array")?,
-                        depth + 1,
-                        rows,
-                        columns,
-                    )?;
+                if let Some(children) = children {
+                    let Value::Array(children) = children else {
+                        return Err("Invalid __children array".into());
+                    };
+                    visit(children, depth + 1, rows, columns)?;
                 }
             }
             Ok(())

@@ -82,21 +82,19 @@ fn basic_catalog_includes_the_requested_tasks_and_sorts_before_extended() {
         "windows.registry.printkey.PrintKey",
         "linux.pslist.PsList",
         "linux.pstree.PsTree",
-        "linux.bash.Bash",
         "mac.pslist.PsList",
-        "mac.bash.Bash",
     ];
     assert!(requested.iter().all(|id| basic_label(id).is_some()));
     let mut plugins: Vec<_> = requested.iter().map(|id| plugin(id)).collect();
     plugins.push(plugin("frameworkinfo.FrameworkInfo"));
     plugins.push(plugin("windows.malware.psxview.PsXView"));
     let basic = chooser_plugins(&plugins, OperatingSystem::Windows, false, "");
-    assert_eq!(basic.len(), 12);
+    assert_eq!(basic.len(), 13);
     assert!(basic.iter().all(|p| p.id.starts_with("windows.")));
     let full = chooser_plugins(&plugins, OperatingSystem::Windows, true, "");
     assert_eq!(full.len(), 14);
-    assert!(full[..12].iter().all(|p| basic_label(&p.id).is_some()));
-    assert!(full[12..].iter().all(|p| basic_label(&p.id).is_none()));
+    assert!(full[..13].iter().all(|p| basic_label(&p.id).is_some()));
+    assert!(full[13..].iter().all(|p| basic_label(&p.id).is_none()));
     assert_eq!(
         chooser_plugins(&plugins, OperatingSystem::Windows, false, "dump files")[0].id,
         "windows.dumpfiles.DumpFiles"
@@ -120,6 +118,7 @@ fn retries_preserve_options_and_history_and_queue_atomically() {
     let mut case = Case::create(&temp.path().join("case"), "Retry test").unwrap();
     case.add_evidence(evidence.clone()).unwrap();
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: vec![plugin("windows.dumpfiles.DumpFiles")],
@@ -202,6 +201,7 @@ fn clearing_queue_preserves_active_jobs_history_and_results_and_survives_reopeni
     let mut case = Case::create(&temp.path().join("case"), "Queue cleanup test").unwrap();
     case.add_evidence(evidence.clone()).unwrap();
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: vec![plugin("windows.pslist.PsList")],
@@ -267,7 +267,8 @@ fn clearing_queue_preserves_active_jobs_history_and_results_and_survives_reopeni
     fs::remove_dir(&manifest).unwrap();
     fs::write(&manifest, saved).unwrap();
 
-    assert_eq!(case.clear_queue(QueueClearScope::Finished).unwrap(), 2);
+    assert_eq!(case.clear_queue(QueueClearScope::Failed).unwrap(), 2);
+    assert_eq!(case.clear_queue(QueueClearScope::Failed).unwrap(), 0);
     assert_eq!(case.clear_queue(QueueClearScope::Finished).unwrap(), 0);
     assert_eq!(
         case.document
@@ -320,6 +321,7 @@ fn batch_selection_preserves_individual_options_and_is_saved_atomically() {
     let mut case = Case::create(&temp.path().join("case"), "Batch test").unwrap();
     case.add_evidence(evidence.clone()).unwrap();
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: vec![
@@ -487,7 +489,7 @@ fn browser_analysis_waits_for_prior_jobs_and_keeps_later_jobs_queued() {
 }
 
 #[test]
-fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
+fn preprocessing_choices_exclude_process_memory_and_registry_expands_to_recursive_printkey() {
     use volgui::analyses::{REGISTRY_ALL, application_plugins};
     let catalog = application_plugins(&[]);
     let choices = chooser_plugins(&catalog, OperatingSystem::Windows, false, "");
@@ -495,7 +497,7 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
     assert!(
         choices
             .iter()
-            .any(|p| p.id == volgui::analysis::APPLICATION)
+            .all(|p| p.id != volgui::analysis::APPLICATION)
     );
     assert!(
         !chooser_plugins(&catalog, OperatingSystem::Linux, false, "")
@@ -510,6 +512,7 @@ fn application_choices_are_basic_and_registry_expands_to_recursive_printkey() {
     let mut case = Case::create(&temp.path().join("case"), "Registry").unwrap();
     case.add_evidence(evidence.clone()).unwrap();
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: vec![plugin(volgui::analysis::registry::PRINT_KEY)],
@@ -540,6 +543,7 @@ fn application_choice_collects_prerequisites_and_forms_a_queue_barrier() {
     let mut case = Case::create(&temp.path().join("case"), "Applications").unwrap();
     case.add_evidence(evidence.clone()).unwrap();
     let mut engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: application::INVENTORY
@@ -609,6 +613,7 @@ fn browser_recovery_requires_unfiltered_prerequisites_for_same_evidence() {
         "windows.filescan.FileScan",
     ];
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: ids.into_iter().map(plugin).collect(),
@@ -675,6 +680,7 @@ fn browser_recovery_can_be_queued_with_its_prerequisites() {
         "windows.filescan.FileScan",
     ];
     let engine = Installation {
+        user_memory_dumps: false,
         settings: Settings::default(),
         version: "fixture".into(),
         plugins: ids.into_iter().map(plugin).collect(),
@@ -701,4 +707,38 @@ fn browser_recovery_can_be_queued_with_its_prerequisites() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn generic_shortcut_analyses_are_extended_and_interactive_analyses_are_hidden() {
+    let extended = [
+        volgui::analysis::FILES,
+        "linux.bash.Bash",
+        "mac.bash.Bash",
+        "windows.malware.malfind.Malfind",
+        "windows.modules.Modules",
+        "linux.lsmod.Lsmod",
+        "mac.lsmod.Lsmod",
+        "windows.sessions.Sessions",
+    ];
+    for id in extended {
+        assert_eq!(basic_label(id), None, "{id}");
+        let os = OperatingSystem::for_plugin(id);
+        assert!(chooser_plugins(&[plugin(id)], os, false, "").is_empty());
+        assert_eq!(chooser_plugins(&[plugin(id)], os, true, "").len(), 1);
+    }
+    let interactive = [
+        plugin(volgui::analysis::APPLICATION),
+        plugin(volgui::analysis::STRINGS),
+    ];
+    for os in [
+        OperatingSystem::Unknown,
+        OperatingSystem::Windows,
+        OperatingSystem::Linux,
+        OperatingSystem::Macos,
+    ] {
+        for show_extended in [false, true] {
+            assert!(chooser_plugins(&interactive, os, show_extended, "").is_empty());
+        }
+    }
 }

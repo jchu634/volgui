@@ -14,6 +14,12 @@ impl Workspace {
         thread::spawn(move || {
             let result = if plugin == volgui::analysis::APPLICATION {
                 Ok(volgui::analysis::application::HELP.into())
+            } else if plugin == volgui::analysis::FILES {
+                Ok("Collects FileScan and available file handles, attempts each distinct file object and records recovery outcomes. Cached contents may be partial. Use --physical only for older captures whose unlabelled FileScan offsets are physical. Other options are not accepted.".into())
+            } else if plugin == volgui::analysis::NETWORK {
+                Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. No raw memory string scan or payload configuration recovery is performed. Use Global string search or Process Memory separately for memory searches. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
+            } else if plugin == volgui::analysis::DOWNLOADS {
+                Ok(volgui::analysis::downloads::HELP.into())
             } else if plugin == volgui::analysis::BROWSER
                 || plugin == volgui::analyses::REGISTRY_ALL
             {
@@ -288,7 +294,7 @@ impl Workspace {
                 let files = volgui::extracted_files::list(&directory)
                     .map_err(|error| format!("Could not list extracted files: {error}"))?;
                 if files.is_empty() {
-                    return Err("No cached file contents could be extracted from memory. See Run details for diagnostics.".into());
+                    return Ok("No cached contents were recovered. This file is hidden when Show unavailable files is off. Run details retain the extraction diagnostics.".into());
                 }
                 if let Some(executable) = executable {
                     for file in &files {
@@ -366,7 +372,11 @@ impl Workspace {
         };
         match case.clear_queue(scope) {
             Ok(count) => {
-                self.queue_scroll.set_offset(point(px(0.), px(0.)));
+                self.queue_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.), px(0.)));
                 self.message = format!("Cleared {count} jobs from the queue");
             }
             Err(error) => self.error = Some(error),
@@ -394,7 +404,13 @@ impl Workspace {
             };
             let application_pending = case.document.runs[i].plugin == volgui::analysis::APPLICATION
                 && case.document.runs[i].message == volgui::analyses::APPLICATION_RECOVERY_PENDING;
+            let files_pending = case.document.runs[i].plugin == volgui::analysis::FILES
+                && case.document.runs[i].message == volgui::analysis::files::PENDING;
+            let downloads_pending = case.document.runs[i].plugin == volgui::analysis::DOWNLOADS
+                && case.document.runs[i].message == volgui::analysis::downloads::PENDING;
             if application_pending
+                || files_pending
+                || downloads_pending
                 || case.document.runs[i].plugin == volgui::analysis::BROWSER
                     && case.document.runs[i].message == volgui::analyses::BROWSER_RECOVERY_PENDING
             {
@@ -407,6 +423,14 @@ impl Workspace {
                         engine,
                         &case.document.runs[i],
                     )
+                } else if downloads_pending {
+                    volgui::analyses::prepare_download_recovery(
+                        case,
+                        engine,
+                        &case.document.runs[i],
+                    )
+                } else if files_pending {
+                    volgui::analyses::prepare_file_recovery(case, engine, &case.document.runs[i])
                 } else {
                     volgui::analyses::prepare_browser_recovery(case, engine, &case.document.runs[i])
                 };
@@ -414,8 +438,9 @@ impl Workspace {
                     Ok(runs) => {
                         let previous = case.document.runs.clone();
                         case.document.runs[i].message.clear();
-                        let count = runs.len().saturating_sub(usize::from(application_pending));
-                        if application_pending {
+                        let replace = application_pending || files_pending || downloads_pending;
+                        let count = runs.len().saturating_sub(usize::from(replace));
+                        if replace {
                             case.document.runs.splice(i..=i, runs);
                         } else {
                             case.document.runs.splice(i..i, runs);
@@ -548,12 +573,30 @@ impl Workspace {
                 {
                     outcome.status = if cancel.load(Ordering::Relaxed) {
                         RunStatus::Cancelled
+                    } else if outcome.table.is_some() {
+                        outcome.status
                     } else {
                         RunStatus::Failed
                     };
-                    outcome.table = None;
-                    outcome.message =
-                        format!("Could not archive analysis output: {error}. Capture retained.");
+                    // Parsed observations remain evidence even if output bytes
+                    // cannot be archived, for example after antivirus quarantine.
+                    outcome.message = format!(
+                        "{}\nCould not archive analysis output: {error}. Available capture files and parsed results retained.",
+                        outcome.message
+                    );
+                }
+                if run.plugin == volgui::extracted_files::DUMP_FILES
+                    && let Ok(outputs) = volgui::object_store::output_metadata(&directory)
+                {
+                    let unavailable = outputs
+                        .values()
+                        .filter(|output| output.blocked_reason.is_some())
+                        .count();
+                    if unavailable > 0 {
+                        outcome.message.push_str(&format!(
+                            "\n{unavailable} recovered outputs unavailable or blocked, possibly quarantined. Parsed findings retained."
+                        ));
+                    }
                 }
                 if let Some(table) = outcome.table.take()
                     && let Err(e) = store.insert_cancellable(&run, &table, &cancel)

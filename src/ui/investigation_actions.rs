@@ -2,6 +2,122 @@ use super::*;
 use volgui::{analysis, case::Run};
 
 impl Workspace {
+    pub(super) fn analyze_downloads(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure analysis engine in settings")?;
+            let case = self.case.as_ref().ok_or("Open a case first")?;
+            let mut draft = AnalysisDraft::new(evidence);
+            draft.selected.insert(analysis::DOWNLOADS.into());
+            draft.prepare_in_case(engine, evidence, case)
+        })();
+        match result {
+            Ok(runs) => {
+                let report = runs.last().map(|r| r.id.clone());
+                self.queue_investigation(runs, window, cx);
+                if let Some(report) = report {
+                    self.select_run(report, window, cx);
+                }
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn open_investigation_bytes(&mut self, offset: u64, cx: &mut Context<Self>) {
+        if let Some(evidence) = self.evidence() {
+            let path = evidence.path.clone();
+            self.open_hex_file(vec![path.clone()], path, offset, cx);
+        }
+    }
+
+    pub(super) fn investigate_pid_network(
+        &mut self,
+        pid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose_group(ArtifactGroup::Network, window, cx);
+        // Network's graph and sidebar share the same scoped records and search.
+        self.query.update(cx, |input, cx| {
+            input.set_value(format!("pid:{pid}"), window, cx)
+        });
+        self.start_query(cx);
+    }
+    pub(super) fn load_network_bytes(&mut self, cx: &mut Context<Self>) {
+        let target = self.case.as_ref().and_then(|case| {
+            let record = self.selected.as_ref()?;
+            let offset = volgui::network::source_offset(&record.record)?;
+            let run = case.document.runs.iter().find(|r| r.id == record.run_id)?;
+            let evidence = case
+                .document
+                .evidence
+                .iter()
+                .find(|e| e.id == run.evidence_id)?;
+            Some((evidence.path.clone(), offset))
+        });
+        if let Some((path, offset)) = target {
+            self.open_hex_file(vec![path.clone()], path, offset, cx);
+        }
+    }
+    pub(super) fn toggle_interesting_network(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.network_interesting = !self.network_interesting;
+        self.network_sidebar_page = 0;
+        self.network_endpoint = None;
+        self.network_scroll.set_offset(Point::default());
+        if self.network_interesting {
+            self.scope = self.group_runs(ArtifactGroup::Network);
+            self.scope_label = ArtifactGroup::Network.label().into();
+            let recovery = self
+                .case
+                .as_ref()
+                .zip(self.evidence())
+                .filter(|(case, evidence)| {
+                    analysis::network::needs_recovery(&case.document, &evidence.id)
+                })
+                .map(|(_, evidence)| analysis::prepare(evidence, analysis::NETWORK, vec![]));
+            match recovery {
+                Some(Ok(run)) => self.queue_investigation(vec![run], window, cx),
+                Some(Err(error)) => self.error = Some(error),
+                None => {}
+            }
+            self.start_query(cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn analyze_network(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = (|| {
+            let evidence = self.evidence().ok_or("Select evidence first")?;
+            let engine = self
+                .installation
+                .as_ref()
+                .ok_or("Configure analysis engine in settings")?;
+            let case = self.case.as_ref().ok_or("Open a case first")?;
+            let mut draft = AnalysisDraft::new(evidence);
+            draft.selected.insert(analysis::NETWORK.into());
+            draft.prepare_in_case(engine, evidence, case)
+        })();
+        match result {
+            Ok(runs) => {
+                self.content_sidebar_visible = true;
+                self.queue_investigation(runs, window, cx);
+            }
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
     pub(super) fn open_application_dump(&mut self, cx: &mut Context<Self>) {
         let pid = self.application_pid.read(cx).value().trim().to_string();
         let source = self.case.as_ref().and_then(|case| {

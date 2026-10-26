@@ -4,15 +4,30 @@ use std::{io::Write, time::Duration};
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    eprintln!("Volatility 3 Framework test-fixture");
+    let executable = std::env::current_exe().unwrap();
+    let name = executable.file_stem().unwrap().to_string_lossy();
+    let vol_rs = name.starts_with("vol-rs-");
+    if !vol_rs {
+        eprintln!("Volatility 3 Framework test-fixture");
+    }
+    if vol_rs && args == ["--version"] {
+        println!("vol-rs 1.0.2");
+        return;
+    }
     if args == ["--help"] {
         println!(
             "Plugins:\n\n  PLUGIN\n    test.echo.Echo     Echo literal arguments and create an output artifact.\n    test.gated.Gated     Wait for an explicit release file.\n    test.slow.Slow     Wait for cancellation.\n    test.fail.Fail     Emit a nonzero status.\n    test.bad.Bad       Emit malformed JSON.\n    windows.dumpfiles.DumpFiles     Extract a single synthetic file object."
         );
+        if vol_rs {
+            println!("    windows.memmap.Memmap     Process memory map");
+        }
         return;
     }
     if args.last().is_some_and(|a| a == "--help") {
         println!("Plugin options:\n  --pid PID\n  --name NAME");
+        if vol_rs && name.contains("user-memory") {
+            println!("  --user-memory     Omit kernel memory");
+        }
         return;
     }
     if args.iter().any(|a| a == "test.slow.Slow") {
