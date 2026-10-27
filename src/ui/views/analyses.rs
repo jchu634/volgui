@@ -95,6 +95,7 @@ impl Workspace {
             page = page.child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .gap_4()
                     .p_3()
@@ -130,14 +131,36 @@ impl Workspace {
                             .when(
                                 matches!(run.status, RunStatus::Failed | RunStatus::Warning),
                                 |text| {
+                                    let scroll = self.scroll_state.area(
+                                        scroll_state::ScrollArea::AnalysisMessage(run.id.clone()),
+                                    );
                                     text.child(
                                         div()
-                                            .text_xs()
-                                            .when(run.status == RunStatus::Warning, |text| {
-                                                text.text_color(cx.theme().warning)
-                                            })
+                                            .relative()
+                                            .min_w_0()
                                             .child(
-                                                run.message.chars().take(500).collect::<String>(),
+                                                div()
+                                                    .id(key("analysis-message-scroll", &run.id))
+                                                    .max_h(px(224.))
+                                                    .overflow_y_scroll()
+                                                    .track_scroll(&scroll)
+                                                    .pr_3()
+                                                    .text_xs()
+                                                    .when(
+                                                        run.status == RunStatus::Warning,
+                                                        |text| text.text_color(cx.theme().warning),
+                                                    )
+                                                    .child(SelectableText::new(
+                                                        key("analysis-message", &run.id),
+                                                        run.message.clone(),
+                                                    )),
+                                            )
+                                            .child(
+                                                div().absolute().inset_0().child(
+                                                    Scrollbar::vertical(&scroll)
+                                                        .viewport_from_layout()
+                                                        .mode(ScrollbarMode::Always),
+                                                ),
                                             ),
                                     )
                                 },

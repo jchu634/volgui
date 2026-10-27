@@ -215,7 +215,7 @@ fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifact
     );
     let output = case.run_dir(&dump.id);
     fs::create_dir_all(&output).unwrap();
-    fs::write(output.join("file.profile.json"), br#"{"windows":[{"tabs":[{"entries":[{"url":"https://example.test/shared-cache-integration","title":"Tab"}],"index":1}]}]}"#).unwrap();
+    fs::write(output.join("sessionstore.json"), br#"{"windows":[{"tabs":[{"entries":[{"url":"https://example.test/shared-cache-integration","title":"Tab"}],"index":1}]}]}"#).unwrap();
     volgui::object_store::ObjectStore::at(&case.directory)
         .capture_run(&dump.id, &AtomicBool::new(false))
         .unwrap();
@@ -248,7 +248,7 @@ fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifact
         second.message
     );
     let db = volgui::database::connect(&case.directory).unwrap();
-    db.execute("UPDATE analysis_outputs SET blocked_reason='Unavailable after caching' WHERE run_id=?1 AND name='file.profile.json'", [&dump.id]).unwrap();
+    db.execute("UPDATE analysis_outputs SET blocked_reason='Unavailable after caching' WHERE run_id=?1 AND name='sessionstore.json'", [&dump.id]).unwrap();
     let blocked = analysis::execute(
         &case.directory,
         &case.document,
@@ -260,6 +260,82 @@ fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifact
     let rows = blocked.table.unwrap().rows;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text("Kind"), "Unavailable artifact");
+}
+
+#[test]
+fn unrelated_dumpfiles_outputs_do_not_make_browser_coverage_incomplete() {
+    let (_temp, mut case, _) = setup();
+    let dump = save(&mut case, 0, DUMP_FILES, vec![], json!([]));
+    let output = case.run_dir(&dump.id);
+    fs::create_dir_all(&output).unwrap();
+    let cookies = output.join("file.0x1000.0x2000.SharedCacheMap.Cookies.vacb");
+    let db = rusqlite::Connection::open(&cookies).unwrap();
+    db.execute_batch("CREATE TABLE cookies (name TEXT)")
+        .unwrap();
+    drop(db);
+    fs::copy(&cookies, output.join("unidentified.db")).unwrap();
+    fs::write(output.join("settings.json"), br#"{"setting":true}"#).unwrap();
+    fs::write(
+        output.join("stdout.json"),
+        br#"[{"File output":"file.0x3000.0x4000.ImageSectionObject.unrelated.exe.img"}]"#,
+    )
+    .unwrap();
+    // Signature discovery still recovers manually extracted, unidentified history.
+    chrome_database(&output.join("unidentified.dat"));
+    let browser = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &browser,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert_eq!(outcome.table.as_ref().unwrap().rows.len(), 5);
+    assert!(outcome.table.as_ref().unwrap().warnings.is_empty());
+    assert!(
+        !output
+            .join("file.0x3000.0x4000.ImageSectionObject.unrelated.exe.img.volgui-blocked")
+            .exists()
+    );
+}
+
+#[test]
+fn targeted_history_with_an_unreadable_header_reports_history_coverage() {
+    let (_temp, mut case, _) = setup();
+    save(
+        &mut case,
+        0,
+        "windows.filescan.FileScan",
+        vec![],
+        json!([{"Offset":4096,"Name":"C:\\Chrome\\Default\\History"}]),
+    );
+    let dump = save(
+        &mut case,
+        0,
+        DUMP_FILES,
+        vec!["--virtaddr".into(), "0x1000".into()],
+        json!([]),
+    );
+    let output = case.run_dir(&dump.id);
+    fs::create_dir_all(&output).unwrap();
+    fs::write(output.join("recovered.dat"), b"missing SQLite header").unwrap();
+    let browser = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &browser,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Warning, "{}", outcome.message);
+    assert!(
+        outcome
+            .message
+            .contains("Expected a SQLite browser history database")
+    );
+    assert!(!outcome.message.contains("No readable session JSON"));
+    assert_eq!(outcome.table.unwrap().warnings.len(), 1);
 }
 
 #[test]
@@ -523,20 +599,22 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
             .all(|r| r.arguments.contains(&"--dump".into()))
     );
     for (pid, address) in [
-        (42, "https://www.search.com/web?q=what+is+gluten"),
-        (51, "https://duckduckgo.com/?q=making+up+a+story"),
+        (42, "https://www.search.com/web?q=synthetic+test+query"),
+        (51, "https://duckduckgo.com/?q=another+synthetic+query"),
         (60, "https://separate.test/"),
     ] {
         let mut bytes = format!("{address}\0{address}\0").into_bytes();
         if pid == 42 {
-            bytes.extend_from_slice(b"https://www.search.com/api/clk_ad?q=what%20is%20gluten\0");
-            for terms in ["w", "what", "what+is", "what+is+glu"] {
+            bytes.extend_from_slice(
+                b"https://www.search.com/api/clk_ad?q=synthetic%20test%20query\0",
+            );
+            for terms in ["s", "synthetic", "synthetic+test", "synthetic+test+que"] {
                 bytes.extend_from_slice(
                     format!("https://www.search.com/web?q={terms}\0").as_bytes(),
                 );
             }
             bytes.extend_from_slice(
-                b"https://www.search.com/web?q=what+is+gluten&tracking=variant\0",
+                b"https://www.search.com/web?q=synthetic+test+query&tracking=variant\0",
             );
         }
         let filename = format!("pid.{pid}.dmp");
@@ -593,7 +671,7 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
     let rows = &outcome.table.as_ref().unwrap().rows;
     assert_eq!(rows.len(), 4);
     let edge = rows.iter().find(|r| r.text("PID") == "42").unwrap();
-    assert_eq!(edge.text("Search terms"), "what is gluten");
+    assert_eq!(edge.text("Search terms"), "synthetic test query");
     assert_eq!(edge.text("Kind"), "Memory search");
     assert_eq!(edge.text("Process role"), "Renderer");
     assert_eq!(edge.text("Virtual address"), "0x10000");
@@ -608,11 +686,11 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
     assert_eq!(contextual.text("Kind"), "Memory URL");
     assert_eq!(
         contextual.fields["URL parameters"][0]["Value"],
-        "what is gluten"
+        "synthetic test query"
     );
     let tor = rows.iter().find(|r| r.text("PID") == "51").unwrap();
     assert_eq!(tor.text("Browser"), "Tor Browser");
-    assert_eq!(tor.text("Search terms"), "making up a story");
+    assert_eq!(tor.text("Search terms"), "another synthetic query");
     assert_eq!(
         rows.iter()
             .find(|r| r.text("PID") == "60")
@@ -643,7 +721,7 @@ fn browser_memory_recovery_uses_pid_maps_and_tor_command_lines_and_survives_reop
             ..Default::default()
         })
         .unwrap();
-    assert!(csv.contains("what is gluten") && csv.contains("Tor Browser"));
+    assert!(csv.contains("synthetic test query") && csv.contains("Tor Browser"));
     assert!(csv.contains("Search variants") && csv.contains("tracking=variant"));
     assert_eq!(reopened.document.evidence.len(), 2);
 }
@@ -1074,10 +1152,10 @@ fn quarantined_profile_keeps_an_entry_blocks_opening_and_other_files_are_parsed(
     let dump = save(&mut case, 0, DUMP_FILES, vec![], json!([]));
     let directory = case.run_dir(&dump.id);
     fs::create_dir_all(&directory).unwrap();
-    let missing = directory.join("file.quarantined.dat");
+    let missing = directory.join("file.0x1000.0x2000.DataSectionObject.History.dat");
     fs::write(
         directory.join("stdout.json"),
-        br#"[{"File output":"file.quarantined.dat"}]"#,
+        br#"[{"File output":"file.0x1000.0x2000.DataSectionObject.History.dat"}]"#,
     )
     .unwrap();
     fs::write(

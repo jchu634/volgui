@@ -4,6 +4,7 @@ use super::*;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum ScrollArea {
     Analyses,
+    AnalysisMessage(String),
     Bookmarks,
     CaseInfo,
     NewCase,

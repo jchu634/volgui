@@ -82,8 +82,7 @@ fn executable_references_without_file_objects_appear_in_the_file_tree() {
     // Discovery must work without inventories, an engine, or bulk recovery.
     case.document.runs.clear();
     engine.plugins.clear();
-    let name =
-        r"C:\Users\sepehr\Documents\49f5_354bd7ad_611729000b81358a_22ee7136c30a2f24\runas.exe";
+    let name = r"C:\Users\TestUser\Documents\synthetic-project\fixture-tool.exe";
     let source = case.document.evidence[0].path.clone();
     fs::write(&source, format!("\0{name}\0")).unwrap();
     let mut evidence = Evidence::inspect(&source, &AtomicBool::new(false), |_, _| {}).unwrap();
@@ -133,12 +132,12 @@ fn executable_references_without_file_objects_appear_in_the_file_tree() {
     assert!(
         tree.nodes
             .iter()
-            .any(|n| n.label == "runas.exe" && n.record_id == Some(row.id))
+            .any(|n| n.label == "fixture-tool.exe" && n.record_id == Some(row.id))
     );
     let matches = store
         .query(&Query {
             runs: vec![report.id.clone()],
-            text: "runas.exe".into(),
+            text: "fixture-tool.exe".into(),
             ..Default::default()
         })
         .unwrap();
@@ -173,17 +172,16 @@ fn executable_discovery_is_a_basic_analysis_and_rejects_options() {
 }
 
 #[test]
-#[ignore = "Requires VOLGUI_TEST_MEMORY_DUMP pointing to memory_dump_95.bin"]
-fn real_memory_dump_contains_the_documents_executable_reference() {
-    let path = std::env::var_os("VOLGUI_TEST_MEMORY_DUMP").expect("Set VOLGUI_TEST_MEMORY_DUMP");
-    let (_temp, mut case, _, _) = fixture(json!([]));
+fn synthetic_memory_preserves_utf16_executable_references_in_results_and_file_tree() {
+    let (temp, mut case, _, _) = fixture(json!([]));
+    let name = r"C:\Users\TestUser\Documents\synthetic-project\fixture-tool.exe";
+    let path = temp.path().join("synthetic-memory.bin");
+    let mut bytes = vec![0xff; 128];
+    bytes.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
+    bytes.extend_from_slice(&[0, 0]);
+    fs::write(&path, bytes).unwrap();
     case.document.runs.clear();
-    let mut evidence = Evidence::inspect(
-        std::path::Path::new(&path),
-        &AtomicBool::new(false),
-        |_, _| {},
-    )
-    .unwrap();
+    let mut evidence = Evidence::inspect(&path, &AtomicBool::new(false), |_, _| {}).unwrap();
     evidence.id = case.document.evidence[0].id.clone();
     case.document.evidence[0] = evidence;
     let report =
@@ -201,24 +199,16 @@ fn real_memory_dump_contains_the_documents_executable_reference() {
     let row = table
         .rows
         .iter()
-        .find(|r| {
-            r.text("Name")
-                .to_lowercase()
-                .ends_with(r"\documents\49f5_354bd7ad_611729000b81358a_22ee7136c30a2f24\runas.exe")
-        })
-        .expect("Documents executable reference");
-    println!(
-        "{} at evidence offset {} ({})",
-        row.text("Name"),
-        row.text("Evidence offset"),
-        row.text("Encoding")
-    );
+        .find(|r| r.text("Name") == name)
+        .expect("Synthetic executable reference");
+    assert_eq!(row.text("Evidence offset"), "128");
+    assert_eq!(row.text("Encoding"), "UTF-16LE");
     case.finish(&report.id, &outcome).unwrap();
     let store = ResultStore::at(&case.directory);
     let index = store
         .query(&Query {
             runs: vec![report.id.clone()],
-            text: "runas.exe".into(),
+            text: "fixture-tool.exe".into(),
             ..Default::default()
         })
         .unwrap();
