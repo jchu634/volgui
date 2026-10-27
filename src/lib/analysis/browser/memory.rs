@@ -484,10 +484,10 @@ mod tests {
         use std::io::Write;
         let mut bytes = vec![0; CHUNK - 12];
         let offset = bytes.len() as u64;
-        bytes.extend_from_slice(b"https://www.search.com/web?q=what+is+gluten\0");
+        bytes.extend_from_slice(b"https://www.search.com/web?q=synthetic+test+query\0");
         let wide_offset = bytes.len() as u64;
         bytes.extend(
-            "https://duckduckgo.com/?q=making+up+a+story\0"
+            "https://duckduckgo.com/?q=another+synthetic+query\0"
                 .encode_utf16()
                 .flat_map(u16::to_le_bytes),
         );
@@ -500,10 +500,10 @@ mod tests {
         let (hits, limited) = scan(&mut file, &regions, &AtomicBool::new(false), &|_| {}).unwrap();
         assert!(!limited);
         assert_eq!(hits.len(), 2);
-        let edge = &hits["https://www.search.com/web?q=what+is+gluten"];
+        let edge = &hits["https://www.search.com/web?q=synthetic+test+query"];
         assert_eq!(edge.address, 0x1000 + offset);
         assert_eq!(edge.count, 1);
-        let tor = &hits["https://duckduckgo.com/?q=making+up+a+story"];
+        let tor = &hits["https://duckduckgo.com/?q=another+synthetic+query"];
         assert_eq!(tor.offset, wide_offset);
         assert_eq!(tor.encoding, "UTF-16LE");
         let regions = vec![
@@ -519,7 +519,7 @@ mod tests {
             },
         ];
         let (hits, _) = scan(&mut file, &regions, &AtomicBool::new(false), &|_| {}).unwrap();
-        assert!(!hits.contains_key("https://www.search.com/web?q=what+is+gluten"));
+        assert!(!hits.contains_key("https://www.search.com/web?q=synthetic+test+query"));
         assert!(scan(&mut file, &regions, &AtomicBool::new(true), &|_| {}).is_err());
     }
 

@@ -201,32 +201,56 @@ mod tests {
     #[test]
     fn all_requested_providers_decode_their_own_query_parameter() {
         for (provider, url) in [
-            ("Brave", "https://search.brave.com/search?q=what+is+gluten"),
-            ("Search", "https://www.search.com/web?q=what+is+gluten"),
-            ("DuckDuckGo", "https://duckduckgo.com/?q=what+is+gluten"),
+            (
+                "Brave",
+                "https://search.brave.com/search?q=synthetic+test+query",
+            ),
+            (
+                "Search",
+                "https://www.search.com/web?q=synthetic+test+query",
+            ),
+            (
+                "DuckDuckGo",
+                "https://duckduckgo.com/?q=synthetic+test+query",
+            ),
             (
                 "WebCrawler",
-                "https://www.webcrawler.com/serp?q=what+is+gluten",
+                "https://www.webcrawler.com/serp?q=synthetic+test+query",
             ),
-            ("Ecosia", "https://www.ecosia.org/search?q=what+is+gluten"),
-            ("Excite", "https://results.excite.com/serp?q=what+is+gluten"),
-            ("Rumble", "https://rumble.com/search/video?q=what+is+gluten"),
+            (
+                "Ecosia",
+                "https://www.ecosia.org/search?q=synthetic+test+query",
+            ),
+            (
+                "Excite",
+                "https://results.excite.com/serp?q=synthetic+test+query",
+            ),
+            (
+                "Rumble",
+                "https://rumble.com/search/video?q=synthetic+test+query",
+            ),
             (
                 "YouTube",
-                "https://www.youtube.com/results?search_query=what+is+gluten",
+                "https://www.youtube.com/results?search_query=synthetic+test+query",
             ),
-            ("Yandex", "https://yandex.com/search/?text=what+is+gluten"),
-            ("Bing", "https://www.bing.com/search?q=what+is+gluten"),
-            ("Info", "https://www.info.com/serp?q=what+is+gluten"),
-            ("Ask", "https://www.ask.com/web?q=what+is+gluten"),
-            ("Google", "https://www.google.com/search?q=what+is+gluten"),
+            (
+                "Yandex",
+                "https://yandex.com/search/?text=synthetic+test+query",
+            ),
+            ("Bing", "https://www.bing.com/search?q=synthetic+test+query"),
+            ("Info", "https://www.info.com/serp?q=synthetic+test+query"),
+            ("Ask", "https://www.ask.com/web?q=synthetic+test+query"),
+            (
+                "Google",
+                "https://www.google.com/search?q=synthetic+test+query",
+            ),
         ] {
             assert_eq!(
                 search_terms(url),
-                Some((provider.into(), "what is gluten".into())),
+                Some((provider.into(), "synthetic test query".into())),
                 "{url}"
             );
-            let encoded = url.replace("what+is+gluten", "caf%C3%A9%20%2B%20tea");
+            let encoded = url.replace("synthetic+test+query", "caf%C3%A9%20%2B%20tea");
             assert_eq!(
                 search_terms(&encoded),
                 Some((provider.into(), "café + tea".into()))
@@ -243,18 +267,18 @@ mod tests {
     fn rejects_resource_and_suggestion_urls_templates_and_wrong_parameters() {
         for url in [
             "https://duckduckgo.com/t.js?q=suggested",
-            "https://ac.ecosia.org/autocomplete?q=gluten",
-            "https://suggest.yandex.com/suggest-ff.cgi?part=gluten",
-            "https://www.youtube.com/watch?search_query=gluten",
-            "https://www.youtube.com/results?q=gluten",
-            "https://yandex.com/search/?q=gluten",
+            "https://ac.ecosia.org/autocomplete?q=fixture",
+            "https://suggest.yandex.com/suggest-ff.cgi?part=fixture",
+            "https://www.youtube.com/watch?search_query=fixture",
+            "https://www.youtube.com/results?q=fixture",
+            "https://yandex.com/search/?q=fixture",
             "https://www.google.com/search?q=%7BsearchTerms%7D",
             "https://duckduckgo.com/?q=%s",
             "https://www.bing.com/search?q=+%20",
-            "https://example.com/?q=gluten",
-            "https://www.google.com@evil.test/search?q=gluten",
-            "file://www.google.com/search?q=gluten",
-            "https://www.google.com/search?q=gluten%00suffix",
+            "https://example.com/?q=fixture",
+            "https://www.google.com@evil.test/search?q=fixture",
+            "file://www.google.com/search?q=fixture",
+            "https://www.google.com/search?q=fixture%00suffix",
         ] {
             assert!(search_terms(url).is_none(), "{url}");
         }

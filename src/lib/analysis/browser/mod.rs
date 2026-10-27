@@ -88,10 +88,24 @@ fn analyze_mode(
             .cloned()
             .unwrap_or_default();
         let original = originals.first().copied();
+        let original_path = original
+            .map(|r| {
+                ["Name", "FileName", "Path"]
+                    .iter()
+                    .map(|key| r.record.text(key))
+                    .find(|v| !v.is_empty())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
         for path in extracted_files::list(&output)? {
             if cancel.load(Ordering::Relaxed) {
                 return Err("Browser analysis cancelled".into());
             }
+            let Some(profile_source) = profiles::Source::named(&original_path)
+                .or_else(|| profiles::Source::recovered(&path))
+            else {
+                continue;
+            };
             progress(format!(
                 "Analyzing browser data: {}",
                 path.file_name().unwrap_or_default().to_string_lossy()
@@ -99,20 +113,24 @@ fn analyze_mode(
             let (mut file, hash) = match extracted_files::open_in(&reader, &path) {
                 Ok(file) => file,
                 Err(error) => {
+                    if profile_source == profiles::Source::Unknown {
+                        continue;
+                    }
                     rows.push(blocked_artifact(directory, &source.id, &path, &error));
                     warnings.push(format!("{}: {error}", path.display()));
                     continue;
                 }
             };
             let first = rows.len();
-            let fallback =
-                original.is_some() || path.extension().is_some_and(|s| s == "json" || s == "js");
             let (profile, cached) =
-                match profiles::read(&path, &mut file, hash.as_deref(), fallback, cancel) {
+                match profiles::read(&path, &mut file, hash.as_deref(), profile_source, cancel) {
                     Ok(profile) => profile,
                     Err(error) => {
                         if cancel.load(Ordering::Relaxed) {
                             return Err(error);
+                        }
+                        if profile_source == profiles::Source::Unknown {
+                            continue;
                         }
                         rows.push(blocked_artifact(directory, &source.id, &path, &error));
                         warnings.push(format!("{}: {error}", path.display()));
@@ -127,15 +145,6 @@ fn analyze_mode(
             if rows.len() > first {
                 parsed += 1;
             }
-            let original_path = original
-                .map(|r| {
-                    ["Name", "FileName", "Path"]
-                        .iter()
-                        .map(|key| r.record.text(key))
-                        .find(|v| !v.is_empty())
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default();
             let browser = browser_name(&original_path);
             let pids: std::collections::BTreeSet<_> = originals
                 .iter()
@@ -304,7 +313,12 @@ fn push(
     }
 }
 
-fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(), String> {
+fn history(
+    path: &Path,
+    rows: &mut Vec<Record>,
+    cancel: &AtomicBool,
+    expected: bool,
+) -> Result<(), String> {
     let db = crate::file_content::open_database(path)?;
     let mut budget = 0usize;
     db.progress_handler(
@@ -324,25 +338,25 @@ fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(
             [name],
             |r| r.get::<_, bool>(0),
         )
-        .unwrap_or(false)
+        .map_err(|e| format!("Cannot read SQLite schema: {e}"))
     };
-    let downloads = has("downloads");
+    let downloads = has("downloads")?;
     if downloads {
         super::downloads::chromium_downloads(&db, rows, cancel)?;
     }
-    let (sql, browser, chrome) = if has("urls") && has("visits") {
+    let (sql, browser, chrome) = if has("urls")? && has("visits")? {
         (
             "SELECT u.url, COALESCE(u.title,''), v.visit_time, v.id FROM visits v JOIN urls u ON u.id=v.url LIMIT 100000",
             "Chromium",
             true,
         )
-    } else if has("moz_places") && has("moz_historyvisits") {
+    } else if has("moz_places")? && has("moz_historyvisits")? {
         (
             "SELECT p.url, COALESCE(p.title,''), v.visit_date, v.id FROM moz_historyvisits v JOIN moz_places p ON p.id=v.place_id LIMIT 100000",
             "Firefox",
             false,
         )
-    } else if downloads {
+    } else if downloads || !expected {
         return Ok(());
     } else {
         return Err("SQLite file has no supported Chromium or Firefox history tables".into());
@@ -376,7 +390,7 @@ fn history(path: &Path, rows: &mut Vec<Record>, cancel: &AtomicBool) -> Result<(
             break;
         }
     }
-    if chrome && has("keyword_search_terms") {
+    if chrome && has("keyword_search_terms")? {
         let mut statement = db.prepare("SELECT k.term, u.url, u.last_visit_time, k.keyword_id FROM keyword_search_terms k JOIN urls u ON u.id=k.url_id LIMIT 100000").map_err(|e| e.to_string())?;
         let mut result = statement.query([]).map_err(|e| e.to_string())?;
         while rows.len() < MAX_ROWS {
@@ -597,6 +611,24 @@ fn chromium_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_history_schema_reports_sqlite_error_instead_of_missing_tables() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("History");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT)")
+            .unwrap();
+        drop(db);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[100] = 0xff; // Invalid page type for sqlite_master's root b-tree.
+        std::fs::write(&path, bytes).unwrap();
+        let error = history(&path, &mut Vec::new(), &AtomicBool::new(false), true).unwrap_err();
+        assert!(error.contains("Cannot read SQLite schema"), "{error}");
+        assert!(error.contains("malformed"), "{error}");
+        assert!(!error.contains("no supported"));
+    }
+
     #[test]
     fn search_urls_require_real_provider_hosts_and_decode_terms() {
         assert_eq!(
@@ -606,14 +638,14 @@ mod tests {
         assert!(search_terms("https://www.google.com.evil.test/search?q=bad").is_none());
         assert!(search_terms("https://example.org/?q=not+a+search").is_none());
         assert_eq!(
-            search_terms("https://www.search.com/web?q=what+is+gluten"),
-            Some(("Search".into(), "what is gluten".into()))
+            search_terms("https://www.search.com/web?q=synthetic+test+query"),
+            Some(("Search".into(), "synthetic test query".into()))
         );
         assert_eq!(
             search_terms(
-                "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/?q=making+up+a+story"
+                "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/?q=another+synthetic+query"
             ),
-            Some(("DuckDuckGo".into(), "making up a story".into()))
+            Some(("DuckDuckGo".into(), "another synthetic query".into()))
         );
         assert!(search_terms("https://duckduckgo.com/?q={searchTerms}").is_none());
         assert!(search_terms("https://duckduckgo.com/?q=%s").is_none());
