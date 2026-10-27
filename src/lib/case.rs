@@ -152,6 +152,8 @@ pub enum RunStatus {
     Queued,
     Running,
     Completed,
+    /// Results are available, but completing coverage requires a change to inputs or scope.
+    Warning,
     Failed,
     Cancelled,
     Interrupted,
@@ -160,7 +162,14 @@ pub enum RunStatus {
 impl RunStatus {
     /// Completed and active runs require an override in the analysis chooser.
     pub fn blocks_plugin_selection(self) -> bool {
-        matches!(self, Self::Queued | Self::Running | Self::Completed)
+        matches!(
+            self,
+            Self::Queued | Self::Running | Self::Completed | Self::Warning
+        )
+    }
+
+    pub fn has_results(self) -> bool {
+        matches!(self, Self::Completed | Self::Warning)
     }
 
     pub fn label(self) -> &'static str {
@@ -168,6 +177,7 @@ impl RunStatus {
             Self::Queued => "Queued",
             Self::Running => "Running",
             Self::Completed => "Completed",
+            Self::Warning => "Warning",
             Self::Failed => "Failed",
             Self::Cancelled => "Cancelled",
             Self::Interrupted => "Interrupted",
@@ -359,6 +369,16 @@ impl Case {
                 run.finished_at = Some(now());
                 run.message = "Application closed before this analysis finished. Rerun to start a new analysis.".into();
                 changed = true;
+            } else if run.status == RunStatus::Completed
+                && run.plugin == crate::analysis::NETWORK_ATTRIBUTION
+                && run
+                    .message
+                    .contains("Stopped at the byte or finding limit.")
+            {
+                // Earlier versions recorded these partial results as successful.
+                run.status = RunStatus::Warning;
+                run.message.push_str(" Coverage is incomplete. Narrow the scope with --pid or change the scan limits before running again.");
+                changed = true;
             }
         }
         if changed {
@@ -548,7 +568,19 @@ impl Case {
                 .ok_or("Unknown analysis")?;
             store.insert(run, table)?;
         }
-        let count = if outcome.status == RunStatus::Completed {
+        let mut completion = Outcome {
+            status: outcome.status,
+            exit_code: outcome.exit_code,
+            message: outcome.message.clone(),
+            table: None,
+        };
+        if let Some(table) = &outcome.table {
+            for warning in &table.warnings {
+                completion.warn(warning);
+            }
+        }
+        completion.check_output_coverage(&self.run_dir(id))?;
+        let count = if completion.status.has_results() {
             store.count(id)?
         } else {
             0
@@ -559,10 +591,10 @@ impl Case {
             .iter_mut()
             .find(|r| r.id == id)
             .ok_or("Unknown analysis")?;
-        run.status = outcome.status;
+        run.status = completion.status;
         run.exit_code = outcome.exit_code;
         run.finished_at = Some(now());
-        run.message = outcome.message.clone();
+        run.message = completion.message;
         run.row_count = count;
         self.save()
     }

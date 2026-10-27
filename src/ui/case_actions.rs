@@ -97,7 +97,7 @@ impl Workspace {
             .runs
             .iter()
             .rev()
-            .find(|r| r.status == RunStatus::Completed)
+            .find(|r| r.status.has_results())
             .map(|r| r.id.clone())
         {
             self.select_run(id, window, cx);

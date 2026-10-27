@@ -805,6 +805,10 @@ pub struct ObjectReader {
 impl ObjectReader {
     fn open(root: &Path, sha: &str) -> Result<Self> {
         let db = database::connect(root)?;
+        Self::open_in(root, sha, &db)
+    }
+
+    fn open_in(root: &Path, sha: &str, db: &rusqlite::Connection) -> Result<Self> {
         let (size, manifest, manifest_sha): (u64, Vec<u8>, String) = db
             .query_row(
                 "SELECT size,manifest,manifest_sha256 FROM binary_objects WHERE sha256=?1",
@@ -962,6 +966,60 @@ pub fn open(path: &Path) -> Result<ArtifactReader> {
     File::open(path)
         .map(ArtifactReader::File)
         .map_err(|e| e.to_string())
+}
+
+/// A job can inspect thousands of outputs without reopening the case catalog.
+/// Queries remain live so a newly blocked artifact cannot be hidden by a snapshot.
+pub(crate) struct ReadContext {
+    root: PathBuf,
+    db: rusqlite::Connection,
+}
+
+impl ReadContext {
+    pub(crate) fn new(root: &Path) -> Result<Self> {
+        Ok(Self {
+            root: root.to_owned(),
+            db: database::connect(root)?,
+        })
+    }
+
+    pub(crate) fn open(&self, path: &Path) -> Result<(ArtifactReader, Option<String>)> {
+        let Some((root, run, name)) = address(path) else {
+            return open(path).map(|reader| (reader, None));
+        };
+        if root != self.root {
+            return Err("Artifact belongs to another case".into());
+        }
+        let entry = self.db.query_row(
+            "SELECT blob_id,size,sha256,blocked_reason FROM analysis_outputs WHERE run_id=?1 AND name=?2",
+            params![run, name],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)),
+        ).optional().map_err(|e| e.to_string())?;
+        if let Some((blob, size, sha, blocked)) = entry {
+            if let Some(reason) = blocked {
+                return Err(format!(
+                    "Opening is blocked for this unavailable artifact: {reason}"
+                ));
+            }
+            if let (Some(id), Some(size), Some(sha256)) = (blob, size, sha.as_ref()) {
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "Invalid stored blob identifier")?;
+                let reader = open_blob(&StoredBlob {
+                    path: root.join(BLOBS).join(id.to_string()),
+                    size: u64::try_from(size).map_err(|_| "Invalid stored file size")?,
+                    sha256: sha256.clone(),
+                })?;
+                return Ok((ArtifactReader::File(reader), sha));
+            }
+            if let Some(sha) = sha {
+                let reader = ObjectReader::open_in(&root, &sha, &self.db)?;
+                return Ok((ArtifactReader::Object(Box::new(reader)), Some(sha)));
+            }
+        }
+        File::open(path)
+            .map(|reader| (ArtifactReader::File(reader), None))
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// A disposable, verified copy owned by its consumer, outside the case.

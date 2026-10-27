@@ -68,7 +68,11 @@ fn main() -> Result<(), String> {
                 status: RunStatus::Completed,
                 exit_code: Some(0),
                 message: "Synthetic records for UI verification".into(),
-                table: Some(Table { columns, rows }),
+                table: Some(Table {
+                    columns,
+                    rows,
+                    warnings: Vec::new(),
+                }),
             },
         )?;
         Ok(run.id)

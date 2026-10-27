@@ -115,6 +115,9 @@ impl Workspace {
         let has_finished = runs
             .iter()
             .any(|run| QueueClearScope::Finished.includes(run.status));
+        let has_active = runs
+            .iter()
+            .any(|run| matches!(run.status, RunStatus::Running | RunStatus::Queued));
         let list = if runs.is_empty() {
             div()
                 .h(px(32.))
@@ -140,6 +143,7 @@ impl Workspace {
                             let color = match run.status {
                                 RunStatus::Running => Some(cx.theme().primary),
                                 RunStatus::Queued => Some(cx.theme().warning),
+                                RunStatus::Warning => Some(cx.theme().warning),
                                 RunStatus::Failed | RunStatus::Interrupted => {
                                     Some(cx.theme().danger)
                                 }
@@ -274,7 +278,24 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_2()
-            .child(heading("ANALYSIS QUEUE", cx))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(heading("ANALYSIS QUEUE", cx))
+                    .child(
+                        app_button("queue-cancel-all")
+                            .small()
+                            .outline()
+                            .label("Cancel all")
+                            .tooltip("Cancel all running and queued analyses")
+                            .disabled(!has_active)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm_cancel_all(window, cx);
+                            })),
+                    ),
+            )
             .child(
                 div()
                     .relative()

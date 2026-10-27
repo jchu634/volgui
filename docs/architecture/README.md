@@ -10,6 +10,8 @@
 - [Virtual hex editor](hex-editor-design.md)
 - [Tree detail columns and loaded modules](tree-details-design.md)
 - [Analysis performance measurements](analysis-performance.md)
+- [Job profiling and Network collection bottlenecks, 27 October 2026](job-profile-2026-10-27.md)
+- [Job optimizations and coverage warnings](job-optimizations-2026-10-27.md)
 
 ## Source layout
 

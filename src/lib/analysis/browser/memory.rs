@@ -54,7 +54,7 @@ fn processes(
         .rev()
         .filter(|r| {
             r.evidence_id == evidence
-                && r.status == RunStatus::Completed
+                && r.status.has_results()
                 && matches!(
                     r.plugin.as_str(),
                     "windows.pslist.PsList" | "windows.cmdline.CmdLine"
@@ -148,7 +148,6 @@ fn processes(
             result.get_mut(&id).unwrap().browser = "Tor Browser".into();
         }
     }
-    result.retain(|_, p| !p.browser.is_empty());
     Ok(result)
 }
 
@@ -163,7 +162,8 @@ pub fn recovery_runs(
     if evidence.operating_system != OperatingSystem::Windows {
         return Err("Browser process memory recovery currently requires Windows evidence".into());
     }
-    let processes = processes(directory, document, &evidence.id, cancel)?;
+    let mut processes = processes(directory, document, &evidence.id, cancel)?;
+    processes.retain(|_, process| !process.browser.is_empty());
     if processes.is_empty() {
         return Err("Collect browser processes first, then recover browser memory".into());
     }
@@ -184,7 +184,7 @@ pub fn recovery_runs(
                 && r.plugin == MEMMAP
                 && DumpScope::from_arguments(&r.arguments, process.pid).is_some()
                 && (matches!(r.status, RunStatus::Queued | RunStatus::Running)
-                    || r.status == RunStatus::Completed
+                    || r.status.has_results()
                         && crate::object_store::exists(
                             &directory
                                 .join("analyses")
@@ -359,7 +359,7 @@ pub(in crate::analysis) fn analyze(
     for source in document.runs.iter().rev().filter(|r| {
         r.evidence_id == run.evidence_id
             && r.plugin == MEMMAP
-            && r.status == RunStatus::Completed
+            && r.status.has_results()
             && r.arguments.iter().any(|s| s == "--dump")
     }) {
         cancelled(cancel)?;
@@ -378,6 +378,14 @@ pub(in crate::analysis) fn analyze(
             warnings.push(format!("PID {pid}: skipped process dump because no supported browser identity is available in the current process inventory. Collect browser processes and analyze again."));
             continue;
         };
+        if process.browser.is_empty() {
+            // Network and application jobs also collect dumps. A known unrelated
+            // process is outside Browser's scope, rather than missing coverage.
+            if process.name.is_empty() {
+                warnings.push(format!("PID {pid}: process identity is unreadable; browser coverage could not be determined. Collect process identities before running again."));
+            }
+            continue;
+        }
         if !seen.insert(pid) {
             continue;
         }

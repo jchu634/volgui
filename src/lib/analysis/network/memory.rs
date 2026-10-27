@@ -95,7 +95,7 @@ pub(super) fn scan(
     path: &Path,
     cancel: &AtomicBool,
     progress: &impl Fn(String),
-) -> Result<(Vec<Record>, String), String> {
+) -> Result<(Vec<Record>, String, bool), String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let total = file.metadata().map_err(|e| e.to_string())?.len();
     let marker: Vec<_> = "tcp://".encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -255,7 +255,7 @@ pub(super) fn scan(
             ""
         }
     );
-    Ok((rows, message))
+    Ok((rows, message, limited))
 }
 
 #[cfg(test)]

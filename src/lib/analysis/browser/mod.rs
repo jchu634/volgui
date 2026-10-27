@@ -1,10 +1,11 @@
 mod dedup;
 pub(super) mod memory;
+mod profiles;
 mod search;
 
 use super::{record, table};
 use crate::{
-    case::{CaseSnapshot, Run, RunStatus},
+    case::{CaseSnapshot, Run},
     extracted_files,
     volatility::{Record, Table},
 };
@@ -49,13 +50,31 @@ fn analyze_mode(
     include_memory: bool,
 ) -> Result<(Table, String), String> {
     let candidates = super::browser_candidates(directory, document, &run.evidence_id, cancel)?;
+    let owners: BTreeMap<_, _> = document
+        .runs
+        .iter()
+        .map(|r| (r.id.as_str(), r.plugin.as_str()))
+        .collect();
+    let mut originals_by_arguments: BTreeMap<Vec<String>, Vec<_>> = BTreeMap::new();
+    for candidate in &candidates {
+        if let Some(target) = owners.get(candidate.run_id.as_str()).and_then(|plugin| {
+            extracted_files::FileDumpTarget::from_record(plugin, &candidate.record)
+        }) {
+            for arguments in [target.arguments(false), target.arguments(true)] {
+                originals_by_arguments
+                    .entry(arguments)
+                    .or_default()
+                    .push(candidate);
+            }
+        }
+    }
+    let reader = crate::object_store::ReadContext::new(directory)?;
+    let mut reused = 0;
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
     let mut parsed = 0;
     for source in document.runs.iter().filter(|r| {
-        r.evidence_id == run.evidence_id
-            && r.status == RunStatus::Completed
-            && !super::is_native(&r.plugin)
+        r.evidence_id == run.evidence_id && r.status.has_results() && !super::is_native(&r.plugin)
     }) {
         let output = directory.join("analyses").join(&source.id);
         if !output.is_dir() {
@@ -64,19 +83,10 @@ fn analyze_mode(
         if source.plugin != extracted_files::DUMP_FILES {
             continue;
         }
-        let originals: Vec<_> = candidates
-            .iter()
-            .filter(|candidate| {
-                let Some(owner) = document.runs.iter().find(|r| r.id == candidate.run_id) else {
-                    return false;
-                };
-                extracted_files::FileDumpTarget::from_record(&owner.plugin, &candidate.record)
-                    .is_some_and(|t| {
-                        t.arguments(false) == source.arguments
-                            || t.arguments(true) == source.arguments
-                    })
-            })
-            .collect();
+        let originals = originals_by_arguments
+            .get(&source.arguments)
+            .cloned()
+            .unwrap_or_default();
         let original = originals.first().copied();
         for path in extracted_files::list(&output)? {
             if cancel.load(Ordering::Relaxed) {
@@ -86,47 +96,34 @@ fn analyze_mode(
                 "Analyzing browser data: {}",
                 path.file_name().unwrap_or_default().to_string_lossy()
             ));
-            let mut head = [0; 16];
-            let size = match extracted_files::open_artifact(&path)
-                .and_then(|mut f| f.read(&mut head).map_err(|e| e.to_string()))
-            {
-                Ok(size) => size,
+            let (mut file, hash) = match extracted_files::open_in(&reader, &path) {
+                Ok(file) => file,
                 Err(error) => {
-                    let warning = blocked_artifact(directory, &source.id, &path, &error);
-                    rows.push(warning);
+                    rows.push(blocked_artifact(directory, &source.id, &path, &error));
                     warnings.push(format!("{}: {error}", path.display()));
                     continue;
                 }
             };
             let first = rows.len();
-            let result = if head[..size].starts_with(b"SQLite format 3\0") {
-                history(&path, &mut rows, cancel)
-            } else if head[..size].starts_with(b"SNSS") {
-                read_session(&path).and_then(|data| chromium_session(&data, &mut rows))
-            } else if head[..size].starts_with(b"mozLz40\0") {
-                read_session(&path).and_then(|data| {
-                    let length = data
-                        .get(8..12)
-                        .and_then(|b| <[u8; 4]>::try_from(b).ok())
-                        .map(u32::from_le_bytes)
-                        .ok_or("Truncated Mozilla LZ4 header")?;
-                    if u64::from(length) > SESSION_LIMIT {
-                        return Err("Mozilla session exceeds 32 MiB decompression limit".into());
+            let fallback =
+                original.is_some() || path.extension().is_some_and(|s| s == "json" || s == "js");
+            let (profile, cached) =
+                match profiles::read(&path, &mut file, hash.as_deref(), fallback, cancel) {
+                    Ok(profile) => profile,
+                    Err(error) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(error);
+                        }
+                        rows.push(blocked_artifact(directory, &source.id, &path, &error));
+                        warnings.push(format!("{}: {error}", path.display()));
+                        continue;
                     }
-                    let json = lz4_flex::block::decompress_size_prepended(&data[8..])
-                        .map_err(|e| e.to_string())?;
-                    firefox_session(&json, &mut rows)
-                })
-            } else if original.is_some()
-                || path.extension().is_some_and(|s| s == "json" || s == "js")
-            {
-                read_session(&path).and_then(|data| firefox_session(&data, &mut rows))
-            } else {
-                continue;
-            };
-            if let Err(error) = result {
+                };
+            reused += usize::from(cached);
+            if let Some(error) = profile.error {
                 warnings.push(format!("{}: {error}", path.display()));
             }
+            rows.extend(profile.rows);
             if rows.len() > first {
                 parsed += 1;
             }
@@ -140,6 +137,11 @@ fn analyze_mode(
                 })
                 .unwrap_or_default();
             let browser = browser_name(&original_path);
+            let pids: std::collections::BTreeSet<_> = originals
+                .iter()
+                .map(|r| r.record.text("PID"))
+                .filter(|pid| pid.parse::<u64>().is_ok())
+                .collect();
             for row in &mut rows[first..] {
                 row.fields.insert("Source run".into(), json!(source.id));
                 row.fields.insert(
@@ -156,11 +158,6 @@ fn analyze_mode(
                 if browser != "Unknown" {
                     row.fields.insert("Browser".into(), json!(browser));
                 }
-                let pids: std::collections::BTreeSet<_> = originals
-                    .iter()
-                    .map(|r| r.record.text("PID"))
-                    .filter(|pid| pid.parse::<u64>().is_ok())
-                    .collect();
                 row.fields.insert(
                     "Attribution".into(),
                     json!(if pids.is_empty() {
@@ -177,7 +174,7 @@ fn analyze_mode(
                 } else if !pids.is_empty() {
                     row.fields.insert(
                         "Related PIDs".into(),
-                        json!(pids.into_iter().collect::<Vec<_>>().join(", ")),
+                        json!(pids.iter().cloned().collect::<Vec<_>>().join(", ")),
                     );
                 }
             }
@@ -216,18 +213,18 @@ fn analyze_mode(
     }
     let message = if !include_memory {
         format!(
-            "Recovered {} profile findings from {parsed} cached files. Standalone SQLite pages only; detached WAL pages are not merged.\n{}",
+            "Recovered {} profile findings from {parsed} cached files. Reused {reused} immutable artifact classifications or profiles. Standalone SQLite pages only; detached WAL pages are not merged.\n{}",
             rows.len(),
             warnings.join("\n")
         )
     } else {
         format!(
-            "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Matching memory searches and query prefixes are grouped under the longest query within each process, source, endpoint and query origin. Search variants retain the original URLs, addresses and counts; Grouped occurrences totals those counts. Prefix grouping does not establish which queries were submitted. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
+            "Recovered {} findings from {parsed} profile files and {memory} browser process dumps. Reused {reused} immutable artifact classifications or profiles. Memory URLs and searches show bytes in a PID, not proof of a visit or user intent. Repeated strings in each process are grouped by exact URL. Matching memory searches and query prefixes are grouped under the longest query within each process, source, endpoint and query origin. Search variants retain the original URLs, addresses and counts; Grouped occurrences totals those counts. Prefix grouping does not establish which queries were submitted. Session tabs reflect the saved session, not proof of a running browser. Only cached pages in standalone history databases are read; detached WAL pages are not merged.\n{}",
             rows.len(),
             warnings.join("\n")
         )
     };
-    Ok((table(rows), message))
+    Ok((table(rows).with_warnings(warnings), message))
 }
 
 pub(super) fn blocked_artifact(directory: &Path, source: &str, path: &Path, error: &str) -> Record {

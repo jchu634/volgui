@@ -10,12 +10,60 @@ pub(in crate::analysis) const FAMILY: &str = "Cobalt Strike Beacon";
 const HEADER: [u8; 7] = [0, 1, 0, 1, 0, 2, 0];
 const KEYS: [u8; 3] = [0, 0x2e, 0x69];
 pub(in crate::analysis) fn discovery_pattern() -> String {
+    // Every configuration accepted by parse starts with protocol 0 or 8 and
+    // another typed TLV. Seven header bytes alone also match common data tables.
+    let byte = |b: u8, key: u8| format!("\\x{:02x}", b ^ key);
+    let alternatives = |values: &[u8], key: u8| {
+        let mut values: Vec<u8> = values.iter().map(|b| b ^ key).collect();
+        values.sort_unstable();
+        values.dedup();
+        let mut class = String::from("[");
+        let mut i = 0;
+        while i < values.len() {
+            let first = values[i];
+            let mut last = first;
+            i += 1;
+            while i < values.len() && last.checked_add(1) == Some(values[i]) {
+                last = values[i];
+                i += 1;
+            }
+            class.push_str(&byte(first, 0));
+            if first != last {
+                class.push('-');
+                class.push_str(&byte(last, 0));
+            }
+        }
+        class.push(']');
+        class
+    };
     KEYS.iter()
         .map(|key| {
-            HEADER
+            let header = HEADER
                 .iter()
                 .map(|b| format!("\\x{:02x}", b ^ key))
-                .collect::<String>()
+                .collect::<String>();
+            let typed = [
+                [0, 1, 0, 2].map(|b| byte(b, *key)).concat(),
+                [0, 2, 0, 4].map(|b| byte(b, *key)).concat(),
+                // Pointer/string TLVs have a nonzero length no larger than 2048.
+                format!(
+                    "{}(?:{}{}|{}{}|{}{})",
+                    [0, 3].map(|b| byte(b, *key)).concat(),
+                    byte(0, *key),
+                    alternatives(&(1..=255).collect::<Vec<_>>(), *key),
+                    alternatives(&(1..=7).collect::<Vec<_>>(), *key),
+                    r"[\s\S]",
+                    byte(8, *key),
+                    byte(0, *key)
+                ),
+            ]
+            .join("|");
+            format!(
+                "(?-iu:{header}{}{}{}(?:{typed}))",
+                alternatives(&[0, 8], *key),
+                byte(0, *key),
+                alternatives(&(1..=127).collect::<Vec<_>>(), *key)
+            )
         })
         .collect::<Vec<_>>()
         .join("|")
@@ -232,6 +280,26 @@ pub(in crate::analysis) fn scan(
 #[cfg(test)]
 pub(in crate::analysis) mod tests {
     use super::*;
+    #[test]
+    fn discovery_validates_typed_prefix_for_each_encoding_and_retains_partial_leads() {
+        let re = regex::bytes::Regex::new(&format!("(?-u)(?:{})", discovery_pattern())).unwrap();
+        for key in KEYS {
+            let bytes = fixture(key);
+            assert!(re.is_match(&bytes));
+            assert!(
+                re.is_match(&bytes[..16]),
+                "A structured but incomplete prefix remains a candidate"
+            );
+            let mut noise = vec![key; 32];
+            for (i, byte) in HEADER.iter().enumerate() {
+                noise[i] = byte ^ key;
+            }
+            assert!(
+                !re.is_match(&noise),
+                "Header-only tables must not select a process"
+            );
+        }
+    }
     pub(in crate::analysis) fn fixture(key: u8) -> Vec<u8> {
         let mut b = Vec::new();
         let mut field = |id: u16, kind: u16, value: &[u8]| {
@@ -290,7 +358,7 @@ pub(in crate::analysis) mod tests {
         let mut bytes = vec![0xff; at];
         bytes.extend(fixture(0x69));
         std::fs::write(&path, bytes).unwrap();
-        let (rows, message) =
+        let (rows, message, _) =
             super::super::memory::scan(&path, &std::sync::atomic::AtomicBool::new(false), &|_| {})
                 .unwrap();
         assert_eq!(rows.len(), 2);

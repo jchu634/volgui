@@ -50,7 +50,7 @@ impl Workspace {
             .rev()
             .filter(|r| {
                 Some(&r.evidence_id) == self.selected_evidence.as_ref()
-                    && r.status == RunStatus::Completed
+                    && r.status.has_results()
                     && ArtifactGroup::for_plugin(&r.plugin) == group
             })
             .map(|r| r.id.clone())
@@ -135,7 +135,7 @@ impl Workspace {
             self.sync_os();
         }
         let open_memory = run.plugin == volgui::analysis::APPLICATION
-            && run.status == RunStatus::Completed
+            && run.status.has_results()
             && volgui::analysis::application::target_pid(&run.arguments).is_ok();
         let label = if run.plugin == volgui::analysis::APPLICATION {
             volgui::analysis::application::target_pid(&run.arguments)
@@ -235,7 +235,7 @@ impl Workspace {
                         .iter()
                         .filter(|run| {
                             Some(&run.evidence_id) == self.selected_evidence.as_ref()
-                                && run.status == RunStatus::Completed
+                                && run.status.has_results()
                                 && run.plugin == volgui::analysis::DOWNLOADS
                         })
                         .map(|run| run.id.clone()),

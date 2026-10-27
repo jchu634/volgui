@@ -157,16 +157,34 @@ pub fn execute(
     progress: impl Fn(String),
 ) -> Outcome {
     let result = analyze(directory, document, run, cancel, progress);
-    let result = result.and_then(|(table, message)| {
+    let result = result.and_then(|(table, mut message)| {
         if cancel.load(Ordering::Relaxed) {
             return Err("Analysis cancelled".into());
+        }
+        if let Some(first) = table.warnings.first() {
+            let remaining = table.warnings.len() - 1;
+            let more = if remaining > 0 {
+                format!(" {remaining} additional coverage warnings are listed below.")
+            } else {
+                String::new()
+            };
+            message = format!("Incomplete coverage. {first}{more}\n\n{message}");
+        }
+        for warning in &table.warnings {
+            if !message.contains(warning) {
+                message.push_str(&format!("\n{warning}"));
+            }
         }
         save_results(directory, run, &table, &message)?;
         Ok((table, message))
     });
     match result {
         Ok((table, message)) => Outcome {
-            status: RunStatus::Completed,
+            status: if table.warnings.is_empty() {
+                RunStatus::Completed
+            } else {
+                RunStatus::Warning
+            },
             exit_code: Some(0),
             message,
             table: Some(table),
@@ -190,6 +208,7 @@ fn table(mut rows: Vec<Record>) -> Table {
     }
     let columns: BTreeSet<_> = rows.iter().flat_map(|r| r.fields.keys().cloned()).collect();
     Table {
+        warnings: Vec::new(),
         columns: columns.into_iter().collect(),
         rows,
     }
@@ -239,7 +258,7 @@ pub fn browser_candidates(
         .rev()
         .filter(|r| {
             r.evidence_id == evidence_id
-                && r.status == RunStatus::Completed
+                && r.status.has_results()
                 && matches!(
                     r.plugin.as_str(),
                     "windows.filescan.FileScan" | "windows.handles.Handles"
@@ -302,7 +321,10 @@ pub fn browser_recovery_runs(
                     && r.arguments == arguments
                     && matches!(
                         r.status,
-                        RunStatus::Completed | RunStatus::Running | RunStatus::Queued
+                        RunStatus::Completed
+                            | RunStatus::Warning
+                            | RunStatus::Running
+                            | RunStatus::Queued
                     )
             })
         {

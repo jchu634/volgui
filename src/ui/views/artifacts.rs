@@ -195,7 +195,11 @@ impl Workspace {
             _ => {}
         }
         self.sync_result_table(cx);
-        self.restore_table_scroll(scroll_state::ResultTableKind::Results, &self.result_table, cx);
+        self.restore_table_scroll(
+            scroll_state::ResultTableKind::Results,
+            &self.result_table,
+            cx,
+        );
         let workspace = cx.entity().downgrade();
         div()
             .flex()
@@ -309,9 +313,12 @@ impl Workspace {
                 RunStatus::Completed => {
                     "This analysis completed without returning any results.".into()
                 }
+                RunStatus::Warning => {
+                    "This analysis has incomplete coverage and returned no findings. See Run details for the warning and required changes.".into()
+                }
             }
         } else if self.scope.is_empty() {
-            "Select an analysis to view its results.".into()
+            format!("Run analyses to populate data: {}", self.scope_label)
         } else {
             "These analyses returned no results.".into()
         }

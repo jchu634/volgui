@@ -204,7 +204,12 @@ impl Workspace {
                 .child(div().font_family("Consolas").text_sm().child(SelectableText::new("memory-recovered-fragment",fragment)))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Fragments can contain old edits or partial buffers. Their presence does not establish the current document or save state."));
         } else if self.index.ids.is_empty() {
-            decoded = decoded.child(self.results_empty_message(cx));
+            decoded = decoded.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.results_empty_message(cx)),
+            );
         }
         text = text.child(decoded);
         let body = if self.content_sidebar_visible {
@@ -243,14 +248,17 @@ impl Workspace {
             return editor.clone().into_any_element();
         }
         let message = match &self.hex_view {
-            HexView::Idle | HexView::NeedsMemory => "Enter a PID and scan its memory, or select a recovered fragment.",
+            HexView::Idle | HexView::NeedsMemory => {
+                "Enter a PID and scan its memory, or select a recovered fragment."
+            }
             HexView::Loading => "Loading process memory...",
             HexView::Error(error) => error.as_str(),
             HexView::Ready { .. } => "Preparing hex editor...",
         };
         div()
-            .p_3()
+            .p_4()
             .text_sm()
+            .text_color(cx.theme().muted_foreground)
             .child(message.to_owned())
             .when(matches!(self.hex_view, HexView::Error(_)), |s| {
                 s.child(

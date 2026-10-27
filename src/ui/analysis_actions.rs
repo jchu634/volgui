@@ -354,6 +354,51 @@ impl Workspace {
     pub(super) fn retry_run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.retry_runs(&[id.to_string()], window, cx);
     }
+    pub(super) fn confirm_cancel_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.queue_open = false;
+        cx.notify();
+        let workspace = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let workspace = workspace.clone();
+            dialog
+                .width(px(460.))
+                .title("Cancel all analyses?")
+                .child("This will stop all running analyses and cancel all queued analyses. Finished jobs and saved results will be kept.")
+                .footer(
+                    div().flex().w_full().justify_end().gap_2()
+                        .child(app_button("keep-queue-running").small().label("Keep running")
+                            .on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(app_button("confirm-cancel-all").small().primary().label("Cancel all")
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let _ = workspace.update(cx, |this, cx| this.cancel_all_runs(cx));
+                            })),
+                )
+        });
+    }
+
+    fn cancel_all_runs(&mut self, cx: &mut Context<Self>) {
+        self.browser_recovery_pending = false;
+        for running in self.running.values() {
+            running.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(case) = &mut self.case {
+            for run in &mut case.document.runs {
+                if run.status == RunStatus::Queued {
+                    run.status = RunStatus::Cancelled;
+                    run.finished_at = Some(now());
+                    self.file_dumps.remove(&run.id);
+                    self.batch_finished += 1;
+                }
+            }
+            if let Err(error) = case.save() {
+                self.error = Some(error);
+            }
+        }
+        self.message = "Cancelling all analyses...".into();
+        cx.notify();
+    }
+
     pub(super) fn retry_all_failed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids: Vec<_> = self
             .case
@@ -636,29 +681,16 @@ impl Workspace {
                     outcome.status = if cancel.load(Ordering::Relaxed) {
                         RunStatus::Cancelled
                     } else if outcome.table.is_some() {
-                        outcome.status
+                        RunStatus::Warning
                     } else {
                         RunStatus::Failed
                     };
                     // Parsed observations remain evidence even if output bytes
                     // cannot be archived, for example after antivirus quarantine.
-                    outcome.message = format!(
-                        "{}\nCould not archive analysis output: {error}. Available capture files and parsed results retained.",
-                        outcome.message
-                    );
+                    outcome.warn(&format!("Could not archive analysis output: {error}. Available capture files and parsed results retained."));
                 }
-                if run.plugin == volgui::extracted_files::DUMP_FILES
-                    && let Ok(outputs) = volgui::object_store::output_metadata(&directory)
-                {
-                    let unavailable = outputs
-                        .values()
-                        .filter(|output| output.blocked_reason.is_some())
-                        .count();
-                    if unavailable > 0 {
-                        outcome.message.push_str(&format!(
-                            "\n{unavailable} recovered outputs unavailable or blocked, possibly quarantined. Parsed findings retained."
-                        ));
-                    }
+                if let Err(error) = outcome.check_output_coverage(&directory) {
+                    outcome.warn(&format!("Output coverage could not be checked: {error}. Inspect the archived outputs before running again."));
                 }
                 if let Some(table) = outcome.table.take()
                     && let Err(e) = store.insert_cancellable(&run, &table, &cancel)

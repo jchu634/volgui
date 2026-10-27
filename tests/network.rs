@@ -339,7 +339,7 @@ fn native_analysis_retains_inventory_ports_and_exact_source_provenance() {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed);
+    assert_eq!(outcome.status, RunStatus::Warning);
     let table = outcome.table.as_ref().unwrap();
     assert_eq!(table.rows.len(), 2);
     for row in &table.rows {
@@ -483,7 +483,7 @@ fn network_analysis_ignores_raw_credentials_and_unvalidated_tcp_strings() {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed);
+    assert_eq!(outcome.status, RunStatus::Warning);
     assert!(
         outcome.table.unwrap().rows.is_empty(),
         "Network preprocessing must not promote arbitrary strings to payload configurations"
@@ -543,7 +543,7 @@ fn network_credentials_must_come_from_an_explicit_drive_command_in_a_collected_r
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed);
+    assert_eq!(outcome.status, RunStatus::Warning);
     let rows = outcome.table.unwrap().rows;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text("Username"), "alice");
@@ -756,7 +756,7 @@ fn payload_recovery_belongs_to_network_and_retains_offsets_across_chunk_boundari
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert_eq!(outcome.status, RunStatus::Warning, "{}", outcome.message);
     let rows = &outcome.table.as_ref().unwrap().rows;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text("Finding"), "Meterpreter TCP configuration");
@@ -798,7 +798,7 @@ fn payload_recovery_belongs_to_network_and_retains_offsets_across_chunk_boundari
     );
     assert_eq!(
         downloads.status,
-        RunStatus::Completed,
+        RunStatus::Warning,
         "{}",
         downloads.message
     );
@@ -861,7 +861,7 @@ fn configuration_recovery_reports_its_limit_and_honors_cancellation() {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert_eq!(outcome.status, RunStatus::Warning, "{}", outcome.message);
     let rows = outcome.table.unwrap().rows;
     assert_eq!(rows.len(), 2_000);
     assert_eq!(

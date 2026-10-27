@@ -25,14 +25,14 @@ use std::{
 };
 
 pub const PENDING: &str = "Waiting to prepare network process attribution";
-pub const VERSION: &str = "network-process-v2-program-parsers";
+pub const VERSION: &str = "network-process-v3-context-discovery";
 pub const DISCOVERY: &str = "windows.vadregexscan.VadRegExScan";
 fn pattern() -> &'static str {
     static PATTERN: OnceLock<String> = OnceLock::new();
     PATTERN.get_or_init(|| {
         format!(
             r"(?i)(?:tcp://|t\x00c\x00p\x00:\x00/\x00/\x00|\x00t\x00c\x00p\x00:\x00/\x00/|{}|{})",
-            network::commands::discovery_pattern(),
+            network::commands::candidate_pattern(),
             network::beacon::discovery_pattern()
         )
     })
@@ -42,6 +42,19 @@ const MAX_PROCESSES: usize = 256;
 const MAX_FINDINGS: usize = 20_000;
 const MAX_PROCESS_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 4 * MAX_PROCESS_BYTES;
+
+#[derive(Clone, Copy)]
+struct ScanLimits {
+    process_bytes: u64,
+    total_bytes: u64,
+    findings: usize,
+}
+
+const SCAN_LIMITS: ScanLimits = ScanLimits {
+    process_bytes: MAX_PROCESS_BYTES,
+    total_bytes: MAX_TOTAL_BYTES,
+    findings: MAX_FINDINGS,
+};
 
 #[derive(Default)]
 struct Options {
@@ -99,7 +112,7 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
 fn source<'a>(doc: &'a CaseSnapshot, id: &str, evidence: &str) -> Result<&'a Run, String> {
     doc.runs
         .iter()
-        .find(|r| r.id == id && r.evidence_id == evidence && r.status == RunStatus::Completed)
+        .find(|r| r.id == id && r.evidence_id == evidence && r.status.has_results())
         .ok_or_else(|| {
             format!("Attribution source {id} did not complete successfully for this evidence")
         })
@@ -116,7 +129,7 @@ fn input_fingerprint(doc: &CaseSnapshot, evidence: &str) -> String {
     let mut hash = Sha256::new();
     for run in doc.runs.iter().filter(|r| {
         r.evidence_id == evidence
-            && r.status == RunStatus::Completed
+            && r.status.has_results()
             && (INVENTORY.contains(&r.plugin.as_str())
                 || matches!(r.plugin.as_str(), MEMMAP | VADINFO | DISCOVERY))
     }) {
@@ -131,7 +144,7 @@ pub fn needs_recovery(doc: &CaseSnapshot, evidence: &str) -> bool {
         r.evidence_id == evidence
             && r.plugin == NETWORK_ATTRIBUTION
             && (matches!(r.status, RunStatus::Queued | RunStatus::Running)
-                || r.status == RunStatus::Completed
+                || r.status.has_results()
                     && user_arguments(&r.arguments) == Ok(vec![])
                     && r.message.contains(VERSION)
                     && r.message.contains(&signature))
@@ -150,7 +163,7 @@ pub fn dump_target(
     let source = doc.runs.iter().find(|r| {
         r.id == row.text("Source run")
             && r.plugin == MEMMAP
-            && r.status == RunStatus::Completed
+            && r.status.has_results()
             && DumpScope::from_arguments(&r.arguments, pid).is_some()
     })?;
     doc.evidence
@@ -191,7 +204,7 @@ pub fn recovery_runs(
                     r.evidence_id == evidence.id
                         && r.plugin == *plugin
                         && r.arguments.is_empty()
-                        && r.status == RunStatus::Completed
+                        && r.status.has_results()
                 })
                 .map(|r| r.id.clone())
                 .ok_or_else(|| format!("Attribution requires a completed unfiltered {plugin}"))
@@ -225,7 +238,7 @@ pub fn recovery_runs(
                 r.evidence_id == evidence.id
                     && r.plugin == DISCOVERY
                     && r.arguments == expected
-                    && r.status == RunStatus::Completed
+                    && r.status.has_results()
             })
         };
         let Some(discovery) = discovery else {
@@ -273,7 +286,7 @@ pub fn recovery_runs(
             let reusable = doc.runs.iter().rev().find(|r| {
                 r.evidence_id == evidence.id
                     && r.plugin == plugin
-                    && r.status == RunStatus::Completed
+                    && r.status.has_results()
                     && if plugin == MEMMAP {
                         DumpScope::from_arguments(&r.arguments, pid).is_some()
                             && crate::object_store::exists(
@@ -441,6 +454,17 @@ pub fn analyze(
     cancel: &AtomicBool,
     progress: &impl Fn(String),
 ) -> Result<(Table, String), String> {
+    analyze_bounded(directory, doc, run, cancel, progress, SCAN_LIMITS)
+}
+
+fn analyze_bounded(
+    directory: &Path,
+    doc: &CaseSnapshot,
+    run: &Run,
+    cancel: &AtomicBool,
+    progress: &impl Fn(String),
+    limits: ScanLimits,
+) -> Result<(Table, String), String> {
     cancelled(cancel)?;
     let opts = options(&run.arguments)?;
     if opts.inventory.len() != 2 {
@@ -514,6 +538,7 @@ pub fn analyze(
     let mut total = 0;
     let mut parsed = 0;
     let mut limited = false;
+    let candidates = sources.len();
     let evidence = doc
         .evidence
         .iter()
@@ -589,9 +614,10 @@ pub fn analyze(
             let mut process_bytes = 0;
             let mut seen = BTreeSet::new();
             for (range, region) in readable {
-                let budget = MAX_PROCESS_BYTES
+                let budget = limits
+                    .process_bytes
                     .saturating_sub(process_bytes)
-                    .min(MAX_TOTAL_BYTES.saturating_sub(total));
+                    .min(limits.total_bytes.saturating_sub(total));
                 let (scanned, hit_limit) = scan_windows(
                     &mut file,
                     &[range],
@@ -611,7 +637,7 @@ pub fn analyze(
                             if !seen.insert(key) {
                                 continue;
                             }
-                            if rows.len() >= MAX_FINDINGS {
+                            if rows.len() >= limits.findings {
                                 return false;
                             }
                             for (key, value) in [
@@ -677,13 +703,16 @@ pub fn analyze(
                             }
                             rows.push(row);
                         }
-                        rows.len() < MAX_FINDINGS
+                        rows.len() < limits.findings
                     },
                 )?;
                 total += scanned;
                 process_bytes += scanned;
                 limited |= hit_limit;
-                if limited {
+                if hit_limit {
+                    diagnostics.push(format!(
+                        "PID {pid}: incomplete scan after {process_bytes} bytes; the process, total-byte or finding limit was reached. Narrow the scope with --pid or change the scan limits; rerunning this request does not restore coverage."
+                    ));
                     break;
                 }
             }
@@ -696,21 +725,28 @@ pub fn analyze(
                 diagnostics.push(format!("PID {pid}: {error}"));
             }
         }
-        if limited {
+        // A per-process limit must not prevent later candidates from being scanned.
+        if total >= limits.total_bytes || rows.len() >= limits.findings {
+            if parsed < candidates {
+                limited = true;
+                diagnostics.push(format!(
+                    "Only {parsed} of {candidates} candidate processes were scanned before the total-byte or finding limit. Choose a narrower scope with --pid; rerunning this request uses the same limits."
+                ));
+            }
             break;
         }
     }
     let scope = if opts.pid.is_some() {
         "Selected PID"
     } else {
-        "Program marker VAD discovery candidates; unreadable processes and processes absent from PsList are not covered"
+        "Command-context and structured-prefix VAD discovery candidates, including unvalidated fallback candidates; unreadable processes and processes absent from PsList are not covered"
     };
     let mut inputs = doc.clone();
     if let Some(i) = inputs.runs.iter().position(|r| r.id == run.id) {
         inputs.runs.truncate(i);
     }
     let message = format!(
-        "{} process-memory network findings; {parsed} processes scanned; {total} bytes. {scope}. {}Parser: {VERSION}. Inputs: {}. Process associations do not establish successful connections. {}",
+        "{} process-memory network findings; {parsed} of {candidates} processes scanned; {total} bytes. {scope}. {}Parser: {VERSION}. Inputs: {}. Process associations do not establish successful connections. {}",
         rows.len(),
         if limited {
             "Stopped at the byte or finding limit. "
@@ -720,7 +756,7 @@ pub fn analyze(
         input_fingerprint(&inputs, &run.evidence_id),
         diagnostics.join("\n")
     );
-    Ok((table(rows), message))
+    Ok((table(rows).with_warnings(diagnostics), message))
 }
 
 #[cfg(test)]
@@ -922,6 +958,117 @@ mod tests {
             .find(|r| r.id == run.id)
             .unwrap()
             .clone()
+    }
+
+    #[test]
+    fn scan_limits_report_partial_coverage_and_process_limits_keep_later_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("capture.raw");
+        fs::write(&image, b"fixture").unwrap();
+        let mut evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+        evidence.operating_system = OperatingSystem::Windows;
+        let mut case = Case::create(&temp.path().join("case"), "Coverage").unwrap();
+        case.add_evidence(evidence.clone()).unwrap();
+        let inventory = completed(
+            &mut case,
+            &evidence,
+            INVENTORY[0],
+            vec![],
+            json!([
+                {"PID":42,"ImageFileName":"first.exe"}, {"PID":43,"ImageFileName":"later.exe"}
+            ]),
+        );
+        let commands = completed(&mut case, &evidence, INVENTORY[1], vec![], json!([]));
+        let discovery = completed(
+            &mut case,
+            &evidence,
+            DISCOVERY,
+            discovery_arguments(None),
+            json!([
+                {"PID":42}, {"PID":43}
+            ]),
+        );
+        let mut args = vec![
+            "--inventory-run".into(),
+            inventory.id,
+            "--inventory-run".into(),
+            commands.id,
+            "--discovery-run".into(),
+            discovery.id,
+        ];
+        for pid in [42, 43] {
+            let vad = completed(
+                &mut case,
+                &evidence,
+                VADINFO,
+                vec!["--pid".into(), pid.to_string()],
+                json!([
+                    {"PID":pid,"Start VPN":4096,"End VPN":8191,"Protection":"PAGE_READONLY","PrivateMemory":0}
+                ]),
+            );
+            let map = completed(
+                &mut case,
+                &evidence,
+                MEMMAP,
+                DumpScope::Full.arguments(pid),
+                json!([
+                    {"Virtual":4096,"Size":4096,"Offset in File":0,"File output":format!("pid.{pid}.dmp")}
+                ]),
+            );
+            let output = case.directory.join("analyses").join(&map.id);
+            fs::create_dir_all(&output).unwrap();
+            let mut bytes = vec![0; 4096];
+            let endpoint = b"tcp://192.0.2.5:5059\0";
+            bytes[32..32 + endpoint.len()].copy_from_slice(endpoint);
+            fs::write(output.join(format!("pid.{pid}.dmp")), bytes).unwrap();
+            args.extend(["--source-run".into(), vad.id, "--source-run".into(), map.id]);
+        }
+        let run = prepare(&evidence, NETWORK_ATTRIBUTION, args).unwrap();
+        let scan = |limits| {
+            analyze_bounded(
+                &case.directory,
+                &case.document,
+                &run,
+                &AtomicBool::new(false),
+                &|_| {},
+                limits,
+            )
+            .unwrap()
+        };
+        let (table, message) = scan(ScanLimits {
+            process_bytes: 128,
+            total_bytes: 8192,
+            findings: 100,
+        });
+        assert_eq!(table.rows.len(), 2);
+        assert!(table.rows.iter().any(|r| number(r, "PID") == Some(43)));
+        assert_eq!(table.warnings.len(), 2);
+        assert!(message.contains("2 of 2 processes scanned; 256 bytes"));
+        let (table, message) = scan(ScanLimits {
+            process_bytes: 4096,
+            total_bytes: 128,
+            findings: 100,
+        });
+        assert_eq!(table.rows.len(), 1);
+        assert!(message.contains("1 of 2 processes scanned"));
+        assert!(table.warnings.iter().any(|w| w.contains("Only 1 of 2")));
+        let (table, _) = scan(ScanLimits {
+            process_bytes: 4096,
+            total_bytes: 8192,
+            findings: 100,
+        });
+        assert_eq!(table.rows.len(), 2);
+        assert!(
+            table.warnings.is_empty(),
+            "Exact complete coverage must not warn"
+        );
+        let (table, _) = scan(ScanLimits {
+            process_bytes: 4096,
+            total_bytes: 8192,
+            findings: 1,
+        });
+        assert_eq!(table.rows.len(), 1);
+        assert!(!table.warnings.is_empty());
     }
     #[test]
     fn image_configuration_reuses_dump_and_keeps_exact_source_identity() {

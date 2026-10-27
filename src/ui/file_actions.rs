@@ -14,22 +14,27 @@ impl Workspace {
                 .document
                 .runs
                 .iter()
-                .find(|run| run.id == recovery.run_id && run.status == RunStatus::Completed)
+                .find(|run| run.id == recovery.run_id && run.status.has_results())
         {
             return Some(run);
         }
         extracted_files::completed_dump(case, record, self.file_offset_physical).or_else(|| {
-            let source = case.document.runs.iter().find(|run| run.id == record.run_id)?;
+            let source = case
+                .document
+                .runs
+                .iter()
+                .find(|run| run.id == record.run_id)?;
             if ArtifactGroup::for_plugin(&source.plugin) != ArtifactGroup::Processes {
                 return None;
             }
-            let pid = ["PID", "Pid", "pid"].iter()
+            let pid = ["PID", "Pid", "pid"]
+                .iter()
                 .map(|key| record.record.text(key))
                 .find(|pid| pid.parse::<u64>().is_ok())?;
             case.document.runs.iter().rev().find(|run| {
                 run.plugin == extracted_files::DUMP_FILES
                     && run.evidence_id == source.evidence_id
-                    && run.status == RunStatus::Completed
+                    && run.status.has_results()
                     && run.arguments == ["--pid", pid.as_str()]
             })
         })

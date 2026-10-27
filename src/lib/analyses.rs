@@ -12,22 +12,41 @@ use crate::{
 };
 
 /// Select the next job in queue order without exceeding the global limit.
-/// Recovery parsers wait for preceding dumps and block later jobs until complete.
+/// Recovery parsers wait for preceding dumps for their evidence. Other evidence
+/// can use free slots while a parser is waiting or running.
 pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<usize> {
     let running = runs.iter().filter(|run| run.status == RunStatus::Running);
-    if running.clone().count() >= limit.get() || running.clone().any(is_recovery_run) {
+    if running.count() >= limit.get() {
         return None;
     }
-    let index = runs
-        .iter()
-        .position(|run| {
-            run.status == RunStatus::Queued && crate::analysis::quarantine::is_passive(run)
+    let ready = |index: usize| {
+        let candidate = &runs[index];
+        if crate::analysis::quarantine::is_passive(candidate) {
+            return true;
+        }
+        !runs[..index].iter().any(|prior| {
+            prior.evidence_id == candidate.evidence_id
+                && matches!(prior.status, RunStatus::Queued | RunStatus::Running)
+                && (is_recovery_run(prior) || is_recovery_run(candidate))
+        }) && !runs.iter().any(|other| {
+            other.evidence_id == candidate.evidence_id
+                && other.status == RunStatus::Running
+                && (is_recovery_run(other) || is_recovery_run(candidate))
         })
-        .or_else(|| runs.iter().position(|run| run.status == RunStatus::Queued))?;
-    if is_recovery_run(&runs[index]) && running.count() > 0 {
-        return None;
-    }
-    Some(index)
+    };
+    runs.iter()
+        .enumerate()
+        .find(|(index, run)| {
+            run.status == RunStatus::Queued
+                && crate::analysis::quarantine::is_passive(run)
+                && ready(*index)
+        })
+        .or_else(|| {
+            runs.iter()
+                .enumerate()
+                .find(|(index, run)| run.status == RunStatus::Queued && ready(*index))
+        })
+        .map(|(index, _)| index)
 }
 
 fn is_recovery_run(run: &Run) -> bool {
@@ -67,7 +86,7 @@ pub fn blocks_global_selection(run: &Run) -> bool {
 pub fn completed_process_scan(run: &Run, evidence_id: &str, pid: u64) -> bool {
     run.evidence_id == evidence_id
         && run.plugin == crate::analysis::APPLICATION
-        && run.status == RunStatus::Completed
+        && run.status.has_results()
         && crate::analysis::application::target_pid(&run.arguments) == Ok(pid)
 }
 
@@ -551,7 +570,10 @@ impl AnalysisDraft {
                         && r.arguments.is_empty()
                         && matches!(
                             r.status,
-                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            RunStatus::Completed
+                                | RunStatus::Warning
+                                | RunStatus::Queued
+                                | RunStatus::Running
                         )
                 }) {
                     // FileScan is required. Handles add process ownership when supported.
@@ -582,7 +604,10 @@ impl AnalysisDraft {
                             && r.arguments.is_empty()
                             && matches!(
                                 r.status,
-                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                                RunStatus::Completed
+                                    | RunStatus::Warning
+                                    | RunStatus::Queued
+                                    | RunStatus::Running
                             )
                     })
                 {
@@ -625,7 +650,10 @@ impl AnalysisDraft {
                         && r.arguments.is_empty()
                         && matches!(
                             r.status,
-                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            RunStatus::Completed
+                                | RunStatus::Warning
+                                | RunStatus::Queued
+                                | RunStatus::Running
                         )
                 }) {
                     runs.push(engine.prepare(
@@ -671,7 +699,10 @@ impl AnalysisDraft {
                         && r.arguments.is_empty()
                         && matches!(
                             r.status,
-                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            RunStatus::Completed
+                                | RunStatus::Warning
+                                | RunStatus::Queued
+                                | RunStatus::Running
                         )
                 }) {
                     runs.push(engine.prepare(
@@ -710,7 +741,10 @@ impl AnalysisDraft {
                             && r.arguments.is_empty()
                             && matches!(
                                 r.status,
-                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                                RunStatus::Completed
+                                    | RunStatus::Warning
+                                    | RunStatus::Queued
+                                    | RunStatus::Running
                             )
                     })
                 {
@@ -739,7 +773,10 @@ impl AnalysisDraft {
                             && r.arguments.is_empty()
                             && matches!(
                                 r.status,
-                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                                RunStatus::Completed
+                                    | RunStatus::Warning
+                                    | RunStatus::Queued
+                                    | RunStatus::Running
                             )
                     })
                 {
@@ -771,7 +808,7 @@ impl AnalysisDraft {
                     run.evidence_id == evidence.id
                         && run.plugin == *plugin
                         && run.arguments.is_empty()
-                        && run.status == RunStatus::Completed
+                        && run.status.has_results()
                 })
             })
             .collect();

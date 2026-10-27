@@ -995,7 +995,7 @@ impl Workspace {
                     {
                         let (_, epoch) = self.memory_scan_dump.take().unwrap();
                         if epoch == self.hex_epoch {
-                            if saved && outcome.status == RunStatus::Completed {
+                            if saved && outcome.status.has_results() {
                                 self.load_hex(cx);
                             } else {
                                 self.hex_view = HexView::Error(format!(
@@ -1012,7 +1012,7 @@ impl Workspace {
                         self.load_handles(0, cx);
                     }
                     if let Some(request) = self.file_dumps.remove(&id) {
-                        if saved && outcome.status == RunStatus::Completed {
+                        if saved && outcome.status.has_results() {
                             self.finish_file_dump(&id, request.executable);
                             if self.selection_epoch == request.selection_epoch
                                 && self

@@ -64,6 +64,19 @@ fn quarantined_dump_output_preserves_findings_and_healthy_outputs() {
     )
     .unwrap();
     assert_eq!(case.results(&run.id).unwrap().rows.len(), 2);
+    let completed = case
+        .document
+        .runs
+        .iter()
+        .find(|saved| saved.id == run.id)
+        .unwrap();
+    assert_eq!(completed.status, RunStatus::Warning);
+    assert_eq!(completed.row_count, 2);
+    assert!(
+        completed
+            .message
+            .contains("outputs are unavailable or blocked")
+    );
     let outputs = object_store::output_metadata(&directory).unwrap();
     assert!(
         outputs[&directory.join("file.quarantined.dat")]

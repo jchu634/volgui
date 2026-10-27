@@ -1,5 +1,5 @@
 use crate::{
-    case::{Case, Run, RunStatus},
+    case::{Case, Run},
     volatility::{Installation, Record},
 };
 pub const PRINT_KEY: &str = "windows.registry.printkey.PrintKey";
@@ -59,7 +59,7 @@ pub fn cached<'a>(case: &'a Case, source: &Run, arguments: &[String]) -> Option<
         r.evidence_id == source.evidence_id
             && r.plugin == PRINT_KEY
             && r.arguments == arguments
-            && r.status == RunStatus::Completed
+            && r.status.has_results()
     })
 }
 

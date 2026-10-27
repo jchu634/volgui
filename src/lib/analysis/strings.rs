@@ -151,7 +151,7 @@ pub fn search(
                 if rows.len() == MAX_HITS {
                     rows.sort_by_key(|r| r.fields["Offset"].as_u64());
                     return Ok((
-                        table(rows),
+                        table(rows).with_warnings(vec![format!("Stopped at {MAX_HITS} matches. Narrow the string; rerunning the same search uses the same limit.")]),
                         format!(
                             "Stopped at {MAX_HITS} matches. Narrow the string and run again. Offsets refer to the evidence file, not virtual addresses."
                         ),

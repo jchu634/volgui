@@ -43,7 +43,7 @@ impl Workspace {
                 }
                 Some(&run.evidence_id) == self.selected_evidence.as_ref()
                     && run.plugin == plugin
-                    && run.status == RunStatus::Completed
+                    && run.status.has_results()
             })
         });
         if !completed {

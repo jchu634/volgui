@@ -88,7 +88,7 @@ pub(super) fn scan(
     anchors: &[(u64, String, String)],
     cancel: &AtomicBool,
     progress: &impl Fn(String),
-) -> Result<(Vec<Record>, String), String> {
+) -> Result<(Vec<Record>, String, bool), String> {
     let anchors = anchors
         .iter()
         .filter_map(|(pid, name, birth)| {
@@ -199,7 +199,7 @@ pub(super) fn scan(
             ""
         }
     );
-    Ok((processes, message))
+    Ok((processes, message, limited))
 }
 
 #[cfg(test)]
@@ -239,12 +239,12 @@ mod tests {
         bytes[CHUNK + 100..CHUNK + 100 + 11].copy_from_slice(b"payload.exe"); // A name alone is not a process.
         fs::write(&path, &bytes).unwrap();
         let names = ["payload.exe".to_string()].into();
-        let (found, message) =
+        let (found, message, _) =
             scan(&path, &names, &anchors, &AtomicBool::new(false), &|_| {}).unwrap();
         assert_eq!(found.len(), 1, "{message}");
         assert_eq!(found[0].fields["Acquisition offset"], base);
         assert_eq!(found[0].fields["PID"], 900);
-        let (found, message) = scan(
+        let (found, message, _) = scan(
             &path,
             &names,
             &anchors[..4],

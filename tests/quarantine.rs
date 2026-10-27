@@ -113,7 +113,7 @@ fn execute(case: &mut Case) -> (Run, Outcome) {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert!(outcome.status.has_results(), "{}", outcome.message);
     case.finish(&run.id, &outcome).unwrap();
     (run, outcome)
 }
@@ -508,7 +508,7 @@ fn retry_without_an_engine_uses_collected_evidence_without_a_recovery_barrier() 
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert!(outcome.status.has_results(), "{}", outcome.message);
 }
 
 fn passive(case: &mut Case) -> (Run, Outcome) {
@@ -530,7 +530,7 @@ fn passive(case: &mut Case) -> (Run, Outcome) {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert!(outcome.status.has_results(), "{}", outcome.message);
     case.finish(&run.id, &outcome).unwrap();
     (run, outcome)
 }

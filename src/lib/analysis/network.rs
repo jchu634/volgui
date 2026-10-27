@@ -40,7 +40,7 @@ pub fn needs_recovery(document: &CaseSnapshot, evidence_id: &str) -> bool {
         run.evidence_id == evidence_id
             && run.plugin == super::NETWORK
             && (matches!(run.status, RunStatus::Queued | RunStatus::Running)
-                || (run.status == RunStatus::Completed && run.message.contains(PARSER_VERSION)))
+                || (run.status.has_results() && run.message.contains(PARSER_VERSION)))
     })
 }
 
@@ -188,7 +188,8 @@ pub fn analyze(
         .iter()
         .find(|e| e.id == run.evidence_id)
         .ok_or("Missing evidence")?;
-    let (mut rows, configuration_coverage) = memory::scan(&evidence.path, cancel, progress)?;
+    let (mut rows, configuration_coverage, configuration_limited) =
+        memory::scan(&evidence.path, cancel, progress)?;
     let mut seen = BTreeSet::new();
     // Pin interpretation to inventories preceding this parser job, never later results.
     let preceding = document.runs.iter().take_while(|r| r.id != run.id);
@@ -197,9 +198,7 @@ pub fn analyze(
         .iter()
         .filter(|plugin| {
             !preceding.iter().any(|r| {
-                r.evidence_id == run.evidence_id
-                    && r.plugin == **plugin
-                    && r.status == RunStatus::Completed
+                r.evidence_id == run.evidence_id && r.plugin == **plugin && r.status.has_results()
             })
         })
         .copied()
@@ -212,12 +211,19 @@ pub fn analyze(
             missing.join(", ")
         )
     };
+    let mut warnings = Vec::new();
+    if !missing.is_empty() {
+        warnings.push(coverage.clone());
+    }
+    if configuration_limited {
+        warnings.push("Stopped at the acquisition configuration limit. Narrow the inputs to complete coverage.".into());
+    }
     let coverage = format!("{coverage} {configuration_coverage}");
     let source_runs: Vec<_> = preceding
         .into_iter()
         .filter(|r| {
             r.evidence_id == run.evidence_id
-                && r.status == RunStatus::Completed
+                && r.status.has_results()
                 && SOURCES.contains(&r.plugin.as_str())
         })
         .map(|r| r.id.clone())
@@ -273,7 +279,10 @@ pub fn analyze(
                                 .insert("Evidence SHA-256".into(), evidence.sha256.clone().into());
                         }
                         let (table, message) = finish(rows, true);
-                        return Ok((table, format!("{message} {coverage}")));
+                        return Ok((
+                            table.with_warnings(warnings),
+                            format!("{message} {coverage}"),
+                        ));
                     }
                 }
             }
@@ -285,7 +294,10 @@ pub fn analyze(
             .insert("Evidence SHA-256".into(), evidence.sha256.clone().into());
     }
     let (table, message) = finish(rows, limited);
-    Ok((table, format!("{message} {coverage}")))
+    Ok((
+        table.with_warnings(warnings),
+        format!("{message} {coverage}"),
+    ))
 }
 
 fn finish(rows: Vec<Record>, limited: bool) -> (Table, String) {
@@ -298,5 +310,11 @@ fn finish(rows: Vec<Record>, limited: bool) -> (Table, String) {
             ""
         }
     );
-    (table(rows), message)
+    let mut warnings = Vec::new();
+    if limited {
+        warnings.push(
+            "Stopped at the 20,000 finding limit. Narrow the inputs to complete coverage.".into(),
+        );
+    }
+    (table(rows).with_warnings(warnings), message)
 }

@@ -54,7 +54,7 @@ impl Workspace {
                                             Some(&run.evidence_id)
                                                 == this.selected_evidence.as_ref()
                                                 && run.plugin == volgui::analysis::APPLICATION
-                                                && run.status == RunStatus::Completed
+                                                && run.status.has_results()
                                                 && volgui::analysis::application::target_pid(
                                                     &run.arguments,
                                                 )

@@ -10,7 +10,7 @@ use std::{
 
 const CHUNK: usize = 1024 * 1024;
 const WINDOW: usize = 8192;
-const MAX_PATHS: usize = 10_000;
+pub(super) const MAX_PATHS: usize = 10_000;
 
 pub(super) fn scan(
     path: &Path,
