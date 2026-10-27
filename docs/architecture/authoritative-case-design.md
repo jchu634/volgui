@@ -1,16 +1,5 @@
 # Authoritative case storage
 
-## Usage
-
-```rust,ignore
-let case = Case::create_named(parent, "Investigation")?;
-let case = Case::open(parent.join("Investigation/case.sqlite"))?;
-ObjectStore::at(&case.directory).capture_run(&run.id, cancel)?;
-ResultStore::at(&case.directory).insert_cancellable(&run, &table, cancel)?;
-let mut bytes = extracted_files::open_artifact(&logical_output_path)?;
-bytes.seek(SeekFrom::Start(original_dump_offset))?;
-```
-
 ## Ownership
 
 SQLite v4 owns case metadata, evidence fingerprints, run history, bookmarks,
@@ -98,12 +87,3 @@ Listing tests cover archived, missing and blocked outputs plus refresh after an
 integrity failure. Queue tests hold a SQLite writer during desktop transitions,
 reads, cancellation and output publication. Older case formats are rejected
 without changing their version or metadata.
-
-An opt-in synthetic benchmark compares four 64 MiB dumps with shared,
-incompressible kernel pages and 2 MiB of distinct user pages per PID. On the
-validation machine, ordinary storage would retain 256 MiB; the chunk pack and
-case catalog retained 74.5 MiB. Full-file hashing followed by user-range reads
-took 153 ms, versus 49 ms for verified chunk range reads. Archival took 1.80 s.
-These measurements cover storage and reads, not Volatility dump generation or
-end-to-end browser analysis. They are a reproducible sample, not a performance
-guarantee.

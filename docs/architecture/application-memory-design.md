@@ -30,21 +30,9 @@ keeps text candidates under row, byte and fragment limits. Every row carries tex
 encoding, PID, source IDs and a byte span. Native execution and case finishing
 archive the findings and source artifacts through the existing object store.
 
-## Design comparison
+## Design
 
-A process-scoped parser was chosen over a temporary corpus database of strings,
-pointers and structures. Both can hide memory mapping details, but a corpus would
-introduce a fact schema and query interface before a second application needs it.
-The current parser can be extended with recognized editor structures later.
-
-Whole-acquisition string searching was also considered. It cannot establish
-process ownership or exclude unrelated kernel and shared bytes. DumpFiles alone
-recovers cached file pages and cannot supply edits that exist only in an editor.
-
-The design accepts repeated scanning when a user changes a filter in exchange
-for a small interface and no second persistent index. It keeps carved candidates
-and competing copies rather than inferring current document contents from string
-length or proximity. No version-specific Notepad layout is assumed.
+Process-scoped parsing preserves ownership and excludes unrelated kernel/shared bytes. DumpFiles alone cannot recover edits held only in process memory. The parser keeps competing text copies without inferring current document contents or assuming an editor-specific layout.
 
 ## Limits and evidence
 
@@ -65,10 +53,6 @@ treating a candidate as evidence of the requested text.
 The investigator chooses Browser activity, Global string search, a process's Handles
 tab, or Browse hive on a registry result. Findings use the same SQLite records,
 bookmarks, exports and case history as engine output.
-
-Two designs were considered. Separate, transient panels would make services easy
-to add but lose export, provenance and reopening. Native analysis runs reuse the
-case queue and store. The latter keeps one owner for results and cancellation.
 
 `analysis::prepare(evidence, plugin, arguments) -> Run` creates an application
 job. `execute(directory, document, run, cancel, progress) -> Outcome` performs work
@@ -110,11 +94,6 @@ queues PID-scoped Memmap dumps, then the existing native browser Activity job.
 `src/lib/analysis/browser/memory.rs` owns process identity, dump mappings, URL scanning and memory
 finding provenance. `src/lib/analysis/browser/search.rs` owns provider host/path/parameter rules.
 The UI only queues runs and displays stored records.
-
-The alternatives were targeted VadRegExScan and mapped process dumps. The installed
-Volatility 2.28.3 scanner returns at most 128 bytes per match despite its maxsize
-option. That can cut search parameters. Memmap costs disk space but retains bytes
-that the investigator can inspect and permits complete bounded URL scanning.
 
 Map metadata is validated before reading. Bad ranges are skipped with diagnostics
 while other readable ranges remain available. Adjacent virtual and dump ranges are

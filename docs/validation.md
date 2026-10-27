@@ -1,57 +1,8 @@
 # Validation
 
-## Quarantined threats validation
+## Standard checks
 
-`cargo run --locked --example seed_quarantine -- <new-case-directory>` creates a
-benign native UI fixture with confirmed synthetic Defender metadata, folder
-candidates, process and origin matches, and a separately labelled local output.
-
-`cargo test --locked --no-default-features --features test-engine --test quarantine`
-checks encrypted Defender metadata recovery, source navigation references, process
-and origin match limits, capture boundaries, deferred queue expansion, cancellation,
-local blocked output separation, filtering, export and reopening. Parser unit tests
-also reject truncated sections, invalid sizes and checksum failures.
-
-To check an independently collected Defender Entries metadata file:
-
-```powershell
-$env:VOLGUI_TEST_DEFENDER_ENTRY = 'C:\Evidence\DefenderEntry'
-cargo test --locked --no-default-features --features test-engine --test quarantine independently_captured_defender_metadata -- --ignored
-```
-
-In a Windows capture, choose **Quarantined threats > Start analysis**. Confirm the
-Scope filter separates **Memory capture** from **Local computer**. Select confirmed
-Defender metadata and inspect original path, threat, quarantine time, execution
-evidence and origin. Open each source and return with Back. Known folders from other
-products must remain candidates. Empty cache recovery must not appear as local
-antivirus blocking. Local blocked records include their stored reason and never
-claim a confirmed antivirus cause. Recovery depends on cache pages in the capture.
-
-The Investigation artifacts shortcuts have no counts or dropdowns. Their analyses
-remain available under New analysis, including Show extended analyses.
-
-Passive isolation checks run automatically when a case opens and after analyses
-finish or file access records a blocked output. No quarantine scan is required.
-For a fixture with no pre-existing quarantine report, append `--passive-only` to
-the seed command above, then open that case in the app.
-Open an existing case containing failed or cancelled antivirus-related jobs and
-confirm they appear with source status and diagnostics. An unknown target remains
-unknown. Repeat opening the view and reopening the case to check unchanged
-findings do not queue duplicate reports. A fresh blocked output should update the
-view without hiding capture findings from an earlier explicit analysis. Passive
-updates also work with an offline capture and do not disable explicit collection.
-
-## Download investigation validation
-
-```powershell
-cargo run --locked --no-default-features --example validate_downloads -- <capture> <new-case-directory> <engine> [source-case-directory]
-```
-
-This executes the chooser's inventories, deferred profile recovery and native parser. An optional source case supplies the evidence fingerprint and latest successful unfiltered inventories through read-only queries. The source case is not changed. The new case retains results and `downloads.csv`; memory scanning still reads the acquisition. `tests/downloads.rs` and download parser unit tests cover origin streams, renamed targets, ordered redirects, older schemas, source boundaries, different evidence, reused PIDs, missing socket owners, cancellation, persistence, raw scan boundaries, structural validation and export.
-
-Open the output case, select **Download investigation**, search a filename and inspect its origin and execution evidence. Open each source and return with Back. Choose **Connection leads**, select an endpoint and inspect its source bytes. Confirm missing ownership stays missing. Use **Network for PID** and verify `pid:<number>` matches the PID exactly. Native UI checks must also confirm the new analysis is in the basic chooser and that it expands to the normal queue.
-
-The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests. Tests and the Windows accessibility regression share one Windows job to reuse compiled dependencies. Cargo commands use the committed lockfile. Run formatting, compilation checks, and Clippy locally alongside the tests:
+[CI](../.github/workflows/ci.yml) runs on pushes to `main` and pull requests. Run:
 
 ```powershell
 cargo fmt --all --check
@@ -61,139 +12,89 @@ cargo test --locked -p accesskit_windows --lib destroyed_window
 cargo clippy --locked --all-targets --features test-engine -- -D warnings
 ```
 
-`desktop` enables the application binary and is on by default. Tests can use `--no-default-features` to avoid replacing a running desktop executable. `test-engine` builds a test-only CLI fixture for exercising process cancellation, nonzero exits, malformed output, literal arguments, large diagnostics and generated artifacts. Normal builds include only the application.
+`desktop` enables the app binary by default. Tests can disable default features to avoid replacing a running executable. `test-engine` supplies a test-only CLI for cancellation, malformed output, diagnostics and artifact checks.
 
-The Windows accessibility dependency has a [local teardown fix](../vendor/accesskit_windows/PATCH.md). Its regression test calls a retained COM provider after destroying the native window and checks that it returns an error without aborting.
+The [Windows accessibility patch](../vendor/accesskit_windows/PATCH.md) has a regression test for COM providers retained after window destruction.
 
-An optional integration test invokes a real, separately installed engine:
+## Real engines and captures
+
+Set `VOLGUI_TEST_VOLATILITY` to an installed CLI before running:
 
 ```powershell
-$env:VOLGUI_TEST_VOLATILITY = 'C:\Tools\Volatility\vol.exe'
 cargo test --features test-engine supplied_volatility_build -- --ignored --nocapture
 ```
 
-That test uses `frameworkinfo.FrameworkInfo`, which does not require a memory layer. A compatible capture and symbols are still needed to validate real process, registry, network and extraction results.
-
-The `validate_engine` example creates a small reviewable case with a real engine invocation. It can also import a capture and run one specified plugin. The `run_plugin` example runs one plugin against an existing case without repeating its evidence hash. Both use offline mode.
+This uses FrameworkInfo without a capture. Real artifact validation also requires compatible evidence and symbols. The examples below retain reviewable results and run offline:
 
 ```powershell
-cargo run --example validate_engine -- <vol-executable> <new-case-directory>
-cargo run --example validate_engine -- <vol-executable> <new-case-directory> <capture-path> banners.Banners
-cargo run --example run_plugin -- <case-directory> <vol-executable> windows.info.Info
+cargo run --example validate_engine -- <engine> <new-case>
+cargo run --example validate_engine -- <engine> <new-case> <capture> banners.Banners
+cargo run --example run_plugin -- <case> <engine> windows.info.Info
 ```
 
-## Synthetic case
+## Recovery workflows
 
-For native layout and scrolling checks without a capture:
+Use new output cases to preserve source cases. Browser/application examples reuse saved inventories and fingerprints, check evidence metadata and avoid repeating the full acquisition hash.
 
 ```powershell
-cargo run --example seed_workspace -- <new-case-directory>
+cargo run --locked --no-default-features --example validate_downloads -- <capture> <new-case> <engine> [source-case]
+cargo run --locked --no-default-features --example validate_network -- <capture> <new-case> <engine>
+cargo run --locked --no-default-features --example validate_application -- <source-case> <new-case> <engine> --pid PID [--contains text]
+cargo run --locked --example validate_browser -- <source-case> <new-case> <engine> [PID ...]
 ```
 
-This generates a labelled synthetic case with 5,000 processes, 10,000 network records, 50,001 files, file and non-file handles, recovered browser data, registry keys and values, and multiple cache variants. Select PID 1 and open Handles to inspect File, Key, Mutant and Event objects. Select its History file child, enable Contents, choose SQLite tables, and inspect the visits table. Browser activity shows parsed history, a search and a saved session tab. Registry can reuse saved root and Microsoft subkey reads without an engine. Global string search for `Synthetic` should return a UTF-8 match in fixture.raw. Text/hex paging and Show in Files remain available.
-
-Processes, Registry and Loaded modules display a hierarchy column and aligned
-detail columns. The Process tree defaults to two-thirds of the viewport; Loaded
-modules and Registry default to one-half. The tree stays pinned on the left.
-Drag its header edge to resize the divider. Scroll details horizontally and
-confirm the tree stays visible and rows stay aligned. Horizontal wheel gestures must leave
-the current vertical row unchanged. Expand and collapse branches, use arrow keys,
-and select records to inspect their original details. The fixture includes 200
-process modules and one kernel module. Loaded modules groups them by process and
-source scan. Search a module name to check that its parent remains visible. Files
-keeps its original tree without detail columns. File handle rows repeat the owning
-process's PID and metadata while selection and file actions still target the handle.
-Loaded modules omits Base, LoadCount and Size from its columns.
-
-In Network, check IP nodes, protocol/state filters, continuous graph scrolling and port selection. Select an endpoint with more than forty occurrences and page through the sidebar. Verify both local and remote endpoint selections, process links, record details and Back. Search an endpoint and confirm graph filtering does not remove sidebar records. Text references have no invented connection to the focus host. In a real capture case, run New analysis > Network investigation and correlation, then inspect share references and explicit network commands from collected records. Verify that acquisition scanning recovers only structurally validated Meterpreter TCP configurations, while command and credential correlation uses collected records. Older findings with acquisition offsets still support Source bytes. In New analysis, check group and individual checkboxes, shift selection, previously run plugins, and Options. The SQLite preview uses native columns while retaining its read-only 100-row pages.
-
-`tests/investigation.rs` exercises native job persistence/export, evidence separation,
-browser recovery queues, history/search parsing, offsets across string scan chunks,
-unaligned UTF-16, cancellation and result limits, all handle types, registry query
-arguments, and read-only SQLite paging. Browser parser unit tests cover timestamps,
-provider host validation, selected session navigation and tab/window closure.
-
-## Application memory validation
-
-Run the chooser's application workflow in a separate output case:
+These run the desktop queue expansion and native parsers, retaining sources and CSV exports. Application validation can use the same source/output case to add an analysis and reuse completed dumps. Browser validation selects all browser/content PIDs when none are supplied. Reparse saved browser dumps with:
 
 ```powershell
-cargo run --locked --no-default-features --example validate_application -- <source-case-directory> <new-case-directory> <vol-executable> --pid PID [--contains text]
+cargo run --locked --example run_plugin -- <case> <engine> volgui.browser.Activity
 ```
 
-The example imports the source case's latest successful unfiltered process and
-command-line inventories through the result store. It retains the original
-evidence fingerprint and checks metadata without repeating the acquisition hash.
-The output case then runs the same deferred recovery expansion as the desktop,
-collects memory mappings and private regions, parses text candidates and exports
-`application.csv`. The source case is not changed.
-Pass the same case directory as both source and output to add a fresh analysis
-to an existing validation case and reuse its completed process dumps.
+In each output case, inspect source records and bytes, navigate Back, bookmark/export a finding and reopen the case. Check workflow-specific limits:
 
-Open the output case and choose **Application memory**. Search a known edited
-phrase and unsaved text. Move through matches in the hex/text reader, then change
-pages and encoding. Inspect PID, fragment virtual address and dump offset. Bookmark
-and export a fragment, then reopen the case. Competing
-versions must remain separate, and save state and document association must remain
-unknown unless a future parser supplies structural evidence.
+- Downloads: keep origins, filename matches, residual processes and socket ownership distinct. Confirm exact PID filtering.
+- Network: check endpoint pairing, graph/table filters, sidebar paging, process links and configuration source bytes. Missing ownership stays unknown.
+- Process Memory: compare known text with retained bytes, encodings, virtual addresses and dump offsets. Competing copies remain separate; save state and document association stay unknown.
+- Browser: compare URLs/searches with retained bytes and process identity. Memory strings, history visits and saved tabs remain distinct.
 
-Automated tests cover queue prerequisites and barriers, exact source pinning,
-evidence separation, dump reuse, private versus shared and kernel mappings,
-UTF-8 and both UTF-16 byte orders, odd offsets, chunk boundaries, mapping gaps,
-malformed encodings, length limits, cancellation, archived source bytes, CSV export
-and reopening.
-
-## Browser memory validation
-
-Use a separate output case to validate an existing capture without changing the
-source case or repeating its evidence hash:
+## Quarantined threats
 
 ```powershell
-cargo run --locked --example validate_browser -- <source-case-directory> <new-case-directory> <vol-executable> [PID ...]
+cargo run --locked --example seed_quarantine -- <new-case>
+cargo test --locked --no-default-features --features test-engine --test quarantine
 ```
 
-The example imports the latest completed process and command-line inventories,
-recovers the selected browser PIDs or all browser/content PIDs when none are given,
-then executes the same native browser analysis as the UI. The new case retains
-all dump files, mapping records and browser findings. `browser.csv` is exported
-for review. The stored evidence fingerprint comes from the source case; metadata
-is checked, but this command does not repeat a full evidence hash.
+The seed contains benign synthetic Defender metadata, folder/process/origin candidates and a separately labelled local output. Append `--passive-only` to omit the initial quarantine report.
 
-Reparse existing dumps with the current implementation:
+Set `VOLGUI_TEST_DEFENDER_ENTRY` to independently collected Defender Entries metadata, then run:
 
 ```powershell
-cargo run --locked --example run_plugin -- <case-directory> <vol-executable> volgui.browser.Activity
+cargo test --locked --no-default-features --features test-engine --test quarantine independently_captured_defender_metadata -- --ignored
 ```
 
-In the app, open the output case, choose Browser activity, then Analyze recovered
-data. Filter for a known phrase and verify its PID, process role and virtual
-address. Choose View URL bytes and compare the retained bytes to the URL. Repeat
-with Tor searches and a website URL, and check the source command line identifies
-the Tor installation. Bookmark and export a finding, then reopen the case.
+Check that Scope separates capture findings from local outputs. Inspect metadata, match strength and source diagnostics. Known folders remain candidates; empty recovery does not imply antivirus blocking. Blocked local records retain their reason without claiming a confirmed cause.
 
-Automated tests cover each requested search provider and its query parameter,
-URL decoding, false provider hosts, templates, autocomplete exclusions, UTF-16,
-chunk boundaries, mapping gaps, masked kernel mappings, occurrence counts,
-Tor parent attribution, multiple file handle owners, evidence separation,
-completed dump reuse, persistence and CSV export.
+Passive updates should work offline, reuse unchanged reports across reopening and refresh after a blocked output without hiding explicit capture findings. Failed/cancelled antivirus-related jobs retain status and diagnostics. Unknown targets stay unknown; explicit collection remains available.
 
-For a synthetic storage and browser-read benchmark, run:
+## Synthetic UI checks
+
+```powershell
+cargo run --example seed_workspace -- <new-case>
+```
+
+The fixture includes large process, socket and file inventories, handles, modules, recovered browser data, registry data and cache variants. Check:
+
+- Processes, Registry and Loaded modules: pinned hierarchy, column resizing, horizontal scrolling, aligned rows, keyboard navigation and expansion state.
+- Files and process handles: selection, extraction variants, Show in Files, text/hex paging and read-only SQLite previews.
+- Network: filtering, numeric sorting, large endpoint groups, continuous scrolling, source navigation and Back restoration.
+- Browser, Registry and string search: saved findings, reusable key reads and a literal `Synthetic` match.
+- Analysis chooser: group/individual selection, shift selection, previous runs and options.
+
+Switch views and return to check scroll restoration. Restart the app to confirm session positions reset.
+
+## Storage benchmark
 
 ```powershell
 cargo test --locked --no-default-features --features test-engine --test object_store benchmark_shared_dumps_and_browser_range_reads -- --ignored --nocapture
 ```
 
-This creates four temporary 64 MiB process dumps sharing kernel pages. It checks
-user-range bytes before and after archival and reports logical output size,
-retained pack and catalog size, archival time, and full-file hashing plus range
-reads compared with verified chunk reads. It does not invoke Volatility or time
-the complete browser parser. Temporary files are removed when the test finishes.
-
-
-## Network capture validation
-
-```powershell
-cargo run --locked --no-default-features --example validate_network -- <capture> <new-case-directory> <engine>
-```
-
-This runs the same chooser expansion and native parser, retains the source inventories and exports network.csv. Use a new case directory. Parser tests are in tests/network.rs. Run a desktop build to verify node layout, endpoint paging, process navigation, Back restoration and source-byte decoding.
+This creates four temporary 64 MiB dumps with shared kernel pages. It verifies user-range bytes before/after archival and reports storage size, archival time and verified-read timings. It does not measure engine extraction or the complete browser parser. Temporary data is removed afterward.

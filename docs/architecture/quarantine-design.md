@@ -6,31 +6,9 @@ PsScan, CmdLine and ADS inputs. A deferred job recovers Defender Entries metadat
 files before publishing a native report. Existing browser and download reports
 can supply origin evidence. No payload restoration is needed.
 
-## Design comparison
+## Report and evidence
 
-One option was a filtered Files tree with quarantine path rules. That can identify
-quarantine containers, but cannot explain encrypted Defender metadata, execution
-matches or local blocked outputs without putting analysis logic in the UI.
-
-The selected option is a native report using the existing queue and result store.
-It owns metadata decoding and correlation; the shared table, details, source
-navigation, bookmarks and export work with its ordinary records. The capture and
-local computer are separate values in the Scope column. Path-only findings and
-local availability failures never become confirmed antivirus detections.
-
-## Contract and module map
-
-```rust,ignore
-// analysis/quarantine.rs: bounded inventories, recovery and evidence joins.
-pub const QUARANTINE: &str = "volgui.quarantine.Investigation";
-pub fn recovery_runs(directory: &Path, document: &CaseSnapshot,
-    evidence: &Evidence, engine: &Installation) -> Result<Vec<Run>, String>;
-pub fn analyze(directory: &Path, document: &CaseSnapshot, run: &Run,
-    cancel: &AtomicBool, progress: &impl Fn(String)) -> Result<(Table, String), String>;
-
-// analysis/quarantine/defender.rs: metadata only, no payload decryption.
-pub(super) fn parse(bytes: &[u8]) -> Result<Vec<Record>, String>;
-```
+A native report owns metadata decoding and correlation, reusing the queue, result store, source navigation, bookmarks and export. Capture findings and local blocked outputs have separate scopes.
 
 Rows include Scope, Antivirus, Evidence status, Threat, Filename, Original path,
 Quarantine path, Quarantined at, Execution evidence, PID, Origin evidence, URL,
@@ -52,9 +30,7 @@ partial recovery remains a candidate with diagnostics. Individual recovery is
 limited to 512 metadata file objects per run. Windows unlabelled FileScan offsets
 use the existing virtual-offset default; explicit physical offsets are honoured.
 
-The Investigation artifacts buttons become ordinary full-width navigation
-buttons. Collection remains available in New analysis, and Quarantined threats
-also has Start analysis. Removing the picker also removes its unused state.
+Collection is available in New analysis and through Start analysis.
 Without a configured engine, Analyze collected evidence runs against saved case
 records and local blocked output records, without queuing extraction jobs.
 

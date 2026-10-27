@@ -1,6 +1,6 @@
 # Session scroll state
 
-`Workspace` owns `SessionScroll` in `src/ui/scroll_state.rs`. Nothing in this state is serialized. A new workspace starts empty, and opening or closing a case clears the state and navigation history.
+`Workspace` owns an in-memory `SessionScroll`. Opening or closing a case clears it and navigation history.
 
 ## Ownership
 
