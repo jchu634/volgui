@@ -62,7 +62,8 @@ fn execute(case: &mut Case, run: &Run) -> Table {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert_eq!(outcome.status, RunStatus::Warning, "{}", outcome.message);
+    assert!(outcome.message.contains("Missing source inventories"));
     case.finish(&run.id, &outcome).unwrap();
     outcome.table.unwrap()
 }

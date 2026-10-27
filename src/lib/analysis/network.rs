@@ -1,6 +1,8 @@
 //! Correlate explicit network commands and share references in collected engine records.
 //! Text findings retain their provenance and never masquerade as observed sockets.
-mod memory;
+pub(super) mod beacon;
+pub(super) mod commands;
+pub(super) mod memory;
 
 use super::{record, table};
 use crate::{
@@ -20,7 +22,7 @@ use std::{
 };
 
 pub const MAX_FINDINGS: usize = 20_000;
-pub const PARSER_VERSION: &str = "network-v4-configuration-candidates";
+pub const PARSER_VERSION: &str = "network-v5-program-parsers";
 pub const SOURCES: &[&str] = &[
     "windows.netscan.NetScan",
     "windows.netstat.NetStat",
@@ -38,7 +40,7 @@ pub fn needs_recovery(document: &CaseSnapshot, evidence_id: &str) -> bool {
         run.evidence_id == evidence_id
             && run.plugin == super::NETWORK
             && (matches!(run.status, RunStatus::Queued | RunStatus::Running)
-                || (run.status == RunStatus::Completed && run.message.contains(PARSER_VERSION)))
+                || (run.status.has_results() && run.message.contains(PARSER_VERSION)))
     })
 }
 
@@ -54,7 +56,6 @@ fn unc_pattern() -> &'static Regex {
 
 /// Parse only explicit syntax. Port numbers alone are never classified as reverse shells.
 pub fn parse_text(text: &str) -> Vec<Record> {
-    let lower = text.to_ascii_lowercase();
     let mut rows = Vec::new();
     static URI: OnceLock<Regex> = OnceLock::new();
     let uri = URI.get_or_init(|| {
@@ -118,41 +119,7 @@ pub fn parse_text(text: &str) -> Vec<Record> {
         }
         rows.push(row);
     }
-    static TCP: OnceLock<Regex> = OnceLock::new();
-    let tcp = TCP.get_or_init(|| Regex::new(r#"(?i)(?:net\.sockets\.)?tcpclient\s*\(\s*['\"](?P<ip>[0-9a-f:.]+)['\"]\s*,\s*(?P<port>\d{1,5})\s*\)"#).unwrap());
-    for capture in tcp.captures_iter(text) {
-        if let (Ok(ip), Ok(port)) = (
-            capture["ip"].parse::<IpAddr>(),
-            capture["port"].parse::<u16>(),
-        ) {
-            let shell = lower.contains("iex")
-                || lower.contains("invoke-expression")
-                || lower.contains("cmd.exe");
-            rows.push(record(serde_json::json!({"Finding":if shell {"Reverse shell command candidate"} else {"TCP client command"},"IP":ip.to_string(),"Port":port,"Context":text,"Interpretation":"Explicit connection target in recovered text; execution requires corroboration."})));
-        }
-    }
-    let tokens = command_tokens(text);
-    if let Some(index) = tokens.iter().position(|s| {
-        matches!(
-            s.rsplit(['/', '\\'])
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase()
-                .as_str(),
-            "nc" | "nc.exe" | "ncat" | "ncat.exe" | "netcat" | "netcat.exe"
-        )
-    }) {
-        let args = &tokens[index + 1..];
-        if args.iter().any(|s| s == "-e" || s == "--exec" || s == "-c")
-            && !args.iter().any(|s| s == "-l" || s == "--listen")
-        {
-            for pair in args.windows(2) {
-                if let (Ok(ip), Ok(port)) = (pair[0].parse::<IpAddr>(), pair[1].parse::<u16>()) {
-                    rows.push(record(serde_json::json!({"Finding":"Reverse shell command candidate","IP":ip.to_string(),"Port":port,"Context":text,"Interpretation":"Netcat command specifies a remote target and command execution; execution requires corroboration."})));
-                }
-            }
-        }
-    }
+    rows.extend(commands::parse(text));
     for row in &mut rows {
         row.fields
             .insert("Parser version".into(), PARSER_VERSION.into());
@@ -221,7 +188,8 @@ pub fn analyze(
         .iter()
         .find(|e| e.id == run.evidence_id)
         .ok_or("Missing evidence")?;
-    let (mut rows, configuration_coverage) = memory::scan(&evidence.path, cancel, progress)?;
+    let (mut rows, configuration_coverage, configuration_limited) =
+        memory::scan(&evidence.path, cancel, progress)?;
     let mut seen = BTreeSet::new();
     // Pin interpretation to inventories preceding this parser job, never later results.
     let preceding = document.runs.iter().take_while(|r| r.id != run.id);
@@ -230,9 +198,7 @@ pub fn analyze(
         .iter()
         .filter(|plugin| {
             !preceding.iter().any(|r| {
-                r.evidence_id == run.evidence_id
-                    && r.plugin == **plugin
-                    && r.status == RunStatus::Completed
+                r.evidence_id == run.evidence_id && r.plugin == **plugin && r.status.has_results()
             })
         })
         .copied()
@@ -245,12 +211,19 @@ pub fn analyze(
             missing.join(", ")
         )
     };
+    let mut warnings = Vec::new();
+    if !missing.is_empty() {
+        warnings.push(coverage.clone());
+    }
+    if configuration_limited {
+        warnings.push("Stopped at the acquisition configuration limit. Narrow the inputs to complete coverage.".into());
+    }
     let coverage = format!("{coverage} {configuration_coverage}");
     let source_runs: Vec<_> = preceding
         .into_iter()
         .filter(|r| {
             r.evidence_id == run.evidence_id
-                && r.status == RunStatus::Completed
+                && r.status.has_results()
                 && SOURCES.contains(&r.plugin.as_str())
         })
         .map(|r| r.id.clone())
@@ -306,7 +279,10 @@ pub fn analyze(
                                 .insert("Evidence SHA-256".into(), evidence.sha256.clone().into());
                         }
                         let (table, message) = finish(rows, true);
-                        return Ok((table, format!("{message} {coverage}")));
+                        return Ok((
+                            table.with_warnings(warnings),
+                            format!("{message} {coverage}"),
+                        ));
                     }
                 }
             }
@@ -318,7 +294,10 @@ pub fn analyze(
             .insert("Evidence SHA-256".into(), evidence.sha256.clone().into());
     }
     let (table, message) = finish(rows, limited);
-    Ok((table, format!("{message} {coverage}")))
+    Ok((
+        table.with_warnings(warnings),
+        format!("{message} {coverage}"),
+    ))
 }
 
 fn finish(rows: Vec<Record>, limited: bool) -> (Table, String) {
@@ -331,5 +310,11 @@ fn finish(rows: Vec<Record>, limited: bool) -> (Table, String) {
             ""
         }
     );
-    (table(rows), message)
+    let mut warnings = Vec::new();
+    if limited {
+        warnings.push(
+            "Stopped at the 20,000 finding limit. Narrow the inputs to complete coverage.".into(),
+        );
+    }
+    (table(rows).with_warnings(warnings), message)
 }

@@ -23,7 +23,7 @@ pub(super) struct Location {
     network_interesting: bool,
     network_all_sources: bool,
     network_sidebar_page: usize,
-    network_offset: Point<Pixels>,
+    scroll: scroll_state::ResultPosition,
     content_sidebar_visible: bool,
     file_offset_physical: bool,
 }
@@ -52,7 +52,7 @@ impl Workspace {
             network_interesting: self.network_interesting,
             network_all_sources: self.network_all_sources,
             network_sidebar_page: self.network_sidebar_page,
-            network_offset: self.network_scroll.offset(),
+            scroll: self.result_position(cx),
             content_sidebar_visible: self.content_sidebar_visible,
             file_offset_physical: self.file_offset_physical,
         };
@@ -83,6 +83,7 @@ impl Workspace {
         let Some(location) = self.back_stack.pop() else {
             return;
         };
+        self.remember_result_scroll(cx);
         self.selection_epoch += 1;
         self.relation_epoch += 1;
         self.view = location.view;
@@ -109,7 +110,6 @@ impl Workspace {
         self.network_interesting = location.network_interesting;
         self.network_all_sources = location.network_all_sources;
         self.network_sidebar_page = location.network_sidebar_page;
-        self.network_scroll.set_offset(location.network_offset);
         self.content_sidebar_visible = location.content_sidebar_visible;
         self.file_offset_physical = location.file_offset_physical;
         self.clear_result_tree();
@@ -126,12 +126,14 @@ impl Workspace {
             self.sync_os();
             self.start_query(cx);
         }
+        self.prepare_result_scroll(Some(location.scroll));
         cx.notify();
     }
     pub(super) fn close_case(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_switch() {
             return;
         }
+        self.reset_scroll_state(cx);
         self.query_epoch.fetch_add(1, Ordering::Relaxed);
         self.selection_epoch += 1;
         self.relation_epoch += 1;

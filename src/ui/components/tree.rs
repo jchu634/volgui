@@ -54,6 +54,7 @@ impl Workspace {
                 .into_any_element()
         } else {
             self.sync_tree_table(group, cx);
+            self.restore_table_scroll(scroll_state::ResultTableKind::Tree, &self.tree_table, cx);
             let workspace = cx.entity().downgrade();
             div()
                 .id("artifact-tree-table")

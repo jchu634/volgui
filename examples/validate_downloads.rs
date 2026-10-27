@@ -59,6 +59,7 @@ fn main() -> Result<(), String> {
                     rows.extend(store.fetch(ids)?.into_iter().map(|r| r.record));
                 }
                 let table = Table {
+                    warnings: Vec::new(),
                     columns: rows
                         .iter()
                         .flat_map(|r| r.fields.keys().cloned())

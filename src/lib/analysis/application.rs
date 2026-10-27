@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     artifacts::OperatingSystem,
-    case::{CaseSnapshot, Evidence, Run, RunStatus},
+    case::{CaseSnapshot, Evidence, Run},
     results::{Query, ResultStore},
     volatility::{Installation, Record, Table},
 };
@@ -79,7 +79,7 @@ pub fn target_pid(arguments: &[String]) -> Result<u64, String> {
 
 /// Open the dump pinned to a saved scan, including full and user-memory dumps.
 pub fn dump_path(directory: &Path, document: &CaseSnapshot, run: &Run) -> Option<PathBuf> {
-    if run.plugin != APPLICATION || run.status != RunStatus::Completed {
+    if run.plugin != APPLICATION || !run.status.has_results() {
         return None;
     }
     let opts = options(&run.arguments).ok()?;
@@ -200,7 +200,7 @@ pub fn recovery_runs(
                 .find(|r| {
                     r.evidence_id == evidence.id && r.plugin == *plugin && r.arguments.is_empty()
                 })
-                .filter(|r| r.status == RunStatus::Completed)
+                .filter(|r| r.status.has_results())
                 .map(|r| r.id.clone())
                 .ok_or_else(|| {
                     format!("Application recovery requires a successful unfiltered {plugin} job")
@@ -235,7 +235,7 @@ pub fn recovery_runs(
                     } else {
                         r.arguments == args
                     })
-                    && r.status == RunStatus::Completed
+                    && r.status.has_results()
                     && (plugin != MEMMAP
                         || crate::object_store::exists(
                             &directory
@@ -263,7 +263,7 @@ fn source<'a>(document: &'a CaseSnapshot, id: &str, evidence: &str) -> Result<&'
     document
         .runs
         .iter()
-        .find(|r| r.id == id && r.evidence_id == evidence && r.status == RunStatus::Completed)
+        .find(|r| r.id == id && r.evidence_id == evidence && r.status.has_results())
         .ok_or_else(|| {
             format!(
                 "Required application source {id} did not complete successfully for this evidence"
@@ -353,6 +353,7 @@ fn metadata_table(directory: &Path, source: &Run, cancel: &AtomicBool) -> Result
         }
     }
     Ok(Table {
+        warnings: Vec::new(),
         columns: Vec::new(),
         rows,
     })
@@ -818,14 +819,11 @@ pub(super) fn analyze(
     });
     let count = rows.len();
     let limited = limited || count >= MAX_ROWS || bytes >= MAX_BYTES;
-    if parsed == 0 && !sources.is_empty() {
-        return Err(format!(
-            "No application dumps could be analyzed. {}",
-            warnings.join("\n")
-        ));
+    if limited {
+        warnings.push("Stopped at the finding or text-byte limit; use --pid or --contains to narrow recovery. Rerunning the same request uses the same limits.".into());
     }
     Ok((
-        super::table(rows),
+        super::table(rows).with_warnings(warnings.clone()),
         format!(
             "Recovered {count} text candidates from {parsed} application process dumps. Only private writable user mappings were scanned. Text fragments do not establish current document, tab order or save state. Exact duplicates retain their first source address.{}\n{}",
             if limited {

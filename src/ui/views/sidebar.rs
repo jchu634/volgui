@@ -27,6 +27,7 @@ impl Workspace {
             .id("evidence-list")
             .max_h(px(112.))
             .overflow_y_scroll()
+            .track_scroll(&self.scroll_state.area(scroll_state::ScrollArea::Evidence))
             .flex()
             .flex_col();
         for image in &case.document.evidence {

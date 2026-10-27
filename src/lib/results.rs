@@ -255,6 +255,7 @@ impl ResultStore {
             ],
         )
         .map_err(|e| e.to_string())?;
+        let mut identities_changed = false;
         {
             let mut find = tx.prepare_cached("SELECT id,fields_json FROM observations WHERE evidence_id=?1 AND plugin=?2 AND fields_sha256=?3 AND depth=?4").map_err(|e| e.to_string())?;
             let mut entity = tx
@@ -338,6 +339,7 @@ impl ResultStore {
                     _ => row.title(),
                 };
                 let process = identity::describe(&run.plugin, row);
+                identities_changed |= process.role != "none";
                 let file_key = identity::file_key(&run.plugin, row);
                 let kind = if file_key.is_some() {
                     "file_object"
@@ -405,7 +407,9 @@ impl ResultStore {
                     .map_err(|e| e.to_string())?;
             }
         }
-        identity::reconcile(&tx, &run.evidence_id, cancel)?;
+        if identities_changed {
+            identity::reconcile(&tx, &run.evidence_id, cancel)?;
+        }
         if cancel.load(Ordering::Relaxed) {
             return Err("Saving scan cancelled".into());
         }
@@ -1023,6 +1027,7 @@ impl ResultStore {
             rows.extend(fetched.into_iter().map(|r| r.record));
         }
         Ok(Table {
+            warnings: Vec::new(),
             columns: index.columns,
             rows,
         })
@@ -1030,6 +1035,7 @@ impl ResultStore {
     pub fn export_csv(&self, query: &Query) -> Result<String> {
         let index = self.query(query)?;
         let mut output = Table {
+            warnings: Vec::new(),
             columns: index.columns.clone(),
             rows: vec![],
         }
@@ -1041,6 +1047,7 @@ impl ResultStore {
                 .map(|r| (r.id, r.record))
                 .collect();
             let table = Table {
+                warnings: Vec::new(),
                 columns: index.columns.clone(),
                 rows: chunk.iter().filter_map(|id| rows.remove(id)).collect(),
             };

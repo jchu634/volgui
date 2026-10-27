@@ -53,6 +53,23 @@ pub fn open_artifact(path: &Path) -> Result<crate::object_store::ArtifactReader,
     })
 }
 
+pub(crate) fn open_in(
+    context: &crate::object_store::ReadContext,
+    path: &Path,
+) -> Result<(crate::object_store::ArtifactReader, Option<String>), String> {
+    if blocked_marker(path)
+        .try_exists()
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Potential malware / unavailable artifact. Opening is blocked.".into());
+    }
+    context.open(path).map_err(|error| {
+        let reason = format!("Potential malware / unavailable artifact: {error}");
+        let _ = block_artifact(path, &reason);
+        reason
+    })
+}
+
 pub const HEX_PAGE_SIZE: u64 = 256;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -189,7 +206,7 @@ pub fn completed_dump<'a>(
     case.document.runs.iter().rev().find(|run| {
         run.plugin == DUMP_FILES
             && run.evidence_id == source.evidence_id
-            && run.status == crate::case::RunStatus::Completed
+            && run.status.has_results()
             && run.arguments == arguments
     })
 }

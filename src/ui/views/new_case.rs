@@ -9,8 +9,7 @@ impl Workspace {
         let name = self.case_name.read(cx).value().trim().to_string();
         let location = (!parent.is_empty() && !name.is_empty())
             .then(|| Path::new(&parent).join(&name).display().to_string());
-        div()
-            .flex_1()
+        let page = div()
             .p_6()
             .child(
                 div()
@@ -90,7 +89,7 @@ impl Workspace {
                                 )
                             }),
                     ),
-            )
-            .into_any_element()
+            );
+        self.scroll_state.page(scroll_state::ScrollArea::NewCase, page)
     }
 }

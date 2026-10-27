@@ -45,9 +45,21 @@ Linux/macOS socket data can come from `linux.sockstat.Sockstat`, `linux.sockscan
 
 Correlate socket, process, command and handle records to recover UNC shares and explicit connection commands. Credentials are recovered only when explicitly present in a network-drive command, with scope retained for the relevant command and share. Preserve exact local/remote socket pairs and source occurrences.
 
-Independently scan acquisition bytes for structurally validated legacy Meterpreter TCP configurations, validating session structure, transport URL, padding, exit function, UUID and timeouts. Historical configurations from completed download reports can also contribute findings.
+Independently scan acquisition bytes for structurally validated legacy Meterpreter TCP configurations, validating session structure, transport URL, padding, exit function, UUID and timeouts. Also validate stock Cobalt Strike Beacon HTTP(S) typed configurations with plaintext or default single-byte XOR keys. Validate field types/lengths, required settings, zero termination/padding, RSA public-key structure and host/URI pairs. Historical Meterpreter configurations from completed download reports can also contribute findings.
 
 Correlation is bounded at 20,000 findings; configuration recovery at 2,000 configurations. Coverage and unavailable inventories are recorded. A recovered configuration is unattributed and does not prove execution or a connection. Arbitrary raw credential text is not scanned by this analysis.
+
+Supported explicit connection syntax includes Ncat/netcat, socat TCP operands, PowerShell/.NET TcpClient constructors, Python socket connection calls and Bash `/dev/tcp` redirections. Ncat listen addresses are not treated as remote targets; unsupported or ambiguous option forms are omitted. Numeric ports and literal IPs/hostnames are required. Variables, encoded scripts and general program execution are not evaluated. Hostnames remain hostname references without DNS resolution.
+
+### Network process attribution
+
+`volgui.network.ProcessAttribution` is a separate job under Network, automatically queued by Network investigation when the engine supports VAD regex discovery, Memmap and VadInfo. It is also available independently in the chooser. Optional `--pid PID` scans one process and works without VAD regex discovery.
+
+The job pins process/command inventories, discovers candidate PIDs through explicit program/configuration markers, and reuses compatible completed Memmap dumps and VAD inventories from other analyses. It collects missing inputs for those candidates. It scans readable user VADs, including image and read-only regions, without widening Browser or Process Memory defaults. Virtual page reconstruction can validate configurations fragmented in acquisition bytes. Findings retain source runs, process identity, virtual and dump addresses, VAD protection/file, encoding and configuration hashes. Source bytes opens the pinned dump at its dump offset.
+
+Coverage is limited to processes discoverable through PsList and readable engine mappings. Unknown encryption, obfuscation or unsupported program syntax can prevent discovery. Bounds are 256 processes, 20,000 findings, 1 GiB per process and 4 GiB total scanned cores, with bounded overlapping context. Missing inputs, gaps and limits are reported. Later process collections invalidate automatic reuse through an input fingerprint. Process-memory presence does not establish a successful connection, execution or exclusive ownership.
+
+Cobalt Strike support is deliberately limited to stock HTTP(S) TLV layouts and keys `0x00`, `0x2e` and `0x69`. It does not identify every Beacon version, modified setting indexes, other transport types or arbitrary encryption. Sliver and Havoc configurations are not currently decoded. See [format references and validation](architecture/network-attribution-design.md).
 
 ## Files and document recovery
 

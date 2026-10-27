@@ -84,7 +84,7 @@ pub fn passive_runs(directory: &Path, document: &CaseSnapshot) -> Result<Vec<Run
         let mut seen = BTreeSet::new();
         for run in document.runs.iter().rev().filter(|r| {
             r.evidence_id == evidence.id
-                && r.status == RunStatus::Completed
+                && r.status.has_results()
                 && r.arguments.is_empty()
                 && (SOURCES.contains(&r.plugin.as_str())
                     || matches!(r.plugin.as_str(), super::BROWSER | super::DOWNLOADS))
@@ -172,7 +172,7 @@ fn inventory(
     let mut records = Vec::new();
     for run in document.runs.iter().rev().filter(|r| {
         r.evidence_id == evidence
-            && r.status == RunStatus::Completed
+            && r.status.has_results()
             && r.arguments.is_empty()
             && (SOURCES.contains(&r.plugin.as_str())
                 || matches!(r.plugin.as_str(), super::BROWSER | super::DOWNLOADS))
@@ -218,7 +218,10 @@ pub fn recovery_runs(
                 && r.plugin == DUMP_FILES
                 && matches!(
                     r.status,
-                    RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                    RunStatus::Completed
+                        | RunStatus::Warning
+                        | RunStatus::Queued
+                        | RunStatus::Running
                 )
         })
         .map(|r| r.arguments.clone())
@@ -275,9 +278,7 @@ fn capture_rows(
     let dumps: HashMap<_, _> = document
         .runs
         .iter()
-        .filter(|r| {
-            r.evidence_id == evidence && r.plugin == DUMP_FILES && r.status == RunStatus::Completed
-        })
+        .filter(|r| r.evidence_id == evidence && r.plugin == DUMP_FILES && r.status.has_results())
         .map(|r| (r.arguments.clone(), r))
         .collect();
     for (plugin, observation) in records {
@@ -720,7 +721,7 @@ pub fn analyze(
                 r.plugin == **plugin
                     && r.evidence_id == run.evidence_id
                     && r.arguments.is_empty()
-                    && r.status == RunStatus::Completed
+                    && r.status.has_results()
             })
         })
         .copied()
@@ -738,7 +739,25 @@ pub fn analyze(
     if rows.len() >= MAX_ROWS {
         message.push_str(" Result limit reached: 10,000 findings. Narrow the source inventories for further review.");
     }
-    Ok((table(rows), message))
+    let mut warnings = Vec::new();
+    if !is_passive(run) {
+        for row in &rows {
+            let details = row.text("Recovery details");
+            if !details.is_empty() {
+                warnings.push(format!("{}: {details}", row.text("Quarantine path")));
+            }
+        }
+    }
+    if rows.len() >= MAX_ROWS {
+        warnings.push("Result limit reached: 10,000 findings. Narrow the source inventories for further review.".into());
+    }
+    if !missing.is_empty() && !is_passive(run) {
+        warnings.push(format!(
+            "Missing source inventories: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok((table(rows).with_warnings(warnings), message))
 }
 
 #[cfg(test)]

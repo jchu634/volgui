@@ -290,6 +290,42 @@ pub struct Outcome {
     pub table: Option<Table>,
 }
 
+impl Outcome {
+    pub fn warn(&mut self, reason: &str) {
+        if self.status.has_results() {
+            self.status = RunStatus::Warning;
+        }
+        if !self.message.contains(reason) {
+            self.message = format!("Incomplete coverage. {reason}\n\n{}", self.message);
+        }
+    }
+
+    /// Publication may discover unavailable outputs after successful parsing.
+    /// Inspect catalog metadata only; this does not open binary artifacts.
+    pub fn check_output_coverage(&mut self, directory: &Path) -> Result<()> {
+        if !self.status.has_results() {
+            return Ok(());
+        }
+        let outputs = crate::object_store::output_metadata(directory)?;
+        let mut unavailable: Vec<_> = outputs
+            .iter()
+            .filter_map(|(path, metadata)| {
+                metadata.blocked_reason.as_ref().map(|reason| {
+                    format!(
+                        "{}: {reason}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                })
+            })
+            .collect();
+        unavailable.sort();
+        if !unavailable.is_empty() {
+            self.warn(&format!("{} analysis outputs are unavailable or blocked. Available findings are retained. Restore the unavailable inputs or investigate the block before running again.\n{}", unavailable.len(), unavailable.join("\n")));
+        }
+        Ok(())
+    }
+}
+
 struct Captured {
     exit_code: Option<i32>,
     cancelled: bool,
@@ -612,9 +648,17 @@ pub fn display_value(value: &Value) -> String {
 pub struct Table {
     pub columns: Vec<String>,
     pub rows: Vec<Record>,
+    /// Coverage problems reported by the producer, separate from finding rows.
+    /// The worker persists these in the run message and warning status.
+    pub warnings: Vec<String>,
 }
 
 impl Table {
+    pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.warnings.extend(warnings);
+        self
+    }
+
     pub fn read(path: &Path) -> Result<Self> {
         let file = crate::extracted_files::open_artifact(path)
             .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
@@ -710,7 +754,11 @@ impl Table {
                 .position(|p| p == c)
                 .unwrap_or(preferred.len())
         });
-        Ok(Self { columns, rows })
+        Ok(Self {
+            columns,
+            rows,
+            warnings: Vec::new(),
+        })
     }
 
     pub fn matching(&self, query: &str, sort: Option<(&str, bool)>) -> Vec<usize> {

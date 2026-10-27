@@ -124,6 +124,173 @@ fn strings_find_cross_chunk_matches_utf16_at_odd_offsets_and_final_bytes_once() 
 }
 
 #[test]
+fn limited_native_jobs_persist_warning_results_and_require_scope_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("memory.raw");
+    fs::write(&path, b"hit ".repeat(strings::MAX_HITS + 1)).unwrap();
+    let evidence = Evidence::inspect(&path, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut case = Case::create(&temp.path().join("case"), "Warning").unwrap();
+    case.add_evidence(evidence.clone()).unwrap();
+    let run = volgui::analysis::prepare(&evidence, STRINGS, vec!["hit".into()]).unwrap();
+    case.queue(run.clone()).unwrap();
+    let outcome = volgui::analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Warning);
+    assert!(outcome.message.contains("Narrow the string"));
+    assert_eq!(
+        outcome.table.as_ref().unwrap().rows.len(),
+        strings::MAX_HITS
+    );
+    case.finish(&run.id, &outcome).unwrap();
+    case.annotate(&run.id, 0, true, "Partial result reviewed".into())
+        .unwrap();
+    assert!(
+        volgui::analyses::queue_retries_with_engine(&mut case, None, std::slice::from_ref(&run.id))
+            .is_err()
+    );
+    assert!(RunStatus::Warning.blocks_plugin_selection());
+    assert!(!volgui::case::QueueClearScope::Completed.includes(RunStatus::Warning));
+    assert!(!volgui::case::QueueClearScope::Failed.includes(RunStatus::Warning));
+    assert!(volgui::case::QueueClearScope::Finished.includes(RunStatus::Warning));
+    let directory = case.directory.clone();
+    drop(case);
+    let case = Case::open(&directory).unwrap();
+    let saved = case.document.runs.iter().find(|r| r.id == run.id).unwrap();
+    assert_eq!(saved.status, RunStatus::Warning);
+    assert_eq!(saved.row_count, strings::MAX_HITS);
+    assert_eq!(case.results(&run.id).unwrap().rows.len(), strings::MAX_HITS);
+    assert!(case.results(&run.id).unwrap().csv(&[0]).contains("hit"));
+    assert!(
+        case.annotation(&run.id, 0)
+            .is_some_and(|note| note.bookmarked)
+    );
+    assert!(case.report().unwrap().contains("Warning"));
+}
+
+#[test]
+fn reopening_old_network_limit_results_promotes_them_to_warning() {
+    let (_temp, mut case, _) = setup();
+    let run = volgui::analysis::prepare(
+        &case.document.evidence[0],
+        volgui::analysis::NETWORK_ATTRIBUTION,
+        vec![],
+    )
+    .unwrap();
+    case.queue(run.clone()).unwrap();
+    case.finish(
+        &run.id,
+        &Outcome {
+            status: RunStatus::Completed,
+            exit_code: Some(0),
+            message: "167 processes scanned. Stopped at the byte or finding limit.".into(),
+            table: Some(Table::parse(r#"[{"PID":42}]"#).unwrap()),
+        },
+    )
+    .unwrap();
+    let directory = case.directory.clone();
+    drop(case);
+    for _ in 0..2 {
+        let case = Case::open(&directory).unwrap();
+        let saved = case.document.runs.iter().find(|r| r.id == run.id).unwrap();
+        assert_eq!(saved.status, RunStatus::Warning);
+        assert_eq!(saved.row_count, 1);
+        assert_eq!(saved.message.matches("Coverage is incomplete").count(), 1);
+    }
+}
+
+#[test]
+fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifacts() {
+    let (_temp, mut case, _) = setup();
+    let dump = save(
+        &mut case,
+        0,
+        DUMP_FILES,
+        vec!["--virtaddr".into(), "4096".into()],
+        json!([]),
+    );
+    let output = case.run_dir(&dump.id);
+    fs::create_dir_all(&output).unwrap();
+    fs::write(output.join("file.profile.json"), br#"{"windows":[{"tabs":[{"entries":[{"url":"https://example.test/shared-cache-integration","title":"Tab"}],"index":1}]}]}"#).unwrap();
+    volgui::object_store::ObjectStore::at(&case.directory)
+        .capture_run(&dump.id, &AtomicBool::new(false))
+        .unwrap();
+    let browser = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let first = analysis::execute(
+        &case.directory,
+        &case.document,
+        &browser,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(first.status, RunStatus::Completed, "{}", first.message);
+    let rows = &first.table.as_ref().unwrap().rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text("Original path"), "");
+    assert_eq!(rows[0].text("Source run"), dump.id);
+    let download =
+        analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
+    let second = analysis::execute(
+        &case.directory,
+        &case.document,
+        &download,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(second.status, RunStatus::Warning);
+    assert!(
+        second.message.contains("Reused 1 immutable artifact"),
+        "{}",
+        second.message
+    );
+    let db = volgui::database::connect(&case.directory).unwrap();
+    db.execute("UPDATE analysis_outputs SET blocked_reason='Unavailable after caching' WHERE run_id=?1 AND name='file.profile.json'", [&dump.id]).unwrap();
+    let blocked = analysis::execute(
+        &case.directory,
+        &case.document,
+        &browser,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(blocked.status, RunStatus::Warning);
+    let rows = blocked.table.unwrap().rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text("Kind"), "Unavailable artifact");
+}
+
+#[test]
+fn unrelated_process_dumps_do_not_make_browser_coverage_incomplete() {
+    let (_temp, mut case, _) = setup();
+    save(
+        &mut case,
+        0,
+        "windows.pslist.PsList",
+        vec![],
+        json!([{"PID":42,"ImageFileName":"other.exe"}]),
+    );
+    save(
+        &mut case,
+        0,
+        "windows.memmap.Memmap",
+        vec!["--pid".into(), "42".into(), "--dump".into()],
+        json!([]),
+    );
+    let browser = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &browser,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+}
+
+#[test]
 fn strings_handle_case_cancellation_limits_and_non_ascii_units() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("memory.raw");
@@ -926,7 +1093,7 @@ fn quarantined_profile_keeps_an_entry_blocks_opening_and_other_files_are_parsed(
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert_eq!(outcome.status, RunStatus::Warning, "{}", outcome.message);
     let rows = outcome.table.unwrap().rows;
     assert!(
         rows.iter()
@@ -987,7 +1154,7 @@ fn missing_browser_memory_dump_is_retained_as_a_blocked_finding() {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Completed);
+    assert_eq!(outcome.status, RunStatus::Warning);
     let rows = outcome.table.unwrap().rows;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text("Kind"), "Unavailable artifact");

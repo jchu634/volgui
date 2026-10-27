@@ -154,3 +154,66 @@ Moving chunk preparation outside the pack lock could reduce multi-job contention
 It would need a bounded staging queue and a recheck of chunk identities while
 publishing. Measure a representative concurrent batch before choosing this change;
 the single-worker numbers do not establish the best job limit.
+
+
+## Native job output profiling, 27 October 2026
+
+The process-attribution work profiled all nine native job types on A4-A1 using
+three samples per type. Parsing, production JSON writing, object-store capture
+and SQLite import were timed separately. Engine execution, input-case preparation
+and verification are outside these timings. These are local development-build
+measurements with warm-cache samples, not release-build throughput guarantees.
+
+The first baseline exposed a shared cost: `serde_json::to_writer` wrote each
+small fragment directly to a file. The native writer now uses a 256 KiB buffer
+and explicitly flushes errors. The treatment profiler also writes the old
+unbuffered form from the exact same table and compares every byte. All 27 paired
+checks passed, and every imported result retained its fields, hierarchy and order.
+Medians from the paired treatment are below.
+
+| Native job | Parse | Unbuffered JSON | Buffered JSON | Archive | Import |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| volgui.application.Memory | 0.1373 s | 0.3806 s | 0.0062 s | 0.0298 s | 0.2306 s |
+| volgui.browser.Activity | 24.1949 s | 5.4583 s | 0.0725 s | 0.1083 s | 4.9151 s |
+| volgui.downloads.Investigation | 15.7696 s | 0.0140 s | 0.0009 s | 0.0137 s | 0.0173 s |
+| volgui.files.PathReferences | 3.4299 s | 0.1452 s | 0.0022 s | 0.0151 s | 0.0745 s |
+| volgui.files.Recovery | 3.6902 s | 0.9548 s | 0.0119 s | 0.0333 s | 0.5677 s |
+| volgui.network.Investigation | 1.6282 s | 0.0016 s | 0.0006 s | 0.0128 s | 0.0111 s |
+| volgui.network.ProcessAttribution | 0.2244 s | 0.0024 s | 0.0007 s | 0.0122 s | 0.0114 s |
+| volgui.quarantine.Investigation | 0.9051 s | 0.0004 s | 0.0006 s | 0.0123 s | 0.0099 s |
+| volgui.strings.Search | 0.6476 s | 0.6250 s | 0.0081 s | 0.0317 s | 0.5027 s |
+
+Browser output writing fell from 5.4583 seconds to 0.0725 seconds, about 75 times
+faster for that stage. Process Memory, file recovery and string-search output also
+benefit. Tiny outputs can be dominated by filesystem noise; the quarantine result
+does not show a meaningful improvement. Browser parsing and import still dominate
+its overall time, and Download investigation remains dominated by parsing and its
+acquisition scan. These measurements do not justify claiming a 75-fold whole-job
+improvement or combining unrelated Browser and Network policies.
+
+The baseline also exposed repeated rewriting of an existing blocked-output
+availability diagnostic. The object store now preserves the first permanent
+reason instead of wrapping it again on each read. One source output acquired six
+extra diagnostic prefixes during the initial three Browser and three Download
+samples. Those exact six additions were undone, retaining its original diagnostic.
+The source capture and immutable observation rows were not changed. Further runs
+use an independent SQLite backup and temporary capture tree, with hard links to
+immutable archived objects read only. This prevents diagnostic side effects in
+the original case and makes treatment output stable.
+
+Run the profiler with a prepared attribution request from `reparse_attribution`:
+
+```powershell
+cargo run --locked --no-default-features --example profile_native_jobs -- <source-case> <output-json> <attribution-run-json> 3
+```
+
+The optional final filter selects a plugin substring, such as `network`. Input
+backup, immutable-byte links and temporary result catalogs are removed after the
+run. The initial source baseline and paired treatment are retained locally under
+`target/verification/network-attribution/profile-before.json` and
+`profile-after.json`. These measurements precede the subsequent program-parser
+expansion; a focused Network rerun measures the expanded parsers separately.
+
+The post-expansion Network rerun used three samples per job with the same
+case and selected dxdiag input. Median parsing times were volgui.network.Investigation: 2.1707 s, volgui.network.ProcessAttribution: 0.4969 s. The additional command and Beacon checks add work; the five dxdiag
+findings and all paired serialization/import checks were retained.

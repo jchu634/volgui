@@ -64,6 +64,19 @@ fn quarantined_dump_output_preserves_findings_and_healthy_outputs() {
     )
     .unwrap();
     assert_eq!(case.results(&run.id).unwrap().rows.len(), 2);
+    let completed = case
+        .document
+        .runs
+        .iter()
+        .find(|saved| saved.id == run.id)
+        .unwrap();
+    assert_eq!(completed.status, RunStatus::Warning);
+    assert_eq!(completed.row_count, 2);
+    assert!(
+        completed
+            .message
+            .contains("outputs are unavailable or blocked")
+    );
     let outputs = object_store::output_metadata(&directory).unwrap();
     assert!(
         outputs[&directory.join("file.quarantined.dat")]
@@ -711,6 +724,24 @@ fn transient_failures_and_missing_diagnostics_do_not_permanently_block_outputs()
         .unwrap(),
         0
     );
+}
+
+#[test]
+fn repeated_blocked_reads_preserve_the_original_diagnostic() {
+    let (_temp, case, run) = fixture();
+    let path = case.run_dir(&run.id).join("missing.exe");
+    volgui::extracted_files::block_artifact(&path, "Original missing output").unwrap();
+    let error = volgui::extracted_files::ensure_openable(&path).unwrap_err();
+    volgui::extracted_files::block_artifact(&path, &error).unwrap();
+    let db = volgui::database::connect(&case.directory).unwrap();
+    let reason: String = db
+        .query_row(
+            "SELECT blocked_reason FROM analysis_outputs WHERE run_id=?1 AND name='missing.exe'",
+            [run.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "Original missing output");
 }
 
 #[test]

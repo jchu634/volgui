@@ -12,22 +12,41 @@ use crate::{
 };
 
 /// Select the next job in queue order without exceeding the global limit.
-/// Recovery parsers wait for preceding dumps and block later jobs until complete.
+/// Recovery parsers wait for preceding dumps for their evidence. Other evidence
+/// can use free slots while a parser is waiting or running.
 pub fn next_queued_run(runs: &[Run], limit: std::num::NonZeroUsize) -> Option<usize> {
     let running = runs.iter().filter(|run| run.status == RunStatus::Running);
-    if running.clone().count() >= limit.get() || running.clone().any(is_recovery_run) {
+    if running.count() >= limit.get() {
         return None;
     }
-    let index = runs
-        .iter()
-        .position(|run| {
-            run.status == RunStatus::Queued && crate::analysis::quarantine::is_passive(run)
+    let ready = |index: usize| {
+        let candidate = &runs[index];
+        if crate::analysis::quarantine::is_passive(candidate) {
+            return true;
+        }
+        !runs[..index].iter().any(|prior| {
+            prior.evidence_id == candidate.evidence_id
+                && matches!(prior.status, RunStatus::Queued | RunStatus::Running)
+                && (is_recovery_run(prior) || is_recovery_run(candidate))
+        }) && !runs.iter().any(|other| {
+            other.evidence_id == candidate.evidence_id
+                && other.status == RunStatus::Running
+                && (is_recovery_run(other) || is_recovery_run(candidate))
         })
-        .or_else(|| runs.iter().position(|run| run.status == RunStatus::Queued))?;
-    if is_recovery_run(&runs[index]) && running.count() > 0 {
-        return None;
-    }
-    Some(index)
+    };
+    runs.iter()
+        .enumerate()
+        .find(|(index, run)| {
+            run.status == RunStatus::Queued
+                && crate::analysis::quarantine::is_passive(run)
+                && ready(*index)
+        })
+        .or_else(|| {
+            runs.iter()
+                .enumerate()
+                .find(|(index, run)| run.status == RunStatus::Queued && ready(*index))
+        })
+        .map(|(index, _)| index)
 }
 
 fn is_recovery_run(run: &Run) -> bool {
@@ -40,6 +59,7 @@ fn is_recovery_analysis(plugin: &str) -> bool {
         crate::analysis::BROWSER
             | crate::analysis::APPLICATION
             | crate::analysis::NETWORK
+            | crate::analysis::NETWORK_ATTRIBUTION
             | crate::analysis::FILES
             | crate::analysis::DOWNLOADS
             | crate::analysis::QUARANTINE
@@ -47,6 +67,28 @@ fn is_recovery_analysis(plugin: &str) -> bool {
 }
 
 pub const APPLICATION_RECOVERY_PENDING: &str = "Waiting to prepare process memory recovery";
+
+/// A PID-filtered memory collection does not cover a global memory analysis.
+pub fn blocks_global_selection(run: &Run) -> bool {
+    run.status.blocks_plugin_selection()
+        && !crate::analysis::quarantine::is_passive(run)
+        && !(matches!(
+            run.plugin.as_str(),
+            "windows.memmap.Memmap"
+                | "windows.vadinfo.VadInfo"
+                | crate::analysis::NETWORK_ATTRIBUTION
+        ) && run
+            .arguments
+            .iter()
+            .any(|argument| argument == "--pid" || argument.starts_with("--pid=")))
+}
+
+pub fn completed_process_scan(run: &Run, evidence_id: &str, pid: u64) -> bool {
+    run.evidence_id == evidence_id
+        && run.plugin == crate::analysis::APPLICATION
+        && run.status.has_results()
+        && crate::analysis::application::target_pid(&run.arguments) == Ok(pid)
+}
 
 pub fn prepare_file_recovery(case: &Case, engine: &Installation, run: &Run) -> Result<Vec<Run>> {
     let evidence = case
@@ -98,6 +140,38 @@ pub fn prepare_application_recovery(
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     let parser = runs.last_mut().ok_or("Missing application parser job")?;
+    parser.id = run.id.clone();
+    parser.created_at = run.created_at.clone();
+    Ok(runs)
+}
+
+/// Expand deferred attribution using only inputs preceding this request.
+pub fn prepare_network_attribution(
+    case: &Case,
+    engine: &Installation,
+    run: &Run,
+) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let mut document = case.document.clone();
+    if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
+        document.runs.truncate(index);
+    }
+    let mut runs = crate::analysis::network_attribution::recovery_runs(
+        &case.directory,
+        &document,
+        evidence,
+        engine,
+        &run.arguments,
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    let parser = runs
+        .last_mut()
+        .ok_or("Missing network attribution report")?;
     parser.id = run.id.clone();
     parser.created_at = run.created_at.clone();
     Ok(runs)
@@ -195,6 +269,7 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
         crate::analysis::FILE_PATHS => "Executable path discovery",
         crate::analysis::NETWORK => "Network investigation and correlation",
+        crate::analysis::NETWORK_ATTRIBUTION => "Network process attribution",
         crate::analysis::DOWNLOADS => "Download and execution investigation",
         crate::analysis::QUARANTINE => "Quarantined threats and execution investigation",
         crate::analysis::BROWSER => "Browser recovery and analysis",
@@ -216,7 +291,6 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
         "windows.handles.Handles" => "Process handles",
         "windows.registry.printkey.PrintKey" => "Registry key contents",
         "windows.vadinfo.VadInfo" => "Process memory regions and dumps",
-        "windows.memmap.Memmap" => "Process memory map and dump",
         "windows.registry.hivelist.HiveList" | "windows.registry.hivescan.HiveScan" => {
             "Registry hives"
         }
@@ -265,6 +339,10 @@ pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
             description: "Read all registry subkeys and values recursively across all hives using PrintKey --recurse.".into(),
         },
     ]);
+    catalog.push(Plugin {
+        id: crate::analysis::NETWORK_ATTRIBUTION.into(),
+        description: crate::analysis::network_attribution::HELP.into(),
+    });
     catalog
 }
 
@@ -302,6 +380,8 @@ pub fn queue_retries_with_engine(
                     &previous.plugin,
                     if previous.plugin == crate::analysis::APPLICATION {
                         crate::analysis::application::user_arguments(&previous.arguments)?
+                    } else if previous.plugin == crate::analysis::NETWORK_ATTRIBUTION {
+                        crate::analysis::network_attribution::user_arguments(&previous.arguments)?
                     } else {
                         previous.arguments.clone()
                     },
@@ -311,6 +391,9 @@ pub fn queue_retries_with_engine(
                 }
                 if previous.plugin == crate::analysis::APPLICATION {
                     run.message = APPLICATION_RECOVERY_PENDING.into();
+                }
+                if previous.plugin == crate::analysis::NETWORK_ATTRIBUTION {
+                    run.message = crate::analysis::network_attribution::PENDING.into();
                 }
                 if previous.plugin == crate::analysis::FILES {
                     run.message = crate::analysis::files::PENDING.into();
@@ -438,6 +521,9 @@ impl AnalysisDraft {
         let browser = ordinary.selected.remove(crate::analysis::BROWSER);
         let application = ordinary.selected.remove(crate::analysis::APPLICATION);
         let network = ordinary.selected.remove(crate::analysis::NETWORK);
+        let attribution = ordinary
+            .selected
+            .remove(crate::analysis::NETWORK_ATTRIBUTION);
         let files = ordinary.selected.remove(crate::analysis::FILES);
         let downloads = ordinary.selected.remove(crate::analysis::DOWNLOADS);
         let quarantine = ordinary.selected.remove(crate::analysis::QUARANTINE);
@@ -484,7 +570,10 @@ impl AnalysisDraft {
                         && r.arguments.is_empty()
                         && matches!(
                             r.status,
-                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            RunStatus::Completed
+                                | RunStatus::Warning
+                                | RunStatus::Queued
+                                | RunStatus::Running
                         )
                 }) {
                     // FileScan is required. Handles add process ownership when supported.
@@ -515,7 +604,10 @@ impl AnalysisDraft {
                             && r.arguments.is_empty()
                             && matches!(
                                 r.status,
-                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                                RunStatus::Completed
+                                    | RunStatus::Warning
+                                    | RunStatus::Queued
+                                    | RunStatus::Running
                             )
                     })
                 {
@@ -532,6 +624,50 @@ impl AnalysisDraft {
                 crate::analysis::NETWORK,
                 vec![],
             )?);
+        }
+        let attribution_supported = [
+            crate::analysis::application::MEMMAP,
+            crate::analysis::application::VADINFO,
+            crate::analysis::network_attribution::DISCOVERY,
+        ]
+        .iter()
+        .all(|id| engine.plugins.iter().any(|p| p.id == *id));
+        if attribution || network && attribution_supported {
+            if self.os != OperatingSystem::Windows {
+                return Err("Network process attribution requires Windows evidence".into());
+            }
+            let args = parse_arguments(
+                self.arguments
+                    .get(crate::analysis::NETWORK_ATTRIBUTION)
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            )?;
+            let args = crate::analysis::network_attribution::user_arguments(&args)?;
+            for plugin in crate::analysis::application::INVENTORY {
+                if !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                    r.evidence_id == evidence.id
+                        && r.plugin == plugin
+                        && r.arguments.is_empty()
+                        && matches!(
+                            r.status,
+                            RunStatus::Completed
+                                | RunStatus::Warning
+                                | RunStatus::Queued
+                                | RunStatus::Running
+                        )
+                }) {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            let mut report =
+                crate::analysis::prepare(evidence, crate::analysis::NETWORK_ATTRIBUTION, args)?;
+            report.message = crate::analysis::network_attribution::PENDING.into();
+            runs.push(report);
         }
         if application {
             if self.os != OperatingSystem::Windows {
@@ -563,7 +699,10 @@ impl AnalysisDraft {
                         && r.arguments.is_empty()
                         && matches!(
                             r.status,
-                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                            RunStatus::Completed
+                                | RunStatus::Warning
+                                | RunStatus::Queued
+                                | RunStatus::Running
                         )
                 }) {
                     runs.push(engine.prepare(
@@ -602,7 +741,10 @@ impl AnalysisDraft {
                             && r.arguments.is_empty()
                             && matches!(
                                 r.status,
-                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                                RunStatus::Completed
+                                    | RunStatus::Warning
+                                    | RunStatus::Queued
+                                    | RunStatus::Running
                             )
                     })
                 {
@@ -631,7 +773,10 @@ impl AnalysisDraft {
                             && r.arguments.is_empty()
                             && matches!(
                                 r.status,
-                                RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                                RunStatus::Completed
+                                    | RunStatus::Warning
+                                    | RunStatus::Queued
+                                    | RunStatus::Running
                             )
                     })
                 {
@@ -663,7 +808,7 @@ impl AnalysisDraft {
                     run.evidence_id == evidence.id
                         && run.plugin == *plugin
                         && run.arguments.is_empty()
-                        && run.status == RunStatus::Completed
+                        && run.status.has_results()
                 })
             })
             .collect();

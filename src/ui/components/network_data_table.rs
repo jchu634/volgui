@@ -209,9 +209,9 @@ impl TableDelegate for NetworkTable {
     fn render_empty(
         &mut self,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        div().p_4().text_sm().child("No network entries match these filters. Clear the search or turn off the noise filters to see more entries.")
+        div().p_4().text_sm().text_color(cx.theme().muted_foreground).child("No network entries match these filters. Clear the search or turn off the noise filters to see more entries.")
     }
 }
 

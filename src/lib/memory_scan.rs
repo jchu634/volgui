@@ -2,7 +2,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    case::{CaseSnapshot, RunStatus},
+    case::CaseSnapshot,
     extracted_files::open_artifact,
     results::{ResultStore, StoredRecord},
     volatility::Record,
@@ -79,7 +79,7 @@ pub fn content(
     for run in document.runs.iter().rev().filter(|run| {
         run.evidence_id == source.evidence_id
             && run.plugin == MEMMAP
-            && run.status == RunStatus::Completed
+            && run.status.has_results()
             && run
                 .arguments
                 .windows(2)

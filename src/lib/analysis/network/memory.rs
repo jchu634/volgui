@@ -10,7 +10,7 @@ use std::{
 };
 
 const CHUNK: usize = 4 * 1024 * 1024;
-const OVERLAP: usize = 2048;
+const OVERLAP: usize = 8192;
 const LIMIT: usize = 2_000;
 pub(super) const COMPLETE: &str = "Meterpreter TCP configuration";
 pub(super) const INCOMPLETE: &str = "Incomplete Meterpreter TCP configuration candidate";
@@ -36,7 +36,11 @@ fn session_header(bytes: &[u8], at: usize) -> Option<serde_json::Value> {
 // Legacy Meterpreter Windows configuration: 48-byte session, 512 WCHAR URL,
 // three DWORD timeouts, then the next transport or a zero terminator.
 // https://github.com/rapid7/metasploit-framework/blob/6.3.31/lib/rex/payloads/meterpreter/config.rb
-fn meterpreter_config(bytes: &[u8], at: usize, address: &str) -> Option<serde_json::Value> {
+pub(in crate::analysis) fn meterpreter_config(
+    bytes: &[u8],
+    at: usize,
+    address: &str,
+) -> Option<serde_json::Value> {
     let mut config = session_header(bytes, at)?;
     let url = bytes.get(at..at + 1024)?;
     let used = address.encode_utf16().count().checked_mul(2)?;
@@ -91,7 +95,7 @@ pub(super) fn scan(
     path: &Path,
     cancel: &AtomicBool,
     progress: &impl Fn(String),
-) -> Result<(Vec<Record>, String), String> {
+) -> Result<(Vec<Record>, String, bool), String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let total = file.metadata().map_err(|e| e.to_string())?.len();
     let marker: Vec<_> = "tcp://".encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -112,9 +116,38 @@ pub(super) fn scan(
         } else {
             buffer.len().saturating_sub(OVERLAP)
         };
+        let begin = scanned.saturating_sub(base) as usize;
+        for (at, mut row) in super::beacon::scan(&buffer, begin..end) {
+            row.fields
+                .insert("Configuration offset".into(), (base + at as u64).into());
+            row.fields
+                .insert("Match offset".into(), (base + at as u64).into());
+            row.fields
+                .insert("Acquisition offset".into(), (base + at as u64).into());
+            row.fields.insert(
+                "Source type".into(),
+                "Validated acquisition configuration".into(),
+            );
+            row.fields.insert(
+                "Ownership evidence".into(),
+                "Not recovered; acquisition bytes do not identify an owning process".into(),
+            );
+            row.fields.insert(
+                "Connection evidence".into(),
+                "No process-owned connection established by this configuration".into(),
+            );
+            rows.push(row);
+            if rows.len() >= LIMIT {
+                limited = true;
+                break;
+            }
+        }
         for at in memchr::memmem::find_iter(&buffer, &marker)
             .filter(|at| *at < end && base + *at as u64 >= scanned)
         {
+            if limited {
+                break;
+            }
             let units: Vec<_> = buffer[at..]
                 .chunks_exact(2)
                 .take(512)
@@ -209,16 +242,20 @@ pub(super) fn scan(
         .iter()
         .filter(|r| r.text("Finding") == COMPLETE)
         .count();
+    let beacon = rows
+        .iter()
+        .filter(|r| r.text("Program") == super::beacon::FAMILY)
+        .count();
     let message = format!(
-        "{validated} validated Meterpreter TCP configurations; {} incomplete configuration candidates. {}Acquisition configurations have no established process owner. Only structured payload configurations and explicitly labelled incomplete headers are recovered; arbitrary strings and credentials are not recovered.",
-        rows.len() - validated,
+        "{validated} validated Meterpreter TCP configurations; {} incomplete configuration candidates. {beacon} validated Cobalt Strike HTTP(S) endpoint configurations. {}Acquisition configurations have no established process owner. Only structured payload configurations and explicitly labelled incomplete headers are recovered; arbitrary strings and credentials are not recovered.",
+        rows.len() - validated - beacon,
         if limited {
             "Stopped at the 2,000 configuration limit. "
         } else {
             ""
         }
     );
-    Ok((rows, message))
+    Ok((rows, message, limited))
 }
 
 #[cfg(test)]

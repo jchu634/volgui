@@ -103,7 +103,10 @@ impl ArtifactGroup {
         if plugin == crate::analysis::QUARANTINE {
             return Self::Quarantine;
         }
-        if plugin == crate::analysis::NETWORK {
+        if matches!(
+            plugin,
+            crate::analysis::NETWORK | crate::analysis::NETWORK_ATTRIBUTION
+        ) {
             return Self::Network;
         }
         if plugin == crate::analysis::APPLICATION {

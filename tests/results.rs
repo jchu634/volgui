@@ -348,6 +348,7 @@ fn large_scan_query_returns_lightweight_ids_and_bounded_visible_rows() {
         })
         .collect();
     let table = Table {
+        warnings: Vec::new(),
         columns: vec!["PID".into(), "FileName".into(), "Details".into()],
         rows,
     };

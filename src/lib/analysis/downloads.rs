@@ -5,7 +5,7 @@ mod tests;
 
 use super::{record, table};
 use crate::{
-    case::{CaseSnapshot, Run, RunStatus},
+    case::{CaseSnapshot, Run},
     results::{Query, ResultStore, StoredRecord},
     volatility::{Record, Table},
 };
@@ -335,7 +335,7 @@ pub fn analyze(
         .rev()
         .filter(|r| {
             r.evidence_id == run.evidence_id
-                && r.status == RunStatus::Completed
+                && r.status.has_results()
                 && r.arguments.is_empty()
                 && (SOURCES.contains(&r.plugin.as_str()) || r.plugin == super::BROWSER)
                 && seen.insert(r.plugin.clone())
@@ -368,6 +368,21 @@ pub fn analyze(
     }
     let (profiles, profile_message) =
         super::browser::analyze_profiles(directory, &preceding, run, cancel, progress)?;
+    let mut warnings = profiles.warnings.clone();
+    for source in &sources {
+        if source.status == crate::case::RunStatus::Warning {
+            warnings.push(format!(
+                "Source {} has incomplete coverage: {}",
+                source.id, source.message
+            ));
+        }
+    }
+    if !missing.is_empty() {
+        warnings.push(format!(
+            "Missing source inventories: {}. Collect these inventories to complete coverage.",
+            missing.join(", ")
+        ));
+    }
     let mut downloads: Vec<(Record, Value)> = Vec::new();
     let mut processes = Vec::new();
     let mut sockets = Vec::new();
@@ -452,8 +467,11 @@ pub fn analyze(
         .map(|(r, _)| r.text("Filename"))
         .filter(|s| !s.is_empty())
         .collect::<BTreeSet<_>>();
-    let (residual, memory_message) =
+    let (residual, memory_message, memory_limited) =
         memory::scan(&evidence.path, &names, &anchors, cancel, progress)?;
+    if memory_limited {
+        warnings.push("Residual process scan reached a filename or finding limit. Narrow the inputs to complete coverage.".into());
+    }
     for row in residual {
         processes.push(Process { pid:number(&row,"PID").unwrap(),name:row.text("Process"),path:String::new(),
             birth:row.text("CreateTime"),exit:row.text("ExitTime"),source:json!({"Role":"Residual process","Offset":row.fields["Acquisition offset"],"Match offset":row.fields["Match offset"],"Profile":row.text("Profile"),"Reference PIDs":row.fields["Profile reference PIDs"],"Inventory runs":sources.iter().filter(|r| r.plugin.ends_with("pslist.PsList") || r.plugin.ends_with("psscan.PsScan")).map(|r| &r.id).collect::<Vec<_>>()}),residual:true });
@@ -651,7 +669,7 @@ pub fn analyze(
         }
     }
     rows.sort_by_key(|row| (row.text("PID").is_empty(), row.text("Filename")));
-    let limited = rows.len() > MAX_ROWS;
+    let limited = rows.len() >= MAX_ROWS;
     rows.truncate(MAX_ROWS);
     let unowned = sockets
         .iter()
@@ -684,7 +702,12 @@ pub fn analyze(
             ""
         }
     );
-    Ok((table(rows), message))
+    if limited {
+        warnings.push(
+            "Finding limit reached. Narrow the source inventories to complete coverage.".into(),
+        );
+    }
+    Ok((table(rows).with_warnings(warnings), message))
 }
 
 fn download_row(download: &Record, origin: &Value) -> Record {

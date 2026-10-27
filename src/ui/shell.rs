@@ -126,6 +126,7 @@ impl Render for Workspace {
                 View::CaseInfo => self.render_case_info(cx),
             }
         };
+        self.restore_result_scroll(cx);
         let content = if self.sidebar_visible && case_open {
             h_resizable("workspace-sidebar-split")
                 .child(

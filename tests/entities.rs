@@ -41,6 +41,66 @@ fn entity(store: &ResultStore, run: &str, row: usize) -> i64 {
 }
 
 #[test]
+fn only_new_process_identity_observations_rebuild_associations() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let process = json!([{"PID":42,"ImageFileName":"app.exe","CreateTime":"2026-01-01T00:00:00Z"}]);
+    insert(
+        &store,
+        "inventory",
+        "capture",
+        "windows.pslist.PsList",
+        process.clone(),
+    );
+    let db = rusqlite::Connection::open(temp.path().join(DATABASE)).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_reconcile BEFORE UPDATE ON observation_entities BEGIN SELECT RAISE(ABORT,'unexpected reconciliation'); END;").unwrap();
+    insert(
+        &store,
+        "empty",
+        "capture",
+        "windows.pslist.PsList",
+        json!([]),
+    );
+    insert(
+        &store,
+        "duplicate",
+        "capture",
+        "windows.pslist.PsList",
+        process,
+    );
+    insert(
+        &store,
+        "vad",
+        "capture",
+        "windows.vadinfo.VadInfo",
+        json!([{"PID":42,"Start VPN":4096,"End VPN":8191}]),
+    );
+    insert(
+        &store,
+        "mapping",
+        "capture",
+        "windows.memmap.Memmap",
+        json!([{"PID":42,"Virtual":4096,"Size":4096}]),
+    );
+    let new_identity = run("new", "capture", "windows.cmdline.CmdLine");
+    let new_table = Table::parse(r#"[{"PID":42,"Args":"app.exe"}]"#).unwrap();
+    assert!(
+        store
+            .insert(&new_identity, &new_table)
+            .unwrap_err()
+            .contains("unexpected reconciliation")
+    );
+    assert_eq!(
+        store.count("new").unwrap(),
+        0,
+        "The failed import must roll back"
+    );
+    db.execute_batch("DROP TRIGGER reject_reconcile;").unwrap();
+    store.insert(&new_identity, &new_table).unwrap();
+    assert_eq!(entity(&store, "inventory", 0), entity(&store, "new", 0));
+}
+
+#[test]
 fn memory_ranges_remain_searchable_without_expanding_into_fact_and_text_indexes() {
     let temp = tempfile::tempdir().unwrap();
     let store = ResultStore::open(temp.path()).unwrap();

@@ -47,8 +47,10 @@ impl Workspace {
                 Ok(volgui::analysis::application::HELP.into())
             } else if plugin == volgui::analysis::FILES {
                 Ok("Collects FileScan and available file handles, attempts each distinct file object and records recovery outcomes. Cached contents may be partial. Use --physical only for older captures whose unlabelled FileScan offsets are physical. Other options are not accepted.".into())
+            } else if plugin == volgui::analysis::NETWORK_ATTRIBUTION {
+                Ok(volgui::analysis::network_attribution::HELP.into())
             } else if plugin == volgui::analysis::NETWORK {
-                Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. No raw memory string scan or payload configuration recovery is performed. Use Global string search or Process Memory separately for memory searches. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
+                Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. Recovers payload configurations from acquisition bytes and queues a separate process attribution job when supported. Attribution scans readable user VADs, reusing process dumps. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
             } else if plugin == volgui::analysis::DOWNLOADS {
                 Ok(volgui::analysis::downloads::HELP.into())
             } else if plugin == volgui::analysis::QUARANTINE {
@@ -352,6 +354,51 @@ impl Workspace {
     pub(super) fn retry_run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.retry_runs(&[id.to_string()], window, cx);
     }
+    pub(super) fn confirm_cancel_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.queue_open = false;
+        cx.notify();
+        let workspace = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let workspace = workspace.clone();
+            dialog
+                .width(px(460.))
+                .title("Cancel all analyses?")
+                .child("This will stop all running analyses and cancel all queued analyses. Finished jobs and saved results will be kept.")
+                .footer(
+                    div().flex().w_full().justify_end().gap_2()
+                        .child(app_button("keep-queue-running").small().label("Keep running")
+                            .on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(app_button("confirm-cancel-all").small().primary().label("Cancel all")
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let _ = workspace.update(cx, |this, cx| this.cancel_all_runs(cx));
+                            })),
+                )
+        });
+    }
+
+    fn cancel_all_runs(&mut self, cx: &mut Context<Self>) {
+        self.browser_recovery_pending = false;
+        for running in self.running.values() {
+            running.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(case) = &mut self.case {
+            for run in &mut case.document.runs {
+                if run.status == RunStatus::Queued {
+                    run.status = RunStatus::Cancelled;
+                    run.finished_at = Some(now());
+                    self.file_dumps.remove(&run.id);
+                    self.batch_finished += 1;
+                }
+            }
+            if let Err(error) = case.save() {
+                self.error = Some(error);
+            }
+        }
+        self.message = "Cancelling all analyses...".into();
+        cx.notify();
+    }
+
     pub(super) fn retry_all_failed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids: Vec<_> = self
             .case
@@ -445,7 +492,11 @@ impl Workspace {
                 && case.document.runs[i].message == volgui::analysis::downloads::PENDING;
             let quarantine_pending = case.document.runs[i].plugin == volgui::analysis::QUARANTINE
                 && case.document.runs[i].message == volgui::analysis::quarantine::PENDING;
-            if application_pending
+            let attribution_pending = case.document.runs[i].plugin
+                == volgui::analysis::NETWORK_ATTRIBUTION
+                && case.document.runs[i].message == volgui::analysis::network_attribution::PENDING;
+            if attribution_pending
+                || application_pending
                 || files_pending
                 || downloads_pending
                 || quarantine_pending
@@ -455,7 +506,13 @@ impl Workspace {
                 let Some(engine) = engine.as_ref() else {
                     return;
                 };
-                let prepared = if application_pending {
+                let prepared = if attribution_pending {
+                    volgui::analyses::prepare_network_attribution(
+                        case,
+                        engine,
+                        &case.document.runs[i],
+                    )
+                } else if application_pending {
                     volgui::analyses::prepare_application_recovery(
                         case,
                         engine,
@@ -482,7 +539,8 @@ impl Workspace {
                     Ok(runs) => {
                         let previous = case.document.runs.clone();
                         case.document.runs[i].message.clear();
-                        let replace = application_pending
+                        let replace = attribution_pending
+                            || application_pending
                             || files_pending
                             || downloads_pending
                             || quarantine_pending;
@@ -623,29 +681,16 @@ impl Workspace {
                     outcome.status = if cancel.load(Ordering::Relaxed) {
                         RunStatus::Cancelled
                     } else if outcome.table.is_some() {
-                        outcome.status
+                        RunStatus::Warning
                     } else {
                         RunStatus::Failed
                     };
                     // Parsed observations remain evidence even if output bytes
                     // cannot be archived, for example after antivirus quarantine.
-                    outcome.message = format!(
-                        "{}\nCould not archive analysis output: {error}. Available capture files and parsed results retained.",
-                        outcome.message
-                    );
+                    outcome.warn(&format!("Could not archive analysis output: {error}. Available capture files and parsed results retained."));
                 }
-                if run.plugin == volgui::extracted_files::DUMP_FILES
-                    && let Ok(outputs) = volgui::object_store::output_metadata(&directory)
-                {
-                    let unavailable = outputs
-                        .values()
-                        .filter(|output| output.blocked_reason.is_some())
-                        .count();
-                    if unavailable > 0 {
-                        outcome.message.push_str(&format!(
-                            "\n{unavailable} recovered outputs unavailable or blocked, possibly quarantined. Parsed findings retained."
-                        ));
-                    }
+                if let Err(error) = outcome.check_output_coverage(&directory) {
+                    outcome.warn(&format!("Output coverage could not be checked: {error}. Inspect the archived outputs before running again."));
                 }
                 if let Some(table) = outcome.table.take()
                     && let Err(e) = store.insert_cancellable(&run, &table, &cancel)

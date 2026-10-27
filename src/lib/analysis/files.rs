@@ -132,7 +132,7 @@ impl RecoveryIndex {
         let mut dump_states = HashMap::new();
         for run in document.runs.iter().filter(|r| r.plugin == DUMP_FILES) {
             let state = match run.status {
-                RunStatus::Completed => match outputs.get(&run.id) {
+                RunStatus::Completed | RunStatus::Warning => match outputs.get(&run.id) {
                     Some((true, _)) => RecoveryState::Recovered,
                     Some((false, 0)) => RecoveryState::Uncached,
                     Some((false, _)) => RecoveryState::Unavailable,
@@ -282,7 +282,7 @@ fn candidates(
         .rev()
         .filter(|r| {
             r.evidence_id == evidence
-                && r.status == RunStatus::Completed
+                && r.status.has_results()
                 && r.arguments.is_empty()
                 && SOURCES.contains(&r.plugin.as_str())
         })
@@ -332,7 +332,10 @@ pub fn recovery_runs(
                 && r.plugin == DUMP_FILES
                 && matches!(
                     r.status,
-                    RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                    RunStatus::Completed
+                        | RunStatus::Warning
+                        | RunStatus::Queued
+                        | RunStatus::Running
                 )
         })
         .map(|r| r.arguments.clone())
@@ -429,8 +432,12 @@ pub(super) fn analyze(
         " Found {} executable path references in the evidence bytes. References do not establish file presence, recoverability, or maliciousness.",
         references.len()
     ));
+    let mut warnings = Vec::new();
+    if references.len() >= paths::MAX_PATHS {
+        warnings.push("Executable path reference limit reached. Narrow the evidence input to complete coverage.".into());
+    }
     rows.extend(references);
-    Ok((super::table(rows), message))
+    Ok((super::table(rows).with_warnings(warnings), message))
 }
 
 /// One streaming read of the evidence, independent of inventories and extraction.
@@ -444,5 +451,9 @@ pub(super) fn path_references(
         "Found {} executable path references in the evidence bytes. References do not establish file presence, recoverability, or maliciousness. No file contents were extracted.",
         rows.len()
     );
-    Ok((super::table(rows), message))
+    let mut warnings = Vec::new();
+    if rows.len() >= paths::MAX_PATHS {
+        warnings.push("Executable path reference limit reached. Narrow the evidence input to complete coverage.".into());
+    }
+    Ok((super::table(rows).with_warnings(warnings), message))
 }

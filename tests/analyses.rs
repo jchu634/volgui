@@ -431,6 +431,39 @@ fn browser_analysis_waits_for_prior_jobs_and_keeps_later_jobs_queued() {
 }
 
 #[test]
+fn recovery_barriers_allow_other_evidence_to_use_available_slots() {
+    use volgui::analyses::next_queued_run;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("capture.raw");
+    fs::write(&path, b"scheduler fixture").unwrap();
+    let evidence = Evidence::inspect(&path, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut parser =
+        volgui::analysis::prepare(&evidence, volgui::analysis::BROWSER, vec![]).unwrap();
+    parser.status = RunStatus::Running;
+    let same =
+        volgui::analysis::prepare(&evidence, volgui::analysis::STRINGS, vec!["needle".into()])
+            .unwrap();
+    let mut other = same.clone();
+    other.id = "other-run".into();
+    other.evidence_id = "other-evidence".into();
+    let mut runs = vec![parser, same, other];
+    assert_eq!(
+        next_queued_run(&runs, std::num::NonZeroUsize::new(2).unwrap()),
+        Some(2)
+    );
+    runs[2].status = RunStatus::Running;
+    assert_eq!(
+        next_queued_run(&runs, std::num::NonZeroUsize::new(2).unwrap()),
+        None
+    );
+    runs[0].status = RunStatus::Warning;
+    assert_eq!(
+        next_queued_run(&runs, std::num::NonZeroUsize::new(2).unwrap()),
+        Some(1)
+    );
+}
+
+#[test]
 fn preprocessing_choices_exclude_process_memory_and_registry_expands_to_recursive_printkey() {
     use volgui::analyses::{REGISTRY_ALL, application_plugins};
     let catalog = application_plugins(&[]);
@@ -649,4 +682,68 @@ fn browser_recovery_can_be_queued_with_its_prerequisites() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn process_scan_completion_is_scoped_to_evidence_pid_and_success() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"scan scope fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut run = volgui::analysis::prepare(
+        &evidence,
+        volgui::analysis::APPLICATION,
+        vec!["--pid".into(), "42".into()],
+    )
+    .unwrap();
+    assert!(!volgui::analyses::completed_process_scan(
+        &run,
+        &evidence.id,
+        42
+    ));
+    run.status = RunStatus::Completed;
+    assert!(volgui::analyses::completed_process_scan(
+        &run,
+        &evidence.id,
+        42
+    ));
+    assert!(!volgui::analyses::completed_process_scan(
+        &run,
+        &evidence.id,
+        43
+    ));
+    assert!(!volgui::analyses::completed_process_scan(
+        &run,
+        "other-evidence",
+        42
+    ));
+    run.status = RunStatus::Failed;
+    assert!(!volgui::analyses::completed_process_scan(
+        &run,
+        &evidence.id,
+        42
+    ));
+}
+
+#[test]
+fn scoped_memory_collections_do_not_block_global_scans() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = temp.path().join("image.raw");
+    fs::write(&image, b"global scan fixture").unwrap();
+    let evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let mut run =
+        volgui::analysis::prepare(&evidence, volgui::analysis::APPLICATION, vec![]).unwrap();
+    for plugin in ["windows.memmap.Memmap", "windows.vadinfo.VadInfo"] {
+        run.plugin = plugin.into();
+        for status in [RunStatus::Queued, RunStatus::Running, RunStatus::Completed] {
+            run.status = status;
+            run.arguments = vec!["--pid".into(), "42".into(), "--dump".into()];
+            assert!(!volgui::analyses::blocks_global_selection(&run));
+            run.arguments.clear();
+            assert!(volgui::analyses::blocks_global_selection(&run));
+        }
+        run.status = RunStatus::Failed;
+        assert!(!volgui::analyses::blocks_global_selection(&run));
+    }
+    assert!(volgui::analyses::basic_label("windows.memmap.Memmap").is_none());
 }

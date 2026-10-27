@@ -431,6 +431,9 @@ impl Workspace {
                     .min_w_0()
                     .flex_shrink_0()
                     .overflow_x_scroll()
+                    .track_scroll(&self.scroll_state.area(
+                        scroll_state::ScrollArea::NetworkNavigation(self.selected_evidence.clone()),
+                    ))
                     .px_3()
                     .py_1()
                     .child(navigation),
@@ -454,9 +457,28 @@ impl Workspace {
                 self.network.unplotted
             )));
         if self.network_loading {
-            body = body.child(div().p_4().child("Loading network entries..."));
+            body = body.child(
+                div()
+                    .p_4()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Loading network entries..."),
+            );
+        } else if self.network.entries.is_empty() {
+            body = body.child(
+                div()
+                    .p_4()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.results_empty_message(cx)),
+            );
         } else if self.network_table_view {
             self.sync_network_table(overview.indices.clone(), cx);
+            self.restore_table_scroll(
+                scroll_state::ResultTableKind::Network,
+                &self.network_table,
+                cx,
+            );
             body = body.child(
                 div()
                     .id("network-table")
@@ -473,7 +495,7 @@ impl Workspace {
                     ),
             );
         } else if overview.matching == 0 {
-            body = body.child(div().p_4().child("No network entries match these filters. Clear the search or turn off filters to see more entries."));
+            body = body.child(div().p_4().text_sm().text_color(cx.theme().muted_foreground).child("No network entries match these filters. Clear the search or turn off filters to see more entries."));
         } else {
             body = body.child(self.render_network_canvas(overview, cx));
         }
