@@ -3,6 +3,7 @@ pub mod application;
 mod browser;
 pub mod downloads;
 pub mod files;
+mod partial;
 mod process_memory;
 pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod network;
@@ -32,6 +33,47 @@ pub const FILES: &str = "volgui.files.Recovery";
 pub const FILE_PATHS: &str = "volgui.files.PathReferences";
 pub const DOWNLOADS: &str = "volgui.downloads.Investigation";
 pub const QUARANTINE: &str = "volgui.quarantine.Investigation";
+
+/// Inventories must be unfiltered and belong to the report's evidence.
+/// Queue planning can accept active inputs; execution requires saved results.
+pub fn missing_source_inventories<'a>(
+    runs: impl IntoIterator<Item = &'a Run>,
+    evidence_id: &str,
+    sources: &[&'static str],
+    allow_active: bool,
+) -> Vec<&'static str> {
+    let available: BTreeSet<_> = runs
+        .into_iter()
+        .filter(|run| {
+            run.evidence_id == evidence_id
+                && run.arguments.is_empty()
+                && (run.status.has_results()
+                    || allow_active && matches!(run.status, RunStatus::Queued | RunStatus::Running))
+        })
+        .map(|run| run.plugin.as_str())
+        .collect();
+    sources
+        .iter()
+        .copied()
+        .filter(|id| !available.contains(id))
+        .collect()
+}
+
+pub(crate) fn require_source_inventories(
+    document: &CaseSnapshot,
+    evidence_id: &str,
+    sources: &[&'static str],
+) -> Result<(), String> {
+    let missing = missing_source_inventories(&document.runs, evidence_id, sources, false);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Missing source inventories: {}. Complete these unfiltered prerequisites for this evidence before running the investigation.",
+            missing.join(", ")
+        ))
+    }
+}
 
 pub fn is_native(plugin: &str) -> bool {
     matches!(

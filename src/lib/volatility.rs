@@ -587,6 +587,11 @@ pub struct Record {
 }
 
 impl Record {
+    /// Explicit producer metadata, never inferred from words such as "candidate".
+    pub fn is_partial_match(&self) -> bool {
+        self.fields.get("Partial match").and_then(Value::as_bool) == Some(true)
+    }
+
     pub fn text(&self, column: &str) -> String {
         self.fields
             .get(column)

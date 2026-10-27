@@ -9,6 +9,7 @@ pub struct Settings {
     pub executable: PathBuf,
     pub symbols: PathBuf,
     pub offline: bool,
+    pub show_partial_matches: bool,
     pub max_concurrent_jobs: NonZeroUsize,
     pub recent_cases: Vec<PathBuf>,
 }
@@ -19,6 +20,7 @@ impl Default for Settings {
             executable: PathBuf::new(),
             symbols: PathBuf::new(),
             offline: false,
+            show_partial_matches: false,
             max_concurrent_jobs: NonZeroUsize::new(2).unwrap(),
             recent_cases: Vec::new(),
         }

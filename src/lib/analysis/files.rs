@@ -433,8 +433,22 @@ pub(super) fn analyze(
         references.len()
     ));
     let mut warnings = Vec::new();
-    if references.len() >= paths::MAX_PATHS {
+    if references
+        .iter()
+        .filter(|row| !row.is_partial_match())
+        .count()
+        >= paths::MAX_PATHS
+    {
         warnings.push("Executable path reference limit reached. Narrow the evidence input to complete coverage.".into());
+    }
+    if references
+        .iter()
+        .filter(|row| row.is_partial_match())
+        .count()
+        >= paths::MAX_PARTIAL_PATHS
+    {
+        warnings
+            .push("Partial executable path limit reached; strict path recovery continued.".into());
     }
     rows.extend(references);
     Ok((super::table(rows).with_warnings(warnings), message))
@@ -452,8 +466,12 @@ pub(super) fn path_references(
         rows.len()
     );
     let mut warnings = Vec::new();
-    if rows.len() >= paths::MAX_PATHS {
+    if rows.iter().filter(|row| !row.is_partial_match()).count() >= paths::MAX_PATHS {
         warnings.push("Executable path reference limit reached. Narrow the evidence input to complete coverage.".into());
+    }
+    if rows.iter().filter(|row| row.is_partial_match()).count() >= paths::MAX_PARTIAL_PATHS {
+        warnings
+            .push("Partial executable path limit reached; strict path recovery continued.".into());
     }
     Ok((super::table(rows).with_warnings(warnings), message))
 }

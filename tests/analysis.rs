@@ -84,6 +84,244 @@ fn save(
 }
 
 #[test]
+fn application_partial_budget_keeps_later_strict_text_and_respects_contains() {
+    use volgui::analysis::{APPLICATION, application};
+    let (_temp, mut case, _) = setup();
+    let process = save(
+        &mut case,
+        0,
+        application::INVENTORY[0],
+        vec![],
+        json!([{"PID":42,"ImageFileName":"editor.exe"}]),
+    );
+    let command = save(
+        &mut case,
+        0,
+        application::INVENTORY[1],
+        vec![],
+        json!([{"PID":42,"Args":"editor.exe"}]),
+    );
+    let mut bytes = Vec::new();
+    for n in 0..3_000 {
+        bytes.extend(b"rep");
+        bytes.extend([
+            b'a' + (n / 676) as u8,
+            b'a' + ((n / 26) % 26) as u8,
+            b'a' + (n % 26) as u8,
+            0,
+        ]);
+    }
+    bytes.extend(b"aaaaaa\0x7Zp9Q\0");
+    let strict_at = bytes.len();
+    bytes.extend(b"Strict text survives the partial flood\0");
+    let length = bytes.len();
+    let map = save(
+        &mut case,
+        0,
+        application::MEMMAP,
+        vec!["--pid".into(), "42".into(), "--dump".into()],
+        json!([{"Virtual":65536,"Size":length,"Offset in File":0,"File output":"pid.42.dmp"}]),
+    );
+    let vad = save(
+        &mut case,
+        0,
+        application::VADINFO,
+        vec!["--pid".into(), "42".into()],
+        json!([{"PID":42,"Start VPN":65536,"End VPN":65536+length-1,"PrivateMemory":1,"Protection":"PAGE_READWRITE"}]),
+    );
+    fs::create_dir_all(case.run_dir(&map.id)).unwrap();
+    fs::write(case.run_dir(&map.id).join("pid.42.dmp"), bytes).unwrap();
+    let args = vec![
+        "--pid".into(),
+        "42".into(),
+        "--inventory-run".into(),
+        process.id,
+        "--inventory-run".into(),
+        command.id,
+        "--source-run".into(),
+        map.id.clone(),
+        "--source-run".into(),
+        vad.id,
+    ];
+    let run = analysis::prepare(&case.document.evidence[0], APPLICATION, args.clone()).unwrap();
+    case.queue(run.clone()).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Warning, "{}", outcome.message);
+    let rows = &outcome.table.as_ref().unwrap().rows;
+    assert_eq!(
+        rows.iter().filter(|row| row.is_partial_match()).count(),
+        2_000
+    );
+    let strict = rows
+        .iter()
+        .find(|row| row.text("Text") == "Strict text survives the partial flood")
+        .unwrap();
+    assert!(!strict.is_partial_match());
+    assert_eq!(strict.fields["Dump offset"], strict_at);
+    assert!(
+        rows.iter()
+            .all(|row| !matches!(row.text("Text").as_str(), "aaaaaa" | "x7Zp9Q"))
+    );
+    assert!(
+        rows.iter()
+            .filter(|row| row.is_partial_match())
+            .all(|row| row.text("Source run") == map.id
+                && !row.text("Validation failures").is_empty())
+    );
+    case.finish(&run.id, &outcome).unwrap();
+    let directory = case.directory.clone();
+    drop(case);
+    let case = Case::open(&directory).unwrap();
+    let store = ResultStore::at(&directory);
+    let mut query = Query {
+        runs: vec![run.id],
+        ..Default::default()
+    };
+    let strict_count = store.query(&query).unwrap().ids.len();
+    query.include_partial = true;
+    assert_eq!(store.query(&query).unwrap().ids.len(), strict_count + 2_000);
+    let mut filtered_args = args;
+    filtered_args.extend(["--contains".into(), "SURVIVES".into()]);
+    let filtered =
+        analysis::prepare(&case.document.evidence[0], APPLICATION, filtered_args).unwrap();
+    let outcome = analysis::execute(
+        &directory,
+        &case.document,
+        &filtered,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert!(
+        outcome
+            .table
+            .unwrap()
+            .rows
+            .iter()
+            .all(|row| !row.is_partial_match()
+                && row.text("Text").to_ascii_lowercase().contains("survives"))
+    );
+}
+
+#[test]
+fn partial_session_reports_survive_reopening_without_becoming_download_leads() {
+    let (_temp, mut case, _) = setup();
+    let dump = save(
+        &mut case,
+        0,
+        DUMP_FILES,
+        vec!["--virtaddr".into(), "4096".into()],
+        json!([]),
+    );
+    fs::create_dir_all(case.run_dir(&dump.id)).unwrap();
+    fs::write(case.run_dir(&dump.id).join("sessionstore.json"), br#"{"windows":[{"tabs":[{"entries":[{"url":"https://example.test/orphan.exe"}]},{"index":1,"entries":[{"url":"https://strict.test"}]}]}]}"#).unwrap();
+    let run = analysis::prepare(&case.document.evidence[0], BROWSER, vec![]).unwrap();
+    case.queue(run.clone()).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert_eq!(outcome.table.as_ref().unwrap().rows.len(), 2);
+    case.finish(&run.id, &outcome).unwrap();
+    let directory = case.directory.clone();
+    drop(case);
+    let mut case = Case::open(&directory).unwrap();
+    let store = ResultStore::at(&directory);
+    let mut query = Query {
+        runs: vec![run.id],
+        ..Default::default()
+    };
+    assert_eq!(store.query(&query).unwrap().ids.len(), 1);
+    query.include_partial = true;
+    let all = store.query(&query).unwrap();
+    assert_eq!(all.ids.len(), 2);
+    assert!(
+        store
+            .fetch(&all.ids)
+            .unwrap()
+            .iter()
+            .any(|row| row.record.is_partial_match() && row.record.text("Source run") == dump.id)
+    );
+    for plugin in analysis::downloads::SOURCES {
+        save(&mut case, 0, plugin, vec![], json!([]));
+    }
+    let download =
+        analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
+    let outcome = analysis::execute(
+        &directory,
+        &case.document,
+        &download,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert!(outcome.status.has_results(), "{}", outcome.message);
+    assert!(
+        outcome
+            .table
+            .unwrap()
+            .rows
+            .iter()
+            .all(|row| row.text("URL") != "https://example.test/orphan.exe")
+    );
+}
+
+#[test]
+fn executable_path_partial_reports_are_hidden_by_default_and_retain_source_bytes() {
+    let (temp, mut case, _) = setup();
+    let path = temp.path().join("paths.raw");
+    fs::write(
+        &path,
+        b"Users\\Alice\\helper.exe\0C:\\Windows\\strict.exe\0filename.exe\0",
+    )
+    .unwrap();
+    let evidence = Evidence::inspect(&path, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let run = analysis::prepare(&evidence, analysis::FILE_PATHS, vec![]).unwrap();
+    case.add_evidence(evidence).unwrap();
+    case.queue(run.clone()).unwrap();
+    let outcome = analysis::execute(
+        &case.directory,
+        &case.document,
+        &run,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert_eq!(outcome.status, RunStatus::Completed, "{}", outcome.message);
+    assert_eq!(outcome.table.as_ref().unwrap().rows.len(), 2);
+    case.finish(&run.id, &outcome).unwrap();
+    let store = ResultStore::at(&case.directory);
+    let mut query = Query {
+        runs: vec![run.id],
+        ..Default::default()
+    };
+    assert_eq!(store.query(&query).unwrap().ids.len(), 1);
+    query.include_partial = true;
+    let all = store.query(&query).unwrap();
+    assert_eq!(all.ids.len(), 2);
+    let partial = store
+        .fetch(&all.ids)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.record.is_partial_match())
+        .unwrap();
+    assert_eq!(partial.record.text("Name"), r"Users\Alice\helper.exe");
+    assert_eq!(partial.record.fields["Evidence offset"], 0);
+    assert_eq!(
+        partial.record.text("Recovery status"),
+        "Path reference only"
+    );
+}
+
+#[test]
 fn strings_find_cross_chunk_matches_utf16_at_odd_offsets_and_final_bytes_once() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("memory.raw");
@@ -232,6 +470,9 @@ fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifact
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text("Original path"), "");
     assert_eq!(rows[0].text("Source run"), dump.id);
+    for plugin in analysis::downloads::SOURCES {
+        save(&mut case, 0, plugin, vec![], json!([]));
+    }
     let download =
         analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
     let second = analysis::execute(
@@ -241,7 +482,7 @@ fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifact
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(second.status, RunStatus::Warning);
+    assert_eq!(second.status, RunStatus::Completed, "{}", second.message);
     assert!(
         second.message.contains("Reused 1 immutable artifact"),
         "{}",

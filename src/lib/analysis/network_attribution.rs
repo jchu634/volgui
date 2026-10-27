@@ -25,7 +25,7 @@ use std::{
 };
 
 pub const PENDING: &str = "Waiting to prepare network process attribution";
-pub const VERSION: &str = "network-process-v3-context-discovery";
+pub const VERSION: &str = "network-process-v4-partial-configurations";
 pub const DISCOVERY: &str = "windows.vadregexscan.VadRegExScan";
 fn pattern() -> &'static str {
     static PATTERN: OnceLock<String> = OnceLock::new();
@@ -40,6 +40,7 @@ fn pattern() -> &'static str {
 pub const HELP: &str = "Find TCP transport endpoints, supported connection commands, Meterpreter TCP configurations and stock Cobalt Strike Beacon HTTP(S) configurations in readable user process memory, including images and read-only regions. Reuses compatible process dumps. With no options, VAD marker discovery selects candidate processes before collecting missing dumps. Optional --pid <PID> scans one process directly. Command syntax covers Ncat/netcat, socat, PowerShell/.NET, Python socket and Bash redirections. Findings establish bytes in an address space, not successful connections or exclusive ownership. Discovery can miss unreadable processes, encrypted/obfuscated data and processes absent from PsList. Collection failures and byte limits are reported. Browser and Process Memory keep their own scope.";
 const MAX_PROCESSES: usize = 256;
 const MAX_FINDINGS: usize = 20_000;
+const MAX_PARTIAL_FINDINGS: usize = 1_000;
 const MAX_PROCESS_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 4 * MAX_PROCESS_BYTES;
 
@@ -407,10 +408,12 @@ fn endpoints(bytes: &[u8], window: Region, core: std::ops::Range<usize>) -> Vec<
         rows.push(row);
     }
     for (at, mut row) in network::beacon::scan(bytes, core.clone()) {
-        row.fields.insert(
-            "Finding".into(),
-            "Process memory Cobalt Strike Beacon configuration".into(),
-        );
+        let finding = if row.is_partial_match() {
+            "Process memory partial Cobalt Strike Beacon configuration candidate"
+        } else {
+            "Process memory Cobalt Strike Beacon configuration"
+        };
+        row.fields.insert("Finding".into(), finding.into());
         row.fields.insert(
             "Virtual address".into(),
             format!("{:#x}", window.virtual_start + at as u64).into(),
@@ -534,6 +537,8 @@ fn analyze_bounded(
         return Err("Broad attribution requires a pinned discovery source".into());
     }
     let mut rows = Vec::new();
+    let mut partial_rows = Vec::new();
+    let mut partial_limited = false;
     let mut diagnostics = Vec::new();
     let mut total = 0;
     let mut parsed = 0;
@@ -624,7 +629,16 @@ fn analyze_bounded(
                     cancel,
                     budget,
                     |bytes, window, core| {
-                        for mut row in endpoints(bytes, window, core) {
+                        let findings = endpoints(bytes, window, core);
+                        partial_limited |=
+                            findings.iter().filter(|row| row.is_partial_match()).count()
+                                >= network::beacon::MAX_PARTIAL_FINDINGS;
+                        for mut row in findings {
+                            if row.is_partial_match() && partial_rows.len() >= MAX_PARTIAL_FINDINGS
+                            {
+                                partial_limited = true;
+                                continue;
+                            }
                             let key = [
                                 "Virtual address",
                                 "Program",
@@ -701,7 +715,16 @@ fn analyze_bounded(
                             ] {
                                 row.fields.insert(key.into(), value);
                             }
-                            rows.push(row);
+                            if row.is_partial_match() {
+                                row.fields.insert("Interpretation".into(), "Partially corroborated Beacon-like settings in this process address space. Full configuration validation failed. These bytes do not establish an identified payload, execution, exclusive ownership or a successful connection.".into());
+                                if partial_rows.len() < MAX_PARTIAL_FINDINGS {
+                                    partial_rows.push(row);
+                                } else {
+                                    partial_limited = true;
+                                }
+                            } else {
+                                rows.push(row);
+                            }
                         }
                         rows.len() < limits.findings
                     },
@@ -741,12 +764,17 @@ fn analyze_bounded(
     } else {
         "Command-context and structured-prefix VAD discovery candidates, including unvalidated fallback candidates; unreadable processes and processes absent from PsList are not covered"
     };
+    if partial_limited {
+        diagnostics.push(format!("Partial network window or report limit reached ({} per window, {MAX_PARTIAL_FINDINGS} per report); strict recovery continued.", network::beacon::MAX_PARTIAL_FINDINGS));
+    }
+    let partial_count = partial_rows.len();
+    rows.extend(partial_rows);
     let mut inputs = doc.clone();
     if let Some(i) = inputs.runs.iter().position(|r| r.id == run.id) {
         inputs.runs.truncate(i);
     }
     let message = format!(
-        "{} process-memory network findings; {parsed} of {candidates} processes scanned; {total} bytes. {scope}. {}Parser: {VERSION}. Inputs: {}. Process associations do not establish successful connections. {}",
+        "{} process-memory network findings, including {partial_count} partial candidates hidden unless Show partial matches is enabled; {parsed} of {candidates} processes scanned; {total} bytes. {scope}. {}Parser: {VERSION}. Inputs: {}. Process associations do not establish successful connections. {}",
         rows.len(),
         if limited {
             "Stopped at the byte or finding limit. "
@@ -1186,6 +1214,134 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn partial_beacon_reports_keep_provenance_and_default_queries_remain_strict() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("capture.raw");
+        let mut bytes = vec![0xff; 100];
+        bytes.extend(network::beacon::tests::partial_fixture(0x2e));
+        bytes.extend(network::beacon::tests::fixture(0x69));
+        fs::write(&image, &bytes).unwrap();
+        let mut evidence = Evidence::inspect(&image, &AtomicBool::new(false), |_, _| {}).unwrap();
+        evidence.operating_system = OperatingSystem::Windows;
+        let mut case = Case::create(&temp.path().join("case"), "Partial network").unwrap();
+        case.add_evidence(evidence.clone()).unwrap();
+        let process = completed(
+            &mut case,
+            &evidence,
+            INVENTORY[0],
+            vec![],
+            json!([{"PID":42,"ImageFileName":"sample.exe","CreateTime":"2023-09-14T02:00:00Z"}]),
+        );
+        let command = completed(
+            &mut case,
+            &evidence,
+            INVENTORY[1],
+            vec![],
+            json!([{"PID":42,"Args":"sample.exe"}]),
+        );
+        let vad = completed(
+            &mut case,
+            &evidence,
+            VADINFO,
+            vec!["--pid".into(), "42".into()],
+            json!([{"PID":42,"Start VPN":65536,"End VPN":65536+bytes.len()-1,"PrivateMemory":0,"Protection":"PAGE_READONLY","File":"sample.exe"}]),
+        );
+        let map = completed(
+            &mut case,
+            &evidence,
+            MEMMAP,
+            DumpScope::Full.arguments(42),
+            json!([{"Virtual":65536,"Size":bytes.len(),"Offset in File":0,"File output":"pid.42.dmp"}]),
+        );
+        let path = case.run_dir(&map.id).join("pid.42.dmp");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let run = prepare(
+            &evidence,
+            NETWORK_ATTRIBUTION,
+            vec![
+                "--pid".into(),
+                "42".into(),
+                "--inventory-run".into(),
+                process.id,
+                "--inventory-run".into(),
+                command.id,
+                "--source-run".into(),
+                vad.id.clone(),
+                "--source-run".into(),
+                map.id.clone(),
+            ],
+        )
+        .unwrap();
+        case.queue(run.clone()).unwrap();
+        let outcome = crate::analysis::execute(
+            &case.directory,
+            &case.document,
+            &run,
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert!(outcome.status.has_results(), "{}", outcome.message);
+        let rows = &outcome.table.as_ref().unwrap().rows;
+        assert_eq!(rows.len(), 4);
+        for row in rows.iter().filter(|row| row.is_partial_match()) {
+            assert_eq!(row.text("PID"), "42");
+            assert_eq!(row.text("Source run"), map.id);
+            assert_eq!(row.text("Region run"), vad.id);
+            assert_eq!(row.fields["Dump offset"], 100);
+            assert_eq!(row.text("Virtual address"), format!("{:#x}", 65536 + 100));
+            assert!(!row.text("Validation failures").is_empty());
+            assert!(
+                row.text("Interpretation")
+                    .contains("Full configuration validation failed")
+            );
+            assert!(row.text("Configuration bytes SHA-256").is_empty());
+            assert_eq!(
+                dump_target(&case.directory, &case.document, row),
+                Some((path.clone(), 100))
+            );
+        }
+        case.finish(&run.id, &outcome).unwrap();
+        let acquisition = prepare(&evidence, crate::analysis::NETWORK, vec![]).unwrap();
+        case.queue(acquisition.clone()).unwrap();
+        let outcome = crate::analysis::execute(
+            &case.directory,
+            &case.document,
+            &acquisition,
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert!(outcome.status.has_results(), "{}", outcome.message);
+        assert_eq!(outcome.table.as_ref().unwrap().rows.len(), 4);
+        for row in outcome
+            .table
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|row| row.is_partial_match())
+        {
+            assert_eq!(row.text("Source type"), "Partial acquisition configuration");
+            assert!(row.text("PID").is_empty());
+            assert_eq!(row.fields["Acquisition offset"], 100);
+        }
+        case.finish(&acquisition.id, &outcome).unwrap();
+        let directory = case.directory.clone();
+        drop(case);
+        let _case = Case::open(&directory).unwrap();
+        let store = ResultStore::at(&directory);
+        for id in [run.id, acquisition.id] {
+            let mut query = crate::results::Query {
+                runs: vec![id],
+                ..Default::default()
+            };
+            assert_eq!(store.query(&query).unwrap().ids.len(), 2);
+            query.include_partial = true;
+            assert_eq!(store.query(&query).unwrap().ids.len(), 4);
+        }
     }
 
     #[test]

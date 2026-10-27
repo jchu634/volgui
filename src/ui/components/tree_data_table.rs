@@ -164,8 +164,16 @@ impl TableDelegate for TreeTable {
         });
         let mut element = div().id(("tree-table-row", row)).text_xs();
         if let Some((i, depth, node)) = node {
+            let partial = node
+                .record_id
+                .is_some_and(|id| state.is_some_and(|state| state.is_partial_record(id)));
             element = element
-                .aria_label(node.label.clone())
+                .aria_label(if partial {
+                    format!("Partial match · {}", node.label)
+                } else {
+                    node.label.clone()
+                })
+                .when(partial, partial_matches::highlight_row)
                 .aria_level(depth + 1)
                 .when(
                     state.is_some_and(|state| state.result_tree.has_children(i)),

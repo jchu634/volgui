@@ -365,6 +365,7 @@ pub struct Graph {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
+    pub include_partial: bool,
     pub focus: Option<String>,
     pub text: String,
     pub protocol: Option<String>,
@@ -378,8 +379,10 @@ pub struct Filter {
 impl Filter {
     pub fn matches(&self, entry: &Entry) -> bool {
         // Noise rules are reversible viewing heuristics. Never suppress analysis findings.
-        (entry.finding
-            || ((!self.hide_system || !entry.system_process) && (!self.hide_noise || !entry.noise)))
+        (self.include_partial || !entry.source.record.is_partial_match())
+            && (entry.finding
+                || ((!self.hide_system || !entry.system_process)
+                    && (!self.hide_noise || !entry.noise)))
             && (!self.interesting_only || entry.interesting)
             && self.protocol.as_ref().is_none_or(|p| p == &entry.protocol)
             && self.state.as_ref().is_none_or(|s| s == &entry.state)
@@ -395,6 +398,7 @@ pub type PeerLinks = BTreeSet<(Endpoint, Endpoint, String)>;
 
 #[derive(Default)]
 pub struct Overview {
+    pub partial_addresses: BTreeSet<String>,
     pub peers: BTreeMap<(Option<String>, String), PeerLinks>,
     pub references: BTreeMap<String, BTreeSet<Option<u16>>>,
     pub matching: usize,
@@ -418,6 +422,9 @@ impl Graph {
                 return Ok(None);
             }
             for row in store.fetch(ids)? {
+                if !query.include_partial && row.record.is_partial_match() {
+                    continue;
+                }
                 graph.push(Entry::from_record(row));
             }
         }
@@ -481,6 +488,9 @@ impl Graph {
             }
             for endpoint in [&entry.local, &entry.remote].into_iter().flatten() {
                 view.addresses.insert(endpoint.address.clone());
+                if entry.source.record.is_partial_match() {
+                    view.partial_addresses.insert(endpoint.address.clone());
+                }
             }
         }
         view.focus = filter

@@ -131,6 +131,14 @@ fn main() -> Result<(), String> {
         "Synthetic unavailable output. Antivirus involvement is unconfirmed.",
     )?;
     if !passive_only {
+        for plugin in analysis::missing_source_inventories(
+            &case.document.runs,
+            &case.document.evidence[0].id,
+            analysis::quarantine::SOURCES,
+            false,
+        ) {
+            save(&mut case, plugin, vec![], json!([]), false)?;
+        }
         let report = analysis::prepare(&case.document.evidence[0], analysis::QUARANTINE, vec![])?;
         case.queue(report.clone())?;
         let outcome = analysis::execute(

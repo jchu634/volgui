@@ -44,11 +44,16 @@ impl Workspace {
             .copied()
             .unwrap_or_else(|| {
                 let default = px(column.default_width());
-                if self.result_group() == Some(ArtifactGroup::Strings) && column.key == "Context" {
+                let fills_space = matches!(
+                    (self.result_group(), column.key.as_str()),
+                    (Some(ArtifactGroup::Strings), "Context")
+                        | (Some(ArtifactGroup::Downloads), "URL")
+                );
+                if fills_space {
                     let other_widths: Pixels = self
                         .result_columns()
                         .iter()
-                        .filter(|column| column.key != "Context")
+                        .filter(|other| other.key != column.key)
                         .map(|column| self.column_width(column))
                         .sum();
                     (self.result_viewport_width - px(2.) - other_widths).max(default)

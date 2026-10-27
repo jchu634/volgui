@@ -19,6 +19,8 @@ use std::{
 };
 
 pub(super) const MAX_ROWS: usize = 100_000;
+pub(super) const MAX_PARTIAL_ROWS: usize = 5_000;
+const MAX_PARTIAL_SESSION_ROWS: usize = 2_000;
 const SESSION_LIMIT: u64 = 32 * 1024 * 1024;
 
 pub(super) fn analyze(
@@ -73,6 +75,7 @@ fn analyze_mode(
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
     let mut parsed = 0;
+    let mut report_limits = (false, false);
     for source in document.runs.iter().filter(|r| {
         r.evidence_id == run.evidence_id && r.status.has_results() && !super::is_native(&r.plugin)
     }) {
@@ -187,12 +190,17 @@ fn analyze_mode(
                     );
                 }
             }
-            if rows.len() >= MAX_ROWS {
+            // Preserve the existing final kind-priority sort before truncating
+            // strict profile results. Only partials are bounded during parsing.
+            let limits = super::partial::bound(&mut rows, usize::MAX, MAX_PARTIAL_ROWS);
+            report_limits.0 |= limits.0;
+            report_limits.1 |= limits.1;
+            if rows.iter().filter(|row| !row.is_partial_match()).count() >= MAX_ROWS {
                 warnings.push(format!("Stopped at the {MAX_ROWS} row limit. Analyze fewer recovered files to narrow results."));
                 break;
             }
         }
-        if rows.len() >= MAX_ROWS {
+        if rows.iter().filter(|row| !row.is_partial_match()).count() >= MAX_ROWS {
             break;
         }
     }
@@ -209,16 +217,27 @@ fn analyze_mode(
     } else {
         0
     };
-    rows.sort_by_key(|row| match row.text("Kind").as_str() {
-        "Memory search" | "Web search" => 0,
-        "Web history" | "Session tab" => 1,
-        _ => 2,
+    rows.sort_by_key(|row| {
+        (
+            row.is_partial_match(),
+            match row.text("Kind").as_str() {
+                "Memory search" | "Web search" => 0,
+                "Web history" | "Session tab" => 1,
+                _ => 2,
+            },
+        )
     });
-    rows.truncate(MAX_ROWS);
-    if rows.len() == MAX_ROWS {
+    let limits = super::partial::bound(&mut rows, MAX_ROWS, MAX_PARTIAL_ROWS);
+    if report_limits.0
+        || limits.0
+        || rows.iter().filter(|row| !row.is_partial_match()).count() == MAX_ROWS
+    {
         warnings.push(format!(
             "Stopped at the {MAX_ROWS} finding limit; some URLs may be omitted."
         ));
+    }
+    if report_limits.1 || limits.1 {
+        warnings.push(format!("Partial browser report limit reached ({MAX_PARTIAL_ROWS} rows); strict recovery continued."));
     }
     let message = if !include_memory {
         format!(
@@ -281,6 +300,58 @@ pub(super) fn timestamp(microseconds: i64, chrome: bool) -> String {
 }
 
 pub(super) use search::search_terms;
+
+/// A single-label authority needs explicit path context to survive relaxed URL
+/// filtering. Bare scheme markers and numeric/garbled hostnames remain noise.
+fn intranet_url(url: &url::Url) -> bool {
+    let Some(url::Host::Domain(host)) = url.host() else {
+        return false;
+    };
+    (3..=63).contains(&host.len())
+        && !host.contains('.')
+        && !host.starts_with('-')
+        && !host.ends_with('-')
+        && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && host.bytes().filter(u8::is_ascii_alphabetic).count() >= 2
+        && url.path().len() > 1
+}
+
+fn session_candidate(
+    rows: &mut Vec<Record>,
+    browser: &str,
+    address: &str,
+    title: &str,
+    observation: Value,
+    failures: &[&str],
+) {
+    if rows.len() >= MAX_PARTIAL_SESSION_ROWS
+        || address.len() > 4096
+        || title.len() > 4096
+        || address.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return;
+    }
+    let Ok(url) = url::Url::parse(address) else {
+        return;
+    };
+    let Some(host) = url.host_str() else {
+        return;
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || (!host.contains('.') && host != "localhost" && !intranet_url(&url))
+    {
+        return;
+    }
+    let mut row = record(json!({
+        "Kind":"Session navigation candidate", "Browser":browser, "URL":address, "Title":title,
+        "Observation":observation,
+        "Interpretation":"Readable navigation entry without the state needed to recover a selected session tab. It does not establish a visit, active tab or submitted search."
+    }));
+    super::partial::mark(&mut row, "Browser session navigation", failures);
+    rows.push(row);
+}
 
 fn push(
     rows: &mut Vec<Record>,
@@ -429,21 +500,38 @@ fn firefox_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
     let windows = value["windows"]
         .as_array()
         .ok_or("Session JSON has no windows")?;
+    let mut partial_rows = Vec::new();
     for (w, window) in windows.iter().enumerate() {
         let Some(tabs) = window["tabs"].as_array() else {
             continue;
         };
         for (t, tab) in tabs.iter().enumerate() {
-            let Some(index) = tab["index"].as_u64().and_then(|v| v.checked_sub(1)) else {
+            let Some(entries) = tab["entries"].as_array() else {
                 continue;
             };
-            let Some(entry) = tab["entries"]
-                .as_array()
-                .and_then(|entries| entries.get(index as usize))
+            let selected = tab["index"].as_u64().and_then(|v| v.checked_sub(1));
+            let selected_entry = selected
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| entries.get(index));
+            let Some((index, entry, address)) =
+                selected.zip(selected_entry).and_then(|(index, entry)| {
+                    entry["url"].as_str().map(|address| (index, entry, address))
+                })
             else {
-                continue;
-            };
-            let Some(address) = entry["url"].as_str() else {
+                for (index, entry) in entries.iter().enumerate().rev().take(32) {
+                    if let Some(address) = entry["url"].as_str() {
+                        session_candidate(
+                            &mut partial_rows,
+                            "Firefox",
+                            address,
+                            entry["title"].as_str().unwrap_or(""),
+                            json!({"Window":w+1,"Tab":t+1,"Navigation index":index+1,"State":"Selection not recovered"}),
+                            &[
+                                "Selected navigation index or selected entry is missing or unreadable",
+                            ],
+                        );
+                    }
+                }
                 continue;
             };
             push(
@@ -457,7 +545,13 @@ fn firefox_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
             );
         }
     }
-    Ok(())
+    let limited = partial_rows.len() == MAX_PARTIAL_SESSION_ROWS;
+    rows.extend(partial_rows);
+    if limited {
+        Err("Partial session navigation limit reached; strict tabs were retained".into())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -497,6 +591,7 @@ fn chromium_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
     }
     let mut tabs: BTreeMap<i32, Tab> = BTreeMap::new();
     let mut closed_windows = HashSet::new();
+    let mut closed_tabs = HashSet::new();
     let mut offset = 8;
     let mut truncated = false;
     while offset < data.len() {
@@ -517,6 +612,7 @@ fn chromium_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
         match command[0] {
             0 => {
                 if let (Some(window), Some(tab)) = (int(payload, 0), int(payload, 4)) {
+                    closed_tabs.remove(&tab);
                     tabs.entry(tab).or_default().window = Some(window);
                 }
             }
@@ -543,6 +639,7 @@ fn chromium_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
             16 => {
                 if let Some(tab) = int(payload, 0) {
                     tabs.remove(&tab);
+                    closed_tabs.insert(tab);
                 }
             }
             17 => {
@@ -585,11 +682,16 @@ fn chromium_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
             _ => {}
         }
     }
+    let mut partial_rows = Vec::new();
     for (id, tab) in tabs {
-        if tab.window.is_none() || tab.window.is_some_and(|w| closed_windows.contains(&w)) {
+        if closed_tabs.contains(&id) || tab.window.is_some_and(|w| closed_windows.contains(&w)) {
             continue;
         }
-        if let Some((url, title)) = tab.navigation.get(&tab.selected) {
+        if let Some((url, title)) = tab
+            .navigation
+            .get(&tab.selected)
+            .filter(|_| tab.window.is_some())
+        {
             push(
                 rows,
                 "Session tab",
@@ -599,10 +701,35 @@ fn chromium_session(data: &[u8], rows: &mut Vec<Record>) -> Result<(), String> {
                 None,
                 json!({"Window":tab.window,"Tab":id,"Navigation index":tab.selected,"State":"Saved session"}),
             );
+        } else {
+            for (index, (url, title)) in tab.navigation.iter().rev().take(32) {
+                if *index < 0 {
+                    continue;
+                }
+                let mut failures = Vec::new();
+                if tab.window.is_none() {
+                    failures.push("Window association is missing");
+                }
+                if !tab.navigation.contains_key(&tab.selected) {
+                    failures.push("Selected navigation entry is missing");
+                }
+                session_candidate(
+                    &mut partial_rows,
+                    "Chromium",
+                    url,
+                    title,
+                    json!({"Window":tab.window,"Tab":id,"Navigation index":index,"State":"Selected tab not recovered"}),
+                    &failures,
+                );
+            }
         }
     }
+    let partial_limited = partial_rows.len() == MAX_PARTIAL_SESSION_ROWS;
+    rows.extend(partial_rows);
     if truncated {
         Err("Session log is truncated; tabs reflect the readable prefix only".into())
+    } else if partial_limited {
+        Err("Partial session navigation limit reached; strict tabs were retained".into())
     } else {
         Ok(())
     }
@@ -657,6 +784,39 @@ mod tests {
         firefox_session(br#"{"windows":[{"tabs":[{"index":1,"entries":[{"url":"https://current.test"},{"url":"https://forward.test"}]}],"_closedTabs":[{"url":"https://closed.test"}]}]}"#,&mut rows).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].text("URL"), "https://current.test");
+    }
+    #[test]
+    fn orphan_session_entries_are_partial_and_never_generate_search_findings() {
+        let mut rows = Vec::new();
+        firefox_session(br#"{"windows":[{"tabs":[{"entries":[{"url":"https://www.google.com/search?q=orphan"},{"url":"javascript:alert(1)"},{"url":"garbage"}]},{"index":1,"entries":[{"url":"https://strict.test"}]}],"_closedTabs":[{"entries":[{"url":"https://closed.test"}]}]}]}"#, &mut rows).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text("Kind"), "Session tab");
+        assert!(rows[1].is_partial_match());
+        assert_eq!(rows[1].text("Kind"), "Session navigation candidate");
+        assert!(rows[1].text("Search terms").is_empty());
+        assert!(!rows[1].text("Validation failures").is_empty());
+    }
+
+    #[test]
+    fn chromium_partial_navigation_respects_closed_tabs_and_selected_state() {
+        let mut data = b"SNSS".to_vec();
+        data.extend(1i32.to_le_bytes());
+        navigation(&mut data, 10, 0, "https://orphan.test");
+        navigation(&mut data, 11, 0, "https://closed.test");
+        command(&mut data, 16, &11i32.to_le_bytes());
+        // A later surviving navigation record cannot resurrect a closed tab.
+        navigation(&mut data, 11, 1, "https://also-closed.test");
+        let mut payload = 1i32.to_le_bytes().to_vec();
+        payload.extend(12i32.to_le_bytes());
+        command(&mut data, 0, &payload);
+        navigation(&mut data, 12, 0, "https://strict.test");
+        let mut rows = Vec::new();
+        chromium_session(&data, &mut rows).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text("URL"), "https://strict.test");
+        assert!(!rows[0].is_partial_match());
+        assert_eq!(rows[1].text("URL"), "https://orphan.test");
+        assert!(rows[1].is_partial_match());
     }
     #[test]
     fn epochs_are_converted_without_local_timezone() {

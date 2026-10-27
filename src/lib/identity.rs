@@ -62,7 +62,7 @@ pub(super) fn describe(plugin: &str, row: &Record) -> ProcessIdentity {
         .copied()
         .unwrap_or("");
     let os = parts.first().copied().unwrap_or("");
-    let role = if matches!(os, "windows" | "linux" | "mac") {
+    let role = if !row.is_partial_match() && matches!(os, "windows" | "linux" | "mac") {
         match family {
             "pslist" | "psscan" | "pstree" | "psaux" => "inventory",
             "cmdline" => "command",

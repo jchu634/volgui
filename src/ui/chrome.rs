@@ -218,7 +218,14 @@ impl Workspace {
                     }),
             );
         }
-        menu
+        let weak = weak.clone();
+        menu.separator().item(
+            PopupMenuItem::new("Show partial matches")
+                .checked(workspace.settings.show_partial_matches)
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| this.toggle_partial_matches(cx));
+                }),
+        )
     }
     pub(in crate::ui) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let workspace = cx.entity().downgrade();
@@ -239,6 +246,11 @@ impl Workspace {
     }
     pub(in crate::ui) fn render_settings_content(&self, cx: &mut Context<Self>) -> AnyElement {
         div().flex().flex_col().gap_3().w_full()
+            .child(heading("RESULTS",cx))
+            .child(Checkbox::new("show-partial-matches").label("Show partial matches")
+                .checked(self.settings.show_partial_matches)
+                .on_click(cx.listener(|this,_,_,cx|this.toggle_partial_matches(cx))))
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Show damaged process candidates with a bright amber background. Partial matches remain unverified and do not establish socket or file ownership. Rerun Download and execution investigation once to recover partial candidates in older cases. Other parsers keep their existing validation rules."))
             .child(heading("ANALYSIS QUEUE",cx))
             .child(heading("Maximum simultaneous jobs",cx))
             .child(div().flex().gap_2()

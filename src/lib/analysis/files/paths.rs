@@ -11,6 +11,68 @@ use std::{
 const CHUNK: usize = 1024 * 1024;
 const WINDOW: usize = 8192;
 pub(super) const MAX_PATHS: usize = 10_000;
+pub(super) const MAX_PARTIAL_PATHS: usize = 1_000;
+
+fn partial_path(text: &str) -> Option<&str> {
+    let name = text.trim_start();
+    if name.len() > 2048
+        || name.contains([':', '"', '<', '>', '|', '?', '*', '\u{fffd}'])
+        || name.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let parts: Vec<_> = name.split('\\').collect();
+    if !(2..=20).contains(&parts.len()) {
+        return None;
+    }
+    let components = if name.starts_with("\\\\") {
+        let host = *parts.get(2)?;
+        if host.len() < 2
+            || host.len() > 253
+            || !host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.'))
+            || host.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || label.starts_with('-')
+                    || label.ends_with('-')
+            })
+            || parts.len() < 5
+        {
+            return None;
+        }
+        &parts[2..]
+    } else if name.starts_with('\\') {
+        if parts.len() < 3 {
+            return None;
+        }
+        &parts[1..]
+    } else {
+        &parts[..]
+    };
+    if components
+        .iter()
+        .any(|p| p.is_empty() || p.len() > 255 || p.trim() != *p)
+    {
+        return None;
+    }
+    let file = components.last()?;
+    let stem = file.get(..file.len().checked_sub(4)?)?;
+    let letters = stem
+        .chars()
+        .filter(char::is_ascii_alphabetic)
+        .collect::<std::collections::BTreeSet<_>>();
+    if !file.to_ascii_lowercase().ends_with(".exe")
+        || letters.len() < 3
+        || stem
+            .chars()
+            .any(|c| !(c.is_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.')))
+    {
+        return None;
+    }
+    Some(name)
+}
 
 pub(super) fn scan(
     path: &Path,
@@ -38,6 +100,7 @@ pub(super) fn scan(
     let mut processed = 0u64;
     let mut seen = HashSet::new();
     let mut rows = Vec::new();
+    let mut partial_rows = Vec::new();
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err("File path search cancelled".into());
@@ -120,10 +183,18 @@ pub(super) fn scan(
                     .collect();
                 String::from_utf16_lossy(&units)
             };
-            let Some(found) = paths.find(&text) else {
+            let strict = paths.find(&text);
+            let Some(name) = strict
+                .as_ref()
+                .map(|found| found.as_str())
+                .or_else(|| partial_path(&text))
+            else {
                 continue;
             };
-            let name = found.as_str();
+            let is_partial = strict.is_none();
+            if is_partial && partial_rows.len() >= MAX_PARTIAL_PATHS {
+                continue;
+            }
             if !seen.insert(name.to_lowercase()) {
                 continue;
             }
@@ -132,15 +203,27 @@ pub(super) fn scan(
             } else {
                 name.encode_utf16().count() * 2
             };
-            rows.push(super::super::record(serde_json::json!({
+            let mut row = super::super::record(serde_json::json!({
                 "Name": name,
                 "Kind": "Referenced executable path",
                 "Recovery status": "Path reference only",
                 "Evidence offset": absolute_end - length as u64,
                 "Encoding": (["UTF-8", "UTF-16LE", "UTF-16BE"][encoding]),
                 "Source file": path.display().to_string()
-            })));
+            }));
+            if is_partial {
+                super::super::partial::mark(
+                    &mut row,
+                    "Executable path reference",
+                    &["No drive-qualified absolute Windows path"],
+                );
+                row.fields.insert("Interpretation".into(), "Executable path bytes with directory context; the drive or original root is unverified. This does not establish file presence, ownership or recoverability.".into());
+                partial_rows.push(row);
+            } else {
+                rows.push(row);
+            }
             if rows.len() == MAX_PATHS {
+                rows.extend(partial_rows);
                 return Ok(rows);
             }
         }
@@ -156,12 +239,102 @@ pub(super) fn scan(
             (base + buffer.len() as u64) / 1048576
         ));
     }
+    rows.extend(partial_rows);
     Ok(rows)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_paths_need_directory_context_and_a_plausible_basename() {
+        for name in [
+            r"\\server\share\payload.exe",
+            r"\Device\HarddiskVolume2\Windows\runas.exe",
+            r"Users\name\Downloads\payload.exe",
+            r".\tools\helper.exe",
+        ] {
+            assert_eq!(partial_path(name), Some(name));
+        }
+        for name in [
+            "payload.exe",
+            r"x\a.exe",
+            r"x\123456.exe",
+            r"C:\bad.exe",
+            r"\\x\share\payload.exe",
+            r"Users\\payload.exe",
+            r"junk?|\payload.exe",
+            r"x\payload.exe.config",
+        ] {
+            assert!(partial_path(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn partial_path_flood_does_not_consume_the_strict_budget() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let mut bytes = Vec::new();
+        for n in 0..MAX_PARTIAL_PATHS + 10 {
+            bytes.extend(format!("Users\\name\\helper{n}.exe\0").as_bytes());
+        }
+        bytes.extend(br"C:\Windows\strict.exe");
+        std::fs::write(temp.path(), bytes).unwrap();
+        let rows = scan(temp.path(), &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(rows.len(), MAX_PARTIAL_PATHS + 1);
+        assert!(!rows[0].is_partial_match());
+        assert_eq!(rows[0].text("Name"), r"C:\Windows\strict.exe");
+    }
+
+    #[test]
+    fn partial_paths_preserve_offsets_in_each_encoding_without_hiding_strict_paths() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let mut bytes = Vec::new();
+        let mut expected = Vec::new();
+        for (encoding, name) in [
+            r"\\server\share\payload.exe",
+            r"\Device\HarddiskVolume2\runas.exe",
+            r"Users\name\helper.exe",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = bytes.len();
+            if encoding == 0 {
+                bytes.extend(name.as_bytes());
+            } else {
+                bytes.extend(name.encode_utf16().flat_map(|c| {
+                    if encoding == 1 {
+                        c.to_le_bytes()
+                    } else {
+                        c.to_be_bytes()
+                    }
+                }));
+            }
+            bytes.extend([0; 8]);
+            expected.push((name, at as u64));
+        }
+        bytes.extend(br"C:\Windows\strict.exe");
+        std::fs::write(temp.path(), &bytes).unwrap();
+        let rows = scan(temp.path(), &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(!rows[0].is_partial_match());
+        for ((name, offset), row) in expected.into_iter().zip(&rows[1..]) {
+            assert!(row.is_partial_match());
+            assert_eq!(row.text("Name"), name);
+            let at = row.fields["Evidence offset"].as_u64().unwrap();
+            // ASCII UTF-16 can have an indistinguishable shifted byte-order
+            // interpretation. The retained encoding must reproduce its bytes.
+            assert!(at.abs_diff(offset) <= 1);
+            let encoded: Vec<_> = match row.text("Encoding").as_str() {
+                "UTF-8" => name.as_bytes().to_vec(),
+                "UTF-16LE" => name.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                "UTF-16BE" => name.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+                _ => unreachable!(),
+            };
+            assert_eq!(&bytes[at as usize..at as usize + encoded.len()], encoded);
+        }
+    }
 
     #[test]
     fn references_keep_physical_offsets_encodings_and_chunk_boundaries() {

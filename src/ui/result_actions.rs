@@ -203,6 +203,7 @@ impl Workspace {
     }
     pub(super) fn active_query(&self, cx: &App) -> Query {
         Query {
+            include_partial: self.settings.show_partial_matches,
             filters: if matches!(
                 self.result_group(),
                 Some(ArtifactGroup::Web | ArtifactGroup::Downloads | ArtifactGroup::Quarantine)
@@ -249,6 +250,12 @@ impl Workspace {
             .map(|case| (case.directory.clone(), case.document.clone()));
         let physical = self.file_offset_physical;
         let show_unavailable = self.show_unavailable_files;
+        let partial_process_runs =
+            if group == Some(ArtifactGroup::Processes) && self.settings.show_partial_matches {
+                self.group_runs(ArtifactGroup::Downloads)
+            } else {
+                vec![]
+            };
         let file_runs: Vec<_> = if group == Some(ArtifactGroup::Processes) && self.show_file_handles
         {
             self.group_runs(ArtifactGroup::Files)
@@ -288,7 +295,8 @@ impl Workspace {
                 let mut file_states = HashMap::new();
                 let tree = match group {
                     Some(ArtifactGroup::Processes) => {
-                        let mut files = store.tree_entries(&file_runs)?;
+                        let mut files =
+                            store.tree_entries_with_partial(&file_runs, query.include_partial)?;
                         if let Some(recovery) = &recovery {
                             (files, file_states) = volgui::analysis::files::filter_entries(
                                 &store,
@@ -306,11 +314,15 @@ impl Workspace {
                         })?;
                         let mut matches = index.ids.clone();
                         matches.extend(file_matches.ids);
-                        let tree = ResultTree::processes_with_files(
-                            store.tree_entries(&query.runs)?,
+                        let mut tree = ResultTree::processes_with_files(
+                            store.tree_entries_with_partial(&query.runs, query.include_partial)?,
                             files,
                             &matches,
                         );
+                        let partial =
+                            store.partial_process_entries(&partial_process_runs, &query.text)?;
+                        index.ids.extend(partial.iter().map(|entry| entry.id));
+                        tree.append_partial_processes(partial);
                         let mut seen: HashSet<_> = index.ids.iter().copied().collect();
                         for (i, _) in &tree.visible {
                             if matches!(
@@ -325,7 +337,8 @@ impl Workspace {
                         tree
                     }
                     Some(ArtifactGroup::Files) => {
-                        let mut files = store.tree_entries(&query.runs)?;
+                        let mut files =
+                            store.tree_entries_with_partial(&query.runs, query.include_partial)?;
                         if let Some(recovery) = &recovery {
                             (files, file_states) = volgui::analysis::files::filter_entries(
                                 &store,
@@ -516,11 +529,16 @@ impl Workspace {
         self.raw_expanded.clear();
         self.relation_epoch += 1;
         self.relations = ProcessRelations::default();
-        if let Some(pid) = self.selected.as_ref().and_then(|r| {
-            ["PID", "Pid", "pid"]
-                .iter()
-                .find_map(|name| r.record.fields.get(*name).map(display_value))
-        }) && let Some(store) = self.store()
+        if let Some(pid) = self
+            .selected
+            .as_ref()
+            .filter(|r| !r.record.is_partial_match())
+            .and_then(|r| {
+                ["PID", "Pid", "pid"]
+                    .iter()
+                    .find_map(|name| r.record.fields.get(*name).map(display_value))
+            })
+            && let Some(store) = self.store()
         {
             let mut runs = self.group_runs(ArtifactGroup::Processes);
             runs.sort_by_key(|id| {

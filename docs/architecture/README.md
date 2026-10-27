@@ -8,6 +8,7 @@
 - [File recovery](file-recovery-design.md)
 - [Network investigation](network-design.md)
 - [Network process attribution](network-attribution-design.md)
+- [Partial matches and recovery limits](partial-matches-design.md)
 - [Tree detail columns](tree-details-design.md)
 - [Session scroll state](scroll-state.md)
 

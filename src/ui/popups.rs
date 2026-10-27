@@ -112,6 +112,7 @@ impl Workspace {
         let has_failed = runs
             .iter()
             .any(|run| matches!(run.status, RunStatus::Failed | RunStatus::Interrupted));
+        let has_retryable = runs.iter().any(|run| run.status.can_retry());
         let has_finished = runs
             .iter()
             .any(|run| QueueClearScope::Finished.includes(run.status));
@@ -215,26 +216,16 @@ impl Workspace {
                                             this.select_run(id.clone(), window, cx);
                                         })),
                                 )
-                                .when(
-                                    matches!(
-                                        run.status,
-                                        RunStatus::Failed
-                                            | RunStatus::Interrupted
-                                            | RunStatus::Cancelled
-                                    ),
-                                    |row| {
-                                        row.child(
-                                            app_button(key("retry-queued-run", &retry))
-                                                .xsmall()
-                                                .label("Retry")
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.retry_run(&retry, window, cx)
-                                                    },
-                                                )),
-                                        )
-                                    },
-                                )
+                                .when(run.status.can_retry(), |row| {
+                                    row.child(
+                                        app_button(key("retry-queued-run", &retry))
+                                            .xsmall()
+                                            .label("Retry")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.retry_run(&retry, window, cx)
+                                            })),
+                                    )
+                                })
                                 .when(!active, |row| {
                                     row.child(
                                         app_button(key("remove-queued-run", &remove))
@@ -323,9 +314,9 @@ impl Workspace {
                         app_button("queue-retry-all-failed")
                             .small()
                             .outline()
-                            .label("Retry all failed")
-                            .tooltip("Retry all failed and interrupted analyses")
-                            .disabled(!has_failed)
+                            .label("Retry all")
+                            .tooltip("Retry all failed, interrupted and cancelled analyses")
+                            .disabled(!has_retryable)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.retry_all_failed(window, cx);
                             })),

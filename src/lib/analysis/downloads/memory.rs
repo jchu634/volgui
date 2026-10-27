@@ -42,7 +42,7 @@ fn candidate(
 ) -> Option<Record> {
     let start = at.checked_sub(NAME)?;
     let bytes = bytes.get(start..start + EXITED + 8)?;
-    if bytes[0] != 3 || bytes.get(NAME + name.len()) != Some(&0) {
+    if bytes.get(NAME + name.len()) != Some(&0) {
         return None;
     }
     let pid = integer(bytes, PID)?;
@@ -54,11 +54,6 @@ fn candidate(
         || !pid.is_multiple_of(4)
         || parent > u64::from(u32::MAX)
         || !parent.is_multiple_of(4)
-        || dtb == 0
-        || dtb & 0xfff != 0
-        || link >> 48 != 0xffff
-        || link & 7 != 0
-        || integer(bytes, 16)? != link
     {
         return None;
     }
@@ -76,10 +71,47 @@ fn candidate(
         }
         exited.to_rfc3339()
     };
-    Some(record(
+    let mut failures = Vec::new();
+    if bytes[0] != 3 {
+        failures.push(format!(
+            "Process header is 0x{:02x}; expected 0x03",
+            bytes[0]
+        ));
+    }
+    if dtb == 0 || dtb & 0xfff != 0 {
+        failures.push(format!(
+            "Directory table base 0x{dtb:x} is zero or not page aligned"
+        ));
+    }
+    if link >> 48 != 0xffff || link & 7 != 0 || integer(bytes, 16)? != link {
+        failures.push("Dispatcher links fail the supported process layout checks".into());
+    }
+    let partial = !failures.is_empty();
+    // A damaged leading region is admissible only when the surviving process
+    // identity has a valid time, terminated name, and two aligned kernel links.
+    if partial
+        && [0x448, 0x450].into_iter().any(|at| {
+            integer(bytes, at).is_none_or(|pointer| pointer >> 48 != 0xffff || pointer & 7 != 0)
+        })
+    {
+        return None;
+    }
+    let mut row = record(
         json!({"PID":pid,"PPID":parent,"Process":name,"CreateTime":birth.to_rfc3339(),
         "ExitTime":exit,"Profile":PROFILE,"Directory table base":format!("0x{dtb:x}")}),
-    ))
+    );
+    if partial {
+        row.fields.insert("Partial match".into(), true.into());
+        row.fields
+            .insert("Partial match kind".into(), "Residual process".into());
+        row.fields
+            .insert("Validation failures".into(), json!(failures));
+        row.fields.insert(
+            "Process header".into(),
+            format!("0x{:02x}", bytes[0]).into(),
+        );
+    }
+    Some(row)
 }
 
 pub(super) fn scan(
@@ -121,6 +153,7 @@ pub(super) fn scan(
     let mut base = 0u64;
     let mut scanned = 0u64;
     let mut matches = BTreeMap::new();
+    let mut partial_matches = BTreeMap::new();
     let mut reference = BTreeSet::new();
     let mut limited = omitted_names > 0;
     loop {
@@ -140,21 +173,31 @@ pub(super) fn scan(
                     if let Some(mut row) = candidate(&buffer, at, name, latest) {
                         let pid = super::number(&row, "PID").unwrap();
                         let birth = super::time(&row.text("CreateTime")).unwrap();
-                        if anchors.iter().any(|(id, expected, time)| {
-                            *id == pid
-                                && expected == name
-                                && (*time - birth).num_milliseconds().abs() < 1000
-                        }) {
+                        if !row.is_partial_match()
+                            && anchors.iter().any(|(id, expected, time)| {
+                                *id == pid
+                                    && expected == name
+                                    && (*time - birth).num_milliseconds().abs() < 1000
+                            })
+                        {
                             reference.insert(pid);
                         }
-                        if names.contains(name) && matches.len() < LIMIT {
+                        let findings = if row.is_partial_match() {
+                            &mut partial_matches
+                        } else {
+                            &mut matches
+                        };
+                        let key = (pid, name.clone(), row.text("CreateTime"));
+                        if names.contains(name)
+                            && (findings.len() < LIMIT || findings.contains_key(&key))
+                        {
                             row.fields.insert(
                                 "Acquisition offset".into(),
                                 (base + (at - NAME) as u64).into(),
                             );
                             row.fields
                                 .insert("Match offset".into(), (base + at as u64).into());
-                            matches.insert((pid, name.clone(), row.text("CreateTime")), row);
+                            findings.insert(key, row);
                         } else if names.contains(name) {
                             limited = true;
                         }
@@ -177,6 +220,9 @@ pub(super) fn scan(
         ));
     }
     let enabled = reference.len() >= 5;
+    // Partial candidates have their own bound and never displace intact copies.
+    partial_matches.retain(|key, _| !matches.contains_key(key));
+    matches.extend(partial_matches);
     let processes = if enabled {
         matches
             .into_values()
@@ -189,8 +235,12 @@ pub(super) fn scan(
     } else {
         Vec::new()
     };
+    let partial_count = processes
+        .iter()
+        .filter(|row: &&Record| row.is_partial_match())
+        .count();
     let message = format!(
-        "Scanned {total} acquisition bytes. Residual process profile {} against {} inventory PIDs. Carved process copies do not establish acquisition-time activity.{}",
+        "Scanned {total} acquisition bytes. Residual process profile {} against {} inventory PIDs. {partial_count} partial process candidates retained; hidden unless Show partial matches is enabled. Carved process copies do not establish acquisition-time activity.{}",
         if enabled { "validated" } else { "not enabled" },
         reference.len(),
         if limited {
@@ -254,5 +304,79 @@ mod tests {
         .unwrap();
         assert!(found.is_empty());
         assert!(message.contains("not enabled"));
+    }
+
+    #[test]
+    fn damaged_leading_fields_need_a_surviving_process_identity() {
+        let birth = 133390291766718843;
+        let latest = filetime(birth).unwrap();
+        let mut bytes = vec![0; 0x1000];
+        process(&mut bytes, 0, "wbadmin.exe", 12228, birth);
+        bytes[0] = 0x48;
+        bytes[0x28..0x30].copy_from_slice(&0xe4800000800u64.to_le_bytes());
+        for at in [0x448, 0x450] {
+            bytes[at..at + 8].copy_from_slice(&0xffff9b06f7957508u64.to_le_bytes());
+        }
+        let row = candidate(&bytes, NAME, "wbadmin.exe", latest).unwrap();
+        assert!(row.is_partial_match());
+        assert_eq!(row.fields["PID"], 12228);
+        assert_eq!(
+            row.fields["Validation failures"].as_array().unwrap().len(),
+            2
+        );
+        let good = bytes.clone();
+        for range in [CREATED..CREATED + 8, 0x448..0x450] {
+            bytes = good.clone();
+            bytes[range].fill(0);
+            assert!(candidate(&bytes, NAME, "wbadmin.exe", latest).is_none());
+        }
+        bytes = good;
+        bytes[NAME + 11] = b'x';
+        assert!(candidate(&bytes, NAME, "wbadmin.exe", latest).is_none());
+    }
+
+    #[test]
+    fn partial_copies_cannot_corroborate_a_profile_or_displace_an_intact_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("partial.raw");
+        let birth = 133390291766718843;
+        let latest = filetime(birth).unwrap().to_rfc3339();
+        let mut bytes = vec![0; 0x10000];
+        let mut anchors = Vec::new();
+        for i in 0..5 {
+            let base = 4096 * i;
+            let name = format!("anchor{i}.exe");
+            let pid = 100 + i as u64 * 4;
+            process(&mut bytes, base, &name, pid, birth);
+            bytes[base] = 0x48;
+            for at in [0x448, 0x450] {
+                bytes[base + at..base + at + 8]
+                    .copy_from_slice(&0xffff800000001008u64.to_le_bytes());
+            }
+            anchors.push((pid, name, latest.clone()));
+        }
+        process(&mut bytes, 0x6000, "payload.exe", 900, birth);
+        fs::write(&path, &bytes).unwrap();
+        let names = ["payload.exe".into()].into();
+        let (found, message, _) =
+            scan(&path, &names, &anchors, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert!(found.is_empty(), "{message}");
+        assert!(message.contains("not enabled against 0"));
+
+        for i in 0..5 {
+            bytes[4096 * i] = 3;
+        }
+        process(&mut bytes, 0x8000, "payload.exe", 900, birth);
+        bytes[0x8000] = 0x48;
+        for at in [0x448, 0x450] {
+            bytes[0x8000 + at..0x8000 + at + 8]
+                .copy_from_slice(&0xffff800000001008u64.to_le_bytes());
+        }
+        fs::write(&path, &bytes).unwrap();
+        let (found, message, _) =
+            scan(&path, &names, &anchors, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(found.len(), 1, "{message}");
+        assert!(!found[0].is_partial_match());
+        assert_eq!(found[0].fields["Acquisition offset"], 0x6000);
     }
 }

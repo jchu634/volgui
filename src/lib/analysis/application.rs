@@ -24,11 +24,13 @@ use std::{
 pub const MEMMAP: &str = "windows.memmap.Memmap";
 pub const VADINFO: &str = "windows.vadinfo.VadInfo";
 pub const INVENTORY: [&str; 2] = ["windows.pslist.PsList", "windows.cmdline.CmdLine"];
-pub const HELP: &str = "Recover text from a chosen process ID, including old edits and unsaved text. Prerequisites and dumps are collected automatically.\n\nOptions:\n  --pid <PID>       Choose the process to scan (required).\n  --contains <text> Retain text containing this literal string, ignoring ASCII case.\n\nText candidates can include old edits, resources and partial buffers. File paths in the same process do not establish which document owns a text candidate. Tab state, save state and current buffer order are unknown. UTF-8 and UTF-16 text, addresses and dump offsets are retained. Text must contain at least eight characters, four ASCII letters or digits, and at least half ASCII characters. Text entirely in other scripts may be omitted.";
+pub const HELP: &str = "Recover text from a chosen process ID, including old edits and unsaved text. Prerequisites and dumps are collected automatically.\n\nOptions:\n  --pid <PID>       Choose the process to scan (required).\n  --contains <text> Retain text containing this literal string, ignoring ASCII case.\n\nText candidates can include old edits, resources and partial buffers. File paths in the same process do not establish which document owns a text candidate. Tab state, save state and current buffer order are unknown. UTF-8 and UTF-16 text, addresses and dump offsets are retained. Strict text requires eight characters, four ASCII letters or digits and at least half ASCII characters. Show partial matches also reveals bounded word-like short text and longer multiword text that fails the ASCII anchors. Unstructured or very short text in other scripts may be omitted.";
 const CHUNK: usize = 1024 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_ROWS: usize = 50_000;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PARTIAL_ROWS: usize = 2_000;
+const MAX_PARTIAL_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROCESSES: usize = 64;
 
 #[derive(Default)]
@@ -366,6 +368,50 @@ struct Fragment {
     address: u64,
     length: usize,
     boundary: &'static str,
+    failures: Vec<&'static str>,
+}
+
+fn text_failures(text: &str) -> Option<Vec<&'static str>> {
+    let count = text.chars().count();
+    let ascii_alnum = text.chars().filter(char::is_ascii_alphanumeric).count();
+    let ascii = text.chars().filter(char::is_ascii).count();
+    let mut failures = Vec::new();
+    if count < 8 {
+        failures.push("Fewer than eight characters");
+    }
+    if ascii_alnum < 4 {
+        failures.push("Fewer than four ASCII letters or digits");
+    }
+    if ascii * 2 < count {
+        failures.push("Less than half ASCII characters");
+    }
+    if failures.is_empty() {
+        return Some(failures);
+    }
+    // Short heap words and shifted UTF-16 can look printable. Require a word
+    // with varied letters, or longer multiword text with strong letter density.
+    if text.len() > 4096 || count < 6 || (8..12).contains(&count) {
+        return None;
+    }
+    let letters = text.chars().filter(|c| c.is_alphabetic()).count();
+    let distinct = text
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let short_word = (6..8).contains(&count)
+        && text.chars().all(|c| c.is_ascii_alphabetic())
+        && (text.bytes().all(|c| c.is_ascii_lowercase())
+            || text.bytes().all(|c| c.is_ascii_uppercase())
+            || text.as_bytes()[1..].iter().all(u8::is_ascii_lowercase))
+        && distinct >= 4
+        && text.bytes().any(|c| b"aeiouAEIOU".contains(&c));
+    let words = text
+        .split_whitespace()
+        .filter(|word| word.chars().filter(|c| c.is_alphabetic()).count() >= 3)
+        .count();
+    let multiword = count >= 12 && letters * 4 >= count * 3 && distinct >= 4 && words >= 2;
+    (short_word || multiword).then_some(failures)
 }
 
 #[derive(Default)]
@@ -401,13 +447,9 @@ impl Lane {
                 .collect();
             String::from_utf16(&units).ok()
         };
-        if let Some(text) = text.filter(|s| {
-            let count = s.chars().count();
-            // ASCII anchors reject swapped UTF-16 and arbitrary heap words.
-            count >= 8
-                && s.chars().filter(char::is_ascii_alphanumeric).count() >= 4
-                && s.chars().filter(char::is_ascii).count() * 2 >= count
-        }) {
+        if let Some((text, failures)) =
+            text.and_then(|text| text_failures(&text).map(|failures| (text, failures)))
+        {
             emit(Fragment {
                 text,
                 encoding,
@@ -419,6 +461,7 @@ impl Lane {
                 } else {
                     boundary
                 },
+                failures,
             });
         }
         self.bytes.clear();
@@ -724,6 +767,9 @@ pub(super) fn analyze(
         }
     }
     let mut rows: Vec<Record> = Vec::new();
+    let mut partial_rows = Vec::new();
+    let mut partial_bytes = 0;
+    let mut partial_limited = false;
     let mut bytes = 0;
     let mut warnings = Vec::new();
     let mut parsed = 0;
@@ -764,7 +810,9 @@ pub(super) fn analyze(
                 return Err("No readable private writable memory regions".into());
             }
             let mut seen: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
+            let mut partial_seen = BTreeMap::new();
             let start = rows.len();
+            let partial_start = partial_rows.len();
             limited |= scan(&mut file, &ranges, cancel, |fragment| {
                 if opts
                     .contains
@@ -774,18 +822,33 @@ pub(super) fn analyze(
                     return true;
                 }
                 let key = (fragment.text.clone(), fragment.encoding);
+                let is_partial = !fragment.failures.is_empty();
+                let (target, seen, retained_bytes, row_limit, byte_limit) = if is_partial {
+                    (
+                        &mut partial_rows,
+                        &mut partial_seen,
+                        &mut partial_bytes,
+                        MAX_PARTIAL_ROWS,
+                        MAX_PARTIAL_BYTES,
+                    )
+                } else {
+                    (&mut rows, &mut seen, &mut bytes, MAX_ROWS, MAX_BYTES)
+                };
                 if let Some(&index) = seen.get(&key) {
-                    let row = &mut rows[index];
+                    let row = &mut target[index];
                     let count = row.fields["Occurrences"].as_u64().unwrap_or(1) + 1;
                     row.fields.insert("Occurrences".into(), json!(count));
                     return true;
                 }
-                if rows.len() >= MAX_ROWS || bytes + fragment.text.len() > MAX_BYTES {
-                    return false;
+                if target.len() >= row_limit || *retained_bytes + fragment.text.len() > byte_limit {
+                    if is_partial {
+                        partial_limited = true;
+                    }
+                    return is_partial;
                 }
-                bytes += fragment.text.len();
-                seen.insert(key, rows.len());
-                rows.push(record(json!({
+                *retained_bytes += fragment.text.len();
+                seen.insert(key, target.len());
+                let mut row = record(json!({
                     "Application": if process.name.eq_ignore_ascii_case("notepad.exe") { "Notepad" } else { &process.name },
                     "PID":pid, "Process":process.name, "Command line":process.command,
                     "Kind":kind(&fragment.text), "Text":fragment.text, "Encoding":fragment.encoding,
@@ -795,10 +858,15 @@ pub(super) fn analyze(
                     "Source file":path.strip_prefix(directory).unwrap_or(&path).display().to_string(),
                     "Save state":"Unknown", "Document association":"Unknown",
                     "Observation":"Carved text in private writable process memory. May include old edits, resources, undo data or partial buffers. A path or command line in this process does not bind text to a file or establish current tab contents. Repeated exact strings within this source share one row; the first address is retained."
-                })));
+                }));
+                if is_partial {
+                    super::partial::mark(&mut row, "Process memory text", &fragment.failures);
+                }
+                target.push(row);
                 true
             })?;
             bytes -= coalesce_mirrors(&mut rows, &seen, start);
+            partial_bytes -= coalesce_mirrors(&mut partial_rows, &partial_seen, partial_start);
             Ok::<_, String>(())
         })();
         match result {
@@ -822,10 +890,15 @@ pub(super) fn analyze(
     if limited {
         warnings.push("Stopped at the finding or text-byte limit; use --pid or --contains to narrow recovery. Rerunning the same request uses the same limits.".into());
     }
+    if partial_limited {
+        warnings.push(format!("Partial text limit reached ({MAX_PARTIAL_ROWS} rows or {MAX_PARTIAL_BYTES} UTF-8 bytes); strict recovery continued."));
+    }
+    let partial_count = partial_rows.len();
+    rows.extend(partial_rows);
     Ok((
         super::table(rows).with_warnings(warnings.clone()),
         format!(
-            "Recovered {count} text candidates from {parsed} application process dumps. Only private writable user mappings were scanned. Text fragments do not establish current document, tab order or save state. Exact duplicates retain their first source address.{}\n{}",
+            "Recovered {count} text candidates and {partial_count} partial candidates from {parsed} application process dumps. Partial candidates are hidden unless Show partial matches is enabled. Only private writable user mappings were scanned. Text fragments do not establish current document, tab order or save state. Exact duplicates retain their first source address.{}\n{}",
             if limited {
                 " Stopped at the finding or text-byte limit; use --pid or --contains to narrow recovery."
             } else {
@@ -840,6 +913,32 @@ pub(super) fn analyze(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn partial_text_requires_word_evidence_and_rejects_printable_heap_noise() {
+        for text in ["report", "welcome", "这是一些未保存的文字 还有另外一些文字"]
+        {
+            assert!(!text_failures(text).unwrap().is_empty(), "{text}");
+        }
+        assert!(
+            text_failures("A normal document fragment")
+                .unwrap()
+                .is_empty()
+        );
+        for text in [
+            "abc",
+            "aaaaaa",
+            "123456",
+            "x7Zp9Q",
+            "hBzSaR",
+            "䄀䈀䌀䐀䔀䘀䜀䠀",
+            "@@@@@@",
+            "短い文",
+        ] {
+            assert!(text_failures(text).is_none(), "{text}");
+        }
+        assert!(text_failures(&"文".repeat(5000)).is_none());
+    }
 
     #[test]
     fn scans_encodings_chunk_boundaries_and_mapping_gaps_without_joining_them() {

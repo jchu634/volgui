@@ -20,6 +20,7 @@ pub(in crate::analysis) const MEMMAP: &str = "windows.memmap.Memmap";
 const CHUNK: usize = 1024 * 1024;
 const MAX_URL: usize = 8192;
 const MAX_PROCESS_URLS: usize = 10_000;
+const MAX_PARTIAL_URLS: usize = 1_000;
 
 #[derive(Default)]
 struct Process {
@@ -219,6 +220,13 @@ struct Hit {
     encoding: &'static str,
     complete: bool,
     count: usize,
+    partial: bool,
+}
+
+#[derive(Default)]
+struct UrlLimits {
+    strict: bool,
+    partial: bool,
 }
 
 // Keep the exact string as the key: query strings and fragments can be evidence.
@@ -227,8 +235,11 @@ fn scan(
     regions: &[Region],
     cancel: &AtomicBool,
     progress: &impl Fn(String),
-) -> Result<(BTreeMap<String, Hit>, bool), String> {
+) -> Result<(BTreeMap<String, Hit>, UrlLimits), String> {
     let mut hits = BTreeMap::new();
+    let mut strict_count = 0;
+    let mut partial_count = 0;
+    let mut limits = UrlLimits::default();
     let mut chunk = vec![0; CHUNK];
     let mut buffer = Vec::with_capacity(CHUNK + MAX_URL);
     let mut last_progress = Instant::now();
@@ -260,7 +271,9 @@ fn scan(
                 if at.is_multiple_of(4096) {
                     cancelled(cancel)?;
                 }
-                if let Some((url, encoding, complete)) = url_at(&buffer[at..], remaining == 0) {
+                if let Some((url, encoding, complete, partial)) =
+                    url_at(&buffer[at..], remaining == 0)
+                {
                     if let Some(hit) = hits.get_mut(&url) {
                         let hit: &mut Hit = hit;
                         hit.count += 1;
@@ -271,6 +284,16 @@ fn scan(
                             hit.encoding = encoding;
                         }
                     } else {
+                        if partial && partial_count >= MAX_PARTIAL_URLS {
+                            limits.partial = true;
+                            at += 1;
+                            continue;
+                        }
+                        if partial {
+                            partial_count += 1;
+                        } else {
+                            strict_count += 1;
+                        }
                         hits.insert(
                             url,
                             Hit {
@@ -279,11 +302,13 @@ fn scan(
                                 encoding,
                                 complete,
                                 count: 1,
+                                partial,
                             },
                         );
                     }
-                    if hits.len() >= MAX_PROCESS_URLS {
-                        return Ok((hits, true));
+                    if strict_count >= MAX_PROCESS_URLS {
+                        limits.strict = true;
+                        return Ok((hits, limits));
                     }
                 }
                 at += 1;
@@ -302,10 +327,10 @@ fn scan(
             last_progress = Instant::now();
         }
     }
-    Ok((hits, false))
+    Ok((hits, limits))
 }
 
-fn url_at(bytes: &[u8], final_region: bool) -> Option<(String, &'static str, bool)> {
+fn url_at(bytes: &[u8], final_region: bool) -> Option<(String, &'static str, bool, bool)> {
     let wide = bytes.starts_with(b"h\0t\0t\0p\0");
     if !wide && !bytes.starts_with(b"http://") && !bytes.starts_with(b"https://") {
         return None;
@@ -335,13 +360,21 @@ fn url_at(bytes: &[u8], final_region: bool) -> Option<(String, &'static str, boo
     let url = url::Url::parse(&text).ok()?;
     let host = url.host_str()?;
     if !matches!(url.scheme(), "http" | "https")
-        || (!host.contains('.') && host != "localhost")
         || !url.username().is_empty()
         || url.password().is_some()
     {
         return None;
     }
-    Some((text, if wide { "UTF-16LE" } else { "UTF-8" }, complete))
+    let partial = !host.contains('.') && host != "localhost";
+    if partial && (!complete || !super::intranet_url(&url)) {
+        return None;
+    }
+    Some((
+        text,
+        if wide { "UTF-16LE" } else { "UTF-8" },
+        complete,
+        partial,
+    ))
 }
 
 pub(in crate::analysis) fn analyze(
@@ -410,10 +443,10 @@ pub(in crate::analysis) fn analyze(
                 total,
                 scope,
             )?;
-            let (hits, limited) = scan(&mut file, &map, cancel, progress)?;
-            Ok((hits, limited, rejected))
+            let (hits, limits) = scan(&mut file, &map, cancel, progress)?;
+            Ok((hits, limits, rejected))
         })();
-        let (hits, limited, rejected) = match result {
+        let (hits, limits, rejected) = match result {
             Ok(result) => result,
             Err(error) => {
                 cancelled(cancel)?;
@@ -425,16 +458,21 @@ pub(in crate::analysis) fn analyze(
         if rejected > 0 {
             warnings.push(format!("PID {pid}: skipped {rejected} invalid, overlapping or truncated mapping ranges; retained other readable ranges."));
         }
-        if limited {
+        if limits.strict {
             warnings.push(format!(
-                "PID {pid}: stopped at {MAX_PROCESS_URLS} unique URLs"
+                "PID {pid}: stopped at {MAX_PROCESS_URLS} unique strict URLs"
             ));
+        }
+        if limits.partial {
+            warnings.push(format!("PID {pid}: partial URL limit reached ({MAX_PARTIAL_URLS}); strict recovery continued"));
         }
         let mut process_rows = Vec::new();
         for (url, hit) in hits {
-            let search = hit.complete.then(|| browser::search_terms(&url)).flatten();
+            let search = (hit.complete && !hit.partial)
+                .then(|| browser::search_terms(&url))
+                .flatten();
             let parsed_url = url::Url::parse(&url).map_err(|e| e.to_string())?;
-            let parameters: Vec<_> = if hit.complete {
+            let parameters: Vec<_> = if hit.complete && !hit.partial {
                 parsed_url
                     .query_pairs()
                     .map(|(name, value)| json!({"Name":name,"Value":value}))
@@ -462,14 +500,34 @@ pub(in crate::analysis) fn analyze(
                     json!(super::search::query_origin(&parsed_url)),
                 );
             }
+            if hit.partial {
+                super::super::partial::mark(
+                    &mut row,
+                    "Browser intranet URL",
+                    &["Hostname has no dot and is not localhost"],
+                );
+                row.fields.insert("Interpretation".into(), "A delimited HTTP(S) URL with a plausible intranet hostname and a nonempty path was recovered from browser memory. Host identity, navigation and user intent are unverified; query terms were not inferred.".into());
+            }
             process_rows.push(row);
         }
         super::dedup::memory_searches(&mut process_rows);
-        rows.extend(
-            process_rows
-                .into_iter()
-                .take(browser::MAX_ROWS.saturating_sub(rows.len())),
-        );
+        let mut remaining = browser::MAX_ROWS
+            .saturating_sub(rows.iter().filter(|row| !row.is_partial_match()).count());
+        rows.extend(process_rows.into_iter().filter(|row| {
+            if row.is_partial_match() {
+                return true;
+            }
+            if remaining == 0 {
+                return false;
+            }
+            remaining -= 1;
+            true
+        }));
+        let (strict_limited, partial_limited) =
+            super::super::partial::bound(rows, usize::MAX, browser::MAX_PARTIAL_ROWS);
+        if strict_limited || partial_limited {
+            warnings.push("Browser report finding limit reached; strict and partial findings have independent budgets.".into());
+        }
     }
     Ok(parsed)
 }
@@ -497,8 +555,8 @@ mod tests {
             virtual_start: 0x1000,
             length: bytes.len() as u64,
         }];
-        let (hits, limited) = scan(&mut file, &regions, &AtomicBool::new(false), &|_| {}).unwrap();
-        assert!(!limited);
+        let (hits, limits) = scan(&mut file, &regions, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert!(!limits.strict && !limits.partial);
         assert_eq!(hits.len(), 2);
         let edge = &hits["https://www.search.com/web?q=synthetic+test+query"];
         assert_eq!(edge.address, 0x1000 + offset);
@@ -567,5 +625,73 @@ mod tests {
                 .2
         );
         assert!(url_at(b"http://not-a-domain\0", true).is_none());
+    }
+
+    #[test]
+    fn partial_urls_need_a_delimiter_hostname_and_path() {
+        assert!(url_at(b"https://intranet/reports\0", true).unwrap().3);
+        for bytes in [
+            b"http://intranet/\0".as_slice(),
+            b"http://xy/login\0",
+            b"http://123a/login\0",
+            b"http://-broken/login\0",
+            b"http://user:pass@intranet/login\0",
+            b"http://intranet/login",
+        ] {
+            assert!(url_at(bytes, true).is_none(), "{bytes:?}");
+        }
+        assert!(!url_at(b"https://example.org/path\0", true).unwrap().3);
+    }
+
+    #[test]
+    fn intranet_flood_does_not_stop_later_public_urls() {
+        let mut bytes = Vec::new();
+        for n in 0..MAX_PARTIAL_URLS + 10 {
+            bytes.extend(format!("http://intranet/report/{n}\0").as_bytes());
+        }
+        let offset = bytes.len();
+        bytes.extend(b"https://example.org/strict\0");
+        let range = Region {
+            file: 0,
+            virtual_start: 0x1000,
+            length: bytes.len() as u64,
+        };
+        let (hits, limits) = scan(
+            &mut std::io::Cursor::new(bytes),
+            &[range],
+            &AtomicBool::new(false),
+            &|_| {},
+        )
+        .unwrap();
+        assert!(limits.partial);
+        assert!(!limits.strict);
+        assert_eq!(hits.len(), MAX_PARTIAL_URLS + 1);
+        assert_eq!(hits["https://example.org/strict"].offset, offset as u64);
+        assert!(!hits["https://example.org/strict"].partial);
+    }
+
+    #[test]
+    fn strict_limit_preserves_an_earlier_partial_overflow_diagnostic() {
+        let mut bytes = Vec::new();
+        for n in 0..MAX_PARTIAL_URLS + 1 {
+            bytes.extend(format!("http://intranet/report/{n}\0").as_bytes());
+        }
+        for n in 0..MAX_PROCESS_URLS {
+            bytes.extend(format!("https://example.org/{n}\0").as_bytes());
+        }
+        let range = Region {
+            file: 0,
+            virtual_start: 0x1000,
+            length: bytes.len() as u64,
+        };
+        let (hits, limits) = scan(
+            &mut std::io::Cursor::new(bytes),
+            &[range],
+            &AtomicBool::new(false),
+            &|_| {},
+        )
+        .unwrap();
+        assert!(limits.strict && limits.partial);
+        assert_eq!(hits.len(), MAX_PROCESS_URLS + MAX_PARTIAL_URLS);
     }
 }

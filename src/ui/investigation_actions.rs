@@ -528,6 +528,9 @@ impl Workspace {
         let Some(record) = self.selected.as_ref() else {
             return;
         };
+        if record.record.is_partial_match() {
+            return;
+        }
         let pid = ["PID", "Pid", "pid"]
             .iter()
             .map(|key| record.record.text(key))
@@ -578,6 +581,12 @@ impl Workspace {
     ) {
         let result = (|| {
             let record = self.selected.as_ref().ok_or("Select a process")?;
+            if record.record.is_partial_match() {
+                return Err(
+                    "Verify this partial process identity before collecting PID-owned artifacts"
+                        .into(),
+                );
+            }
             let case = self.case.as_ref().ok_or("Open a case")?;
             let source = case
                 .document

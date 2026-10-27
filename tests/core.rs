@@ -36,6 +36,17 @@ fn preserves_json_hierarchy_types_nulls_and_original_row_identity() {
 }
 
 #[test]
+fn partial_match_setting_defaults_off_for_existing_settings() {
+    let settings: Settings = serde_json::from_str("{}").unwrap();
+    assert!(!settings.show_partial_matches);
+    let enabled: Settings = serde_json::from_str("{\"show_partial_matches\":true}").unwrap();
+    assert!(enabled.show_partial_matches);
+    let restored: Settings =
+        serde_json::from_str(&serde_json::to_string(&enabled).unwrap()).unwrap();
+    assert!(restored.show_partial_matches);
+}
+
+#[test]
 fn arguments_are_literal_and_preserve_windows_paths() {
     assert_eq!(parse_arguments(r#"--pid 3488 --path "D:\Evidence Files\workstation.raw" --key 'A B' --empty "" --literal $(echo);x"#).unwrap(),
         vec!["--pid","3488","--path",r"D:\Evidence Files\workstation.raw","--key","A B","--empty","","--literal","$(echo);x"]);

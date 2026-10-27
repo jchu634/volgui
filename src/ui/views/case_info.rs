@@ -83,6 +83,7 @@ impl Workspace {
                 )
             }
         }
-        self.scroll_state.page(scroll_state::ScrollArea::CaseInfo, page)
+        self.scroll_state
+            .page(scroll_state::ScrollArea::CaseInfo, page)
     }
 }

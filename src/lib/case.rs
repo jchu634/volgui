@@ -160,6 +160,10 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
+    pub fn can_retry(self) -> bool {
+        matches!(self, Self::Failed | Self::Interrupted | Self::Cancelled)
+    }
+
     /// Completed and active runs require an override in the analysis chooser.
     pub fn blocks_plugin_selection(self) -> bool {
         matches!(

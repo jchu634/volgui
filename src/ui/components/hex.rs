@@ -153,20 +153,40 @@ impl Workspace {
         let mut content = div().flex().flex_col().gap_2().text_sm();
         match &self.hex_view {
             HexView::Idle => {
-                if matches!(self.result_group(), Some(ArtifactGroup::Files | ArtifactGroup::Processes)) {
-                    let file_target = self.selected.as_ref().and_then(|record| {
-                        let source = self.case.as_ref()?.document.runs.iter()
-                            .find(|run| run.id == record.run_id)?;
-                        volgui::extracted_files::FileDumpTarget::from_record(&source.plugin, &record.record)
-                    }).is_some();
+                if matches!(
+                    self.result_group(),
+                    Some(ArtifactGroup::Files | ArtifactGroup::Processes)
+                ) {
+                    let file_target = self
+                        .selected
+                        .as_ref()
+                        .and_then(|record| {
+                            let source = self
+                                .case
+                                .as_ref()?
+                                .document
+                                .runs
+                                .iter()
+                                .find(|run| run.id == record.run_id)?;
+                            volgui::extracted_files::FileDumpTarget::from_record(
+                                &source.plugin,
+                                &record.record,
+                            )
+                        })
+                        .is_some();
                     let process_target = self.result_group() == Some(ArtifactGroup::Processes)
                         && self.selected.as_ref().is_some_and(|record| {
-                            ["PID", "Pid", "pid"].iter().any(|key| record.record.text(key).parse::<u64>().is_ok())
+                            ["PID", "Pid", "pid"]
+                                .iter()
+                                .any(|key| record.record.text(key).parse::<u64>().is_ok())
                         });
                     let available = (file_target || process_target)
                         && self.busy.is_none()
                         && self.installation.as_ref().is_some_and(|engine| {
-                            engine.plugins.iter().any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
+                            engine
+                                .plugins
+                                .iter()
+                                .any(|plugin| plugin.id == volgui::extracted_files::DUMP_FILES)
                         });
                     content = content.child(
                         div().text_xs().text_color(cx.theme().muted_foreground).child(

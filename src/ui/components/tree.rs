@@ -185,6 +185,7 @@ impl Workspace {
         let id = node.record_id;
         let branch = self.result_tree.has_children(i);
         let expanded = self.result_tree.expanded(i);
+        let partial = id.is_some_and(|id| self.is_partial_record(id));
         let selected = self.tree_cursor.map_or_else(
             || id.is_some_and(|id| self.selected.as_ref().is_some_and(|r| r.id == id)),
             |cursor| cursor == i,
@@ -212,12 +213,21 @@ impl Workspace {
                 |row| row.text_color(cx.theme().muted_foreground),
             )
             .cursor_pointer()
-            .bg(if selected {
+            .bg(if partial {
+                partial_matches::background()
+            } else if selected {
                 cx.theme().accent
             } else {
                 cx.theme().background
             })
-            .hover(|s| s.bg(cx.theme().muted))
+            .when(partial, |row| row.text_color(partial_matches::foreground()))
+            .hover(|s| {
+                s.bg(if partial {
+                    partial_matches::background()
+                } else {
+                    cx.theme().muted
+                })
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| window.focus(&this.workspace_focus, cx)),

@@ -76,7 +76,7 @@ impl Workspace {
                         })),
                 );
             }
-            if matches!(run.status, RunStatus::Failed | RunStatus::Interrupted) {
+            if run.status.can_retry() {
                 let retry = run.id.clone();
                 actions = actions.child(
                     app_button(key("retry-analysis", &retry))

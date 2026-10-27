@@ -4,6 +4,14 @@ This reference lists the plugins and recovery processing that produce investigat
 
 Inventories are analysis inputs, not automatic case-opening scans. Requests reuse compatible results and can collect missing inputs.
 
+**View > Show partial matches** reveals additional candidates from Process Memory,
+Browser activity, executable path discovery, both Network recovery jobs and
+Download residual process recovery. These candidates still require recognizable
+text, URL, path or configuration structure. Independent limits keep partials from
+using strict finding budgets, and details list the failed validation checks.
+Quarantined threats and external engine collection are unchanged. Rerun older
+reports once to collect the new candidate classes. See [filters and limits](architecture/partial-matches-design.md).
+
 ## Processes
 
 ### Inputs
@@ -97,7 +105,7 @@ Existing `volgui.browser.Activity` findings can also supply download records or 
 
 ### Collection
 
-`volgui.downloads.Investigation` collects missing available preprocessing inventories. When supported, targeted `windows.dumpfiles.DumpFiles` jobs recover browser profile files before native parsing. A separate browser-memory scan is not required for profile parsing.
+`volgui.downloads.Investigation` automatically queues every missing unfiltered source inventory ahead of the report. Completed results and preceding queued or running jobs for the same evidence are reused. Unsupported prerequisites prevent queuing; missing or failed prerequisites fail the investigation instead of producing a coverage warning. When supported, targeted `windows.dumpfiles.DumpFiles` jobs recover browser profile files before native parsing. A separate browser-memory scan is not required for profile parsing.
 
 ### Processing
 

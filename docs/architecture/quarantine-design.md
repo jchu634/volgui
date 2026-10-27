@@ -1,10 +1,10 @@
 # Quarantined threats
 
 The caller selects `QUARANTINE` in an `AnalysisDraft`, then uses the ordinary
-case queue. The draft collects available unfiltered FileScan, Handles, PsList,
+case queue. The draft automatically queues missing unfiltered FileScan, Handles, PsList,
 PsScan, CmdLine and ADS inputs. A deferred job recovers Defender Entries metadata
 files before publishing a native report. Existing browser and download reports
-can supply origin evidence. No payload restoration is needed.
+can supply origin evidence. Completed results and preceding queued or running inputs for the same evidence are reused. Unsupported prerequisites prevent queuing; missing or failed inventories fail explicit investigations. Passive local snapshots do not require capture inventories. No payload restoration is needed.
 
 ## Report and evidence
 
