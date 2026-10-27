@@ -40,6 +40,7 @@ fn is_recovery_analysis(plugin: &str) -> bool {
         crate::analysis::BROWSER
             | crate::analysis::APPLICATION
             | crate::analysis::NETWORK
+            | crate::analysis::NETWORK_ATTRIBUTION
             | crate::analysis::FILES
             | crate::analysis::DOWNLOADS
             | crate::analysis::QUARANTINE
@@ -54,7 +55,9 @@ pub fn blocks_global_selection(run: &Run) -> bool {
         && !crate::analysis::quarantine::is_passive(run)
         && !(matches!(
             run.plugin.as_str(),
-            "windows.memmap.Memmap" | "windows.vadinfo.VadInfo"
+            "windows.memmap.Memmap"
+                | "windows.vadinfo.VadInfo"
+                | crate::analysis::NETWORK_ATTRIBUTION
         ) && run
             .arguments
             .iter()
@@ -118,6 +121,38 @@ pub fn prepare_application_recovery(
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     let parser = runs.last_mut().ok_or("Missing application parser job")?;
+    parser.id = run.id.clone();
+    parser.created_at = run.created_at.clone();
+    Ok(runs)
+}
+
+/// Expand deferred attribution using only inputs preceding this request.
+pub fn prepare_network_attribution(
+    case: &Case,
+    engine: &Installation,
+    run: &Run,
+) -> Result<Vec<Run>> {
+    let evidence = case
+        .document
+        .evidence
+        .iter()
+        .find(|e| e.id == run.evidence_id)
+        .ok_or("Evidence is no longer available")?;
+    let mut document = case.document.clone();
+    if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
+        document.runs.truncate(index);
+    }
+    let mut runs = crate::analysis::network_attribution::recovery_runs(
+        &case.directory,
+        &document,
+        evidence,
+        engine,
+        &run.arguments,
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    let parser = runs
+        .last_mut()
+        .ok_or("Missing network attribution report")?;
     parser.id = run.id.clone();
     parser.created_at = run.created_at.clone();
     Ok(runs)
@@ -215,6 +250,7 @@ pub fn basic_label(id: &str) -> Option<&'static str> {
     Some(match id {
         crate::analysis::FILE_PATHS => "Executable path discovery",
         crate::analysis::NETWORK => "Network investigation and correlation",
+        crate::analysis::NETWORK_ATTRIBUTION => "Network process attribution",
         crate::analysis::DOWNLOADS => "Download and execution investigation",
         crate::analysis::QUARANTINE => "Quarantined threats and execution investigation",
         crate::analysis::BROWSER => "Browser recovery and analysis",
@@ -284,6 +320,10 @@ pub fn application_plugins(plugins: &[Plugin]) -> Vec<Plugin> {
             description: "Read all registry subkeys and values recursively across all hives using PrintKey --recurse.".into(),
         },
     ]);
+    catalog.push(Plugin {
+        id: crate::analysis::NETWORK_ATTRIBUTION.into(),
+        description: crate::analysis::network_attribution::HELP.into(),
+    });
     catalog
 }
 
@@ -321,6 +361,8 @@ pub fn queue_retries_with_engine(
                     &previous.plugin,
                     if previous.plugin == crate::analysis::APPLICATION {
                         crate::analysis::application::user_arguments(&previous.arguments)?
+                    } else if previous.plugin == crate::analysis::NETWORK_ATTRIBUTION {
+                        crate::analysis::network_attribution::user_arguments(&previous.arguments)?
                     } else {
                         previous.arguments.clone()
                     },
@@ -330,6 +372,9 @@ pub fn queue_retries_with_engine(
                 }
                 if previous.plugin == crate::analysis::APPLICATION {
                     run.message = APPLICATION_RECOVERY_PENDING.into();
+                }
+                if previous.plugin == crate::analysis::NETWORK_ATTRIBUTION {
+                    run.message = crate::analysis::network_attribution::PENDING.into();
                 }
                 if previous.plugin == crate::analysis::FILES {
                     run.message = crate::analysis::files::PENDING.into();
@@ -457,6 +502,9 @@ impl AnalysisDraft {
         let browser = ordinary.selected.remove(crate::analysis::BROWSER);
         let application = ordinary.selected.remove(crate::analysis::APPLICATION);
         let network = ordinary.selected.remove(crate::analysis::NETWORK);
+        let attribution = ordinary
+            .selected
+            .remove(crate::analysis::NETWORK_ATTRIBUTION);
         let files = ordinary.selected.remove(crate::analysis::FILES);
         let downloads = ordinary.selected.remove(crate::analysis::DOWNLOADS);
         let quarantine = ordinary.selected.remove(crate::analysis::QUARANTINE);
@@ -551,6 +599,47 @@ impl AnalysisDraft {
                 crate::analysis::NETWORK,
                 vec![],
             )?);
+        }
+        let attribution_supported = [
+            crate::analysis::application::MEMMAP,
+            crate::analysis::application::VADINFO,
+            crate::analysis::network_attribution::DISCOVERY,
+        ]
+        .iter()
+        .all(|id| engine.plugins.iter().any(|p| p.id == *id));
+        if attribution || network && attribution_supported {
+            if self.os != OperatingSystem::Windows {
+                return Err("Network process attribution requires Windows evidence".into());
+            }
+            let args = parse_arguments(
+                self.arguments
+                    .get(crate::analysis::NETWORK_ATTRIBUTION)
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            )?;
+            let args = crate::analysis::network_attribution::user_arguments(&args)?;
+            for plugin in crate::analysis::application::INVENTORY {
+                if !case.document.runs.iter().chain(runs.iter()).any(|r| {
+                    r.evidence_id == evidence.id
+                        && r.plugin == plugin
+                        && r.arguments.is_empty()
+                        && matches!(
+                            r.status,
+                            RunStatus::Completed | RunStatus::Queued | RunStatus::Running
+                        )
+                }) {
+                    runs.push(engine.prepare(
+                        evidence,
+                        plugin,
+                        vec![],
+                        &case.directory.join("analyses"),
+                    )?);
+                }
+            }
+            let mut report =
+                crate::analysis::prepare(evidence, crate::analysis::NETWORK_ATTRIBUTION, args)?;
+            report.message = crate::analysis::network_attribution::PENDING.into();
+            runs.push(report);
         }
         if application {
             if self.os != OperatingSystem::Windows {

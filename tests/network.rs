@@ -57,6 +57,34 @@ fn endpoint_selection_matches_address_and_port_on_the_same_side() {
 }
 
 #[test]
+fn configured_hostnames_remain_references_without_invented_resolution() {
+    let reference = entry(
+        json!({"Finding":"Cobalt Strike Beacon configuration","Program":"Cobalt Strike Beacon","Hostname":"example.test","Port":443}),
+    );
+    assert_eq!(
+        reference.remote,
+        Some(Endpoint {
+            address: "example.test".into(),
+            port: Some(443)
+        })
+    );
+    assert!(reference.local.is_none());
+    assert!(reference.state.is_empty());
+    let socket = entry(json!({"ForeignAddr":"example.test","ForeignPort":443}));
+    assert!(socket.remote.is_none());
+}
+
+#[test]
+fn repeated_process_parser_runs_do_not_inflate_configuration_counts() {
+    let value = json!({"Finding":"Process memory Meterpreter TCP configuration","Source type":"Process virtual memory","Source run":"dump","PID":42,"Evidence SHA-256":"capture","Configuration virtual address":"0x1000","Configuration bytes SHA-256":"hash","Payload UUID":"uuid"});
+    let first = entry(value.clone());
+    let mut again = entry(value);
+    std::sync::Arc::make_mut(&mut again.source).id = 2;
+    let summary = volgui::network::configuration_summary([&first, &again].into_iter()).unwrap();
+    assert!(summary.contains("1 validated"));
+}
+
+#[test]
 fn pid_search_matches_the_owner_exactly_instead_of_ports_or_substrings() {
     let mut graph = Graph::default();
     for value in [
@@ -370,6 +398,75 @@ fn chooser_collects_available_sources_and_queues_a_native_barrier() {
         ArtifactGroup::Network
     );
     assert!(analysis::prepare(&evidence, analysis::NETWORK, vec!["unexpected".into()]).is_err());
+}
+
+#[test]
+fn network_queues_a_distinct_attribution_barrier_and_preserves_pid_options() {
+    let (_temp, mut case, evidence) = case();
+    let engine = Installation {
+        user_memory_dumps: true,
+        settings: Settings::default(),
+        version: "Fixture".into(),
+        plugins: [
+            "windows.pslist.PsList",
+            "windows.cmdline.CmdLine",
+            "windows.memmap.Memmap",
+            "windows.vadinfo.VadInfo",
+            "windows.vadregexscan.VadRegExScan",
+        ]
+        .into_iter()
+        .map(|id| Plugin {
+            id: id.into(),
+            description: String::new(),
+        })
+        .collect(),
+    };
+    let mut draft = AnalysisDraft::new(&evidence);
+    draft.selected.insert(analysis::NETWORK.into());
+    let runs = draft.prepare_in_case(&engine, &evidence, &case).unwrap();
+    assert_eq!(runs[runs.len() - 2].plugin, analysis::NETWORK);
+    assert_eq!(runs.last().unwrap().plugin, analysis::NETWORK_ATTRIBUTION);
+    assert_eq!(
+        runs.last().unwrap().message,
+        analysis::network_attribution::PENDING
+    );
+    assert_eq!(
+        ArtifactGroup::for_plugin(analysis::NETWORK_ATTRIBUTION),
+        ArtifactGroup::Network
+    );
+    let mut pending = runs.clone();
+    pending[0].status = RunStatus::Running;
+    for run in pending.iter_mut().skip(1) {
+        run.status = RunStatus::Completed;
+    }
+    pending.last_mut().unwrap().status = RunStatus::Queued;
+    assert!(
+        volgui::analyses::next_queued_run(&pending, std::num::NonZeroUsize::new(5).unwrap())
+            .is_none()
+    );
+    let mut retry = runs.last().unwrap().clone();
+    retry.status = RunStatus::Queued;
+    retry.arguments = vec![
+        "--pid".into(),
+        "42".into(),
+        "--source-run".into(),
+        "stale".into(),
+    ];
+    case.queue(retry.clone()).unwrap();
+    case.document.runs.last_mut().unwrap().status = RunStatus::Failed;
+    let mut completed = retry.clone();
+    completed.status = RunStatus::Completed;
+    assert!(!volgui::analyses::blocks_global_selection(&completed));
+    case.save().unwrap();
+    volgui::analyses::queue_retries(&mut case, &engine, &[retry.id]).unwrap();
+    assert_eq!(
+        case.document.runs.last().unwrap().arguments,
+        ["--pid", "42"]
+    );
+    assert_eq!(
+        case.document.runs.last().unwrap().message,
+        analysis::network_attribution::PENDING
+    );
 }
 
 #[test]

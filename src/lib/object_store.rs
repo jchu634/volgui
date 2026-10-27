@@ -659,7 +659,7 @@ pub fn block(path: &Path, reason: &str) -> Result<bool> {
         return Ok(true);
     }
     let db = database::connect(&root)?;
-    db.execute("INSERT INTO analysis_outputs(run_id,name,blocked_reason) SELECT ?1,?2,?3 WHERE EXISTS(SELECT 1 FROM analysis_runs WHERE id=?1) ON CONFLICT(run_id,name) DO UPDATE SET blocked_reason=excluded.blocked_reason",params![run,name,reason]).map_err(|e|e.to_string())?;
+    db.execute("INSERT INTO analysis_outputs(run_id,name,blocked_reason) SELECT ?1,?2,?3 WHERE EXISTS(SELECT 1 FROM analysis_runs WHERE id=?1) ON CONFLICT(run_id,name) DO UPDATE SET blocked_reason=COALESCE(analysis_outputs.blocked_reason,excluded.blocked_reason)",params![run,name,reason]).map_err(|e|e.to_string())?;
     Ok(true)
 }
 

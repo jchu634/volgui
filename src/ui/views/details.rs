@@ -389,8 +389,10 @@ impl Workspace {
             .p_3()
             .size_full();
         if self.result_group() == Some(ArtifactGroup::Network) {
-            let has_bytes =
-                record.is_some_and(|r| volgui::network::source_offset(&r.record).is_some());
+            let has_bytes = record.is_some_and(|r| {
+                volgui::network::source_offset(&r.record).is_some()
+                    || r.record.text("Source type") == "Process virtual memory"
+            });
             tabs = tabs.child(
                 app_button("network-source-bytes")
                     .ghost()
@@ -594,7 +596,8 @@ impl Workspace {
                     }
                     let mut fields = div().flex().flex_wrap().gap_x_4().items_start().w_full();
                     content = content.child(actions);
-                    let meterpreter = network && record.record.text("Finding").contains("Meterpreter");
+                    let meterpreter =
+                        network && record.record.text("Finding").contains("Meterpreter");
                     let mut ordered: Vec<_> = record
                         .record
                         .fields
@@ -612,8 +615,8 @@ impl Workspace {
                                         | "Session GUID"
                                 ))
                                 && !(self.result_group() == Some(ArtifactGroup::Processes)
-                                && (name.starts_with("Fact provenance")
-                                    || matches!(name.as_str(), "File output" | "Handles")))
+                                    && (name.starts_with("Fact provenance")
+                                        || matches!(name.as_str(), "File output" | "Handles")))
                                 && (!browser
                                     || (!matches!(
                                         name.as_str(),
@@ -764,15 +767,13 @@ impl Workspace {
                                                 name.clone(),
                                             )),
                                     )
-                                    .child(
-                                        div().flex_1().min_w_0().child(self.json_node(
-                                            "/Payload configuration",
-                                            "",
-                                            value,
-                                            0,
-                                            cx,
-                                        )),
-                                    ),
+                                    .child(div().flex_1().min_w_0().child(self.json_node(
+                                        "/Payload configuration",
+                                        "",
+                                        value,
+                                        0,
+                                        cx,
+                                    ))),
                             );
                             continue;
                         }

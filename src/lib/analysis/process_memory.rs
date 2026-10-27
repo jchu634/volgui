@@ -1,5 +1,55 @@
 //! Validated process-dump ranges shared by application parsers.
 use crate::volatility::{Record, Table};
+use std::{
+    io::{Read, Seek, SeekFrom},
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+/// Read bounded windows with context, without crossing a missing virtual range.
+/// The callback's core excludes the overlapping context, so hits are emitted once.
+pub(super) fn scan_windows(
+    reader: &mut (impl Read + Seek),
+    ranges: &[Region],
+    cancel: &AtomicBool,
+    max_bytes: u64,
+    mut visit: impl FnMut(&[u8], Region, std::ops::Range<usize>) -> bool,
+) -> Result<(u64, bool), String> {
+    const CHUNK: u64 = 1024 * 1024;
+    let mut scanned = 0;
+    let mut buffer = Vec::new();
+    for range in ranges {
+        let mut consumed = 0;
+        while consumed < range.length {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Process memory scan cancelled".into());
+            }
+            let core = CHUNK
+                .min(range.length - consumed)
+                .min(max_bytes.saturating_sub(scanned));
+            if core == 0 {
+                return Ok((scanned, true));
+            }
+            let prefix = consumed.min(4096);
+            let length = (prefix + core + 8192).min(range.length - consumed + prefix);
+            buffer.resize(length as usize, 0);
+            reader
+                .seek(SeekFrom::Start(range.file + consumed - prefix))
+                .map_err(|e| e.to_string())?;
+            reader.read_exact(&mut buffer).map_err(|e| e.to_string())?;
+            let window = Region {
+                file: range.file + consumed - prefix,
+                virtual_start: range.virtual_start + consumed - prefix,
+                length,
+            };
+            scanned += core;
+            if !visit(&buffer, window, prefix as usize..(prefix + core) as usize) {
+                return Ok((scanned, true));
+            }
+            consumed += core;
+        }
+    }
+    Ok((scanned, false))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DumpScope {

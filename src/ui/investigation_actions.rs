@@ -156,6 +156,13 @@ impl Workspace {
     pub(super) fn load_network_bytes(&mut self, cx: &mut Context<Self>) {
         let target = self.case.as_ref().and_then(|case| {
             let record = self.selected.as_ref()?;
+            if let Some(target) = analysis::network_attribution::dump_target(
+                &case.directory,
+                &case.document,
+                &record.record,
+            ) {
+                return Some(target);
+            }
             let offset = volgui::network::source_offset(&record.record)?;
             let run = case.document.runs.iter().find(|r| r.id == record.run_id)?;
             let evidence = case
@@ -187,10 +194,34 @@ impl Workspace {
                 .zip(self.evidence())
                 .filter(|(case, evidence)| {
                     analysis::network::needs_recovery(&case.document, &evidence.id)
+                        || self.installation.as_ref().is_some_and(|engine| {
+                            engine
+                                .plugins
+                                .iter()
+                                .any(|p| p.id == analysis::network_attribution::DISCOVERY)
+                        }) && analysis::network_attribution::needs_recovery(
+                            &case.document,
+                            &evidence.id,
+                        )
                 })
-                .map(|(_, evidence)| analysis::prepare(evidence, analysis::NETWORK, vec![]));
+                .map(|(case, evidence)| {
+                    let Some(engine) = self.installation.as_ref() else {
+                        return analysis::prepare(evidence, analysis::NETWORK, vec![])
+                            .map(|run| vec![run]);
+                    };
+                    let mut draft = AnalysisDraft::new(evidence);
+                    draft.selected.insert(
+                        if analysis::network::needs_recovery(&case.document, &evidence.id) {
+                            analysis::NETWORK
+                        } else {
+                            analysis::NETWORK_ATTRIBUTION
+                        }
+                        .into(),
+                    );
+                    draft.prepare_in_case(engine, evidence, case)
+                });
             match recovery {
-                Some(Ok(run)) => self.queue_investigation(vec![run], window, cx),
+                Some(Ok(runs)) => self.queue_investigation(runs, window, cx),
                 Some(Err(error)) => self.error = Some(error),
                 None => {}
             }
@@ -588,15 +619,21 @@ impl Workspace {
                 let id = run.id.clone();
                 self.queue_investigation(vec![run], window, cx);
                 if dump_files
-                    && self.case.as_ref().is_some_and(|case| case.document.runs.iter().any(|run| run.id == id))
+                    && self
+                        .case
+                        .as_ref()
+                        .is_some_and(|case| case.document.runs.iter().any(|run| run.id == id))
                     && let Some(record) = &self.selected
                 {
-                    self.file_dumps.insert(id, FileDumpRequest {
-                        record_id: record.id,
-                        selection_epoch: self.selection_epoch,
-                        executable: None,
-                        show_hex: self.content_sidebar_visible,
-                    });
+                    self.file_dumps.insert(
+                        id,
+                        FileDumpRequest {
+                            record_id: record.id,
+                            selection_epoch: self.selection_epoch,
+                            executable: None,
+                            show_hex: self.content_sidebar_visible,
+                        },
+                    );
                 }
             }
             Err(error) => {

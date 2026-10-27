@@ -106,7 +106,18 @@ impl Entry {
                 &["LocalPort", "SrcPort", "SourcePort"],
             ),
             remote: if finding {
-                endpoint(r, &["IP"], &["Port"])
+                endpoint(r, &["IP"], &["Port"]).or_else(|| {
+                    let host = r.text("Hostname");
+                    let port = r
+                        .fields
+                        .get("Port")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|v| u16::try_from(v).ok());
+                    let url::Host::Domain(address) = url::Host::parse(&host).ok()? else {
+                        return None;
+                    };
+                    Some(Endpoint { address, port })
+                })
             } else {
                 endpoint(
                     r,
@@ -262,7 +273,9 @@ pub fn configuration_summary<'a>(entries: impl Iterator<Item = &'a Entry>) -> Op
         let row = &entry.source.record;
         let finding = row.text("Finding");
         let group = match finding.as_str() {
-            "Meterpreter TCP configuration" => &mut complete,
+            "Meterpreter TCP configuration" | "Process memory Meterpreter TCP configuration" => {
+                &mut complete
+            }
             "Incomplete Meterpreter TCP configuration candidate" => &mut incomplete,
             _ => continue,
         };
@@ -270,10 +283,26 @@ pub fn configuration_summary<'a>(entries: impl Iterator<Item = &'a Entry>) -> Op
             .fields
             .get("Configuration offset")
             .and_then(|v| v.as_u64());
+        let process_key = if row.text("Source type") == "Process virtual memory" {
+            format!(
+                "{}:{}:{}:{}",
+                row.text("Source run"),
+                row.text("PID"),
+                row.text("Configuration virtual address"),
+                row.text("Configuration bytes SHA-256")
+            )
+        } else {
+            String::new()
+        };
         group.insert((
             row.text("Evidence SHA-256"),
             offset,
-            if offset.is_none() { entry.source.id } else { 0 },
+            if offset.is_none() && process_key.is_empty() {
+                entry.source.id
+            } else {
+                0
+            },
+            process_key,
         ));
         let payload = row.text("Payload UUID");
         let payload = if payload.is_empty() {

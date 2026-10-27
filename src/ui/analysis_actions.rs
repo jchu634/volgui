@@ -47,8 +47,10 @@ impl Workspace {
                 Ok(volgui::analysis::application::HELP.into())
             } else if plugin == volgui::analysis::FILES {
                 Ok("Collects FileScan and available file handles, attempts each distinct file object and records recovery outcomes. Cached contents may be partial. Use --physical only for older captures whose unlabelled FileScan offsets are physical. Other options are not accepted.".into())
+            } else if plugin == volgui::analysis::NETWORK_ATTRIBUTION {
+                Ok(volgui::analysis::network_attribution::HELP.into())
             } else if plugin == volgui::analysis::NETWORK {
-                Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. No raw memory string scan or payload configuration recovery is performed. Use Global string search or Process Memory separately for memory searches. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
+                Ok("Collects available Windows network, process, command history and handle plugins, then correlates their saved records. Extracts IP-based share references, connection commands and credentials explicitly present in network drive commands. Recovers payload configurations from acquisition bytes and queues a separate process attribution job when supported. Attribution scans readable user VADs, reusing process dumps. Findings retain source run, row and field provenance. No custom arguments. Missing or failed source plugins are reported in Run details. Recovered text does not prove execution or a live connection.".into())
             } else if plugin == volgui::analysis::DOWNLOADS {
                 Ok(volgui::analysis::downloads::HELP.into())
             } else if plugin == volgui::analysis::QUARANTINE {
@@ -445,7 +447,11 @@ impl Workspace {
                 && case.document.runs[i].message == volgui::analysis::downloads::PENDING;
             let quarantine_pending = case.document.runs[i].plugin == volgui::analysis::QUARANTINE
                 && case.document.runs[i].message == volgui::analysis::quarantine::PENDING;
-            if application_pending
+            let attribution_pending = case.document.runs[i].plugin
+                == volgui::analysis::NETWORK_ATTRIBUTION
+                && case.document.runs[i].message == volgui::analysis::network_attribution::PENDING;
+            if attribution_pending
+                || application_pending
                 || files_pending
                 || downloads_pending
                 || quarantine_pending
@@ -455,7 +461,13 @@ impl Workspace {
                 let Some(engine) = engine.as_ref() else {
                     return;
                 };
-                let prepared = if application_pending {
+                let prepared = if attribution_pending {
+                    volgui::analyses::prepare_network_attribution(
+                        case,
+                        engine,
+                        &case.document.runs[i],
+                    )
+                } else if application_pending {
                     volgui::analyses::prepare_application_recovery(
                         case,
                         engine,
@@ -482,7 +494,8 @@ impl Workspace {
                     Ok(runs) => {
                         let previous = case.document.runs.clone();
                         case.document.runs[i].message.clear();
-                        let replace = application_pending
+                        let replace = attribution_pending
+                            || application_pending
                             || files_pending
                             || downloads_pending
                             || quarantine_pending;

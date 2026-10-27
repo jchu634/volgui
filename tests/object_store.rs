@@ -714,6 +714,24 @@ fn transient_failures_and_missing_diagnostics_do_not_permanently_block_outputs()
 }
 
 #[test]
+fn repeated_blocked_reads_preserve_the_original_diagnostic() {
+    let (_temp, case, run) = fixture();
+    let path = case.run_dir(&run.id).join("missing.exe");
+    volgui::extracted_files::block_artifact(&path, "Original missing output").unwrap();
+    let error = volgui::extracted_files::ensure_openable(&path).unwrap_err();
+    volgui::extracted_files::block_artifact(&path, &error).unwrap();
+    let db = volgui::database::connect(&case.directory).unwrap();
+    let reason: String = db
+        .query_row(
+            "SELECT blocked_reason FROM analysis_outputs WHERE run_id=?1 AND name='missing.exe'",
+            [run.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "Original missing output");
+}
+
+#[test]
 fn sqlite_preview_materializes_verified_content_and_catalog_survives_reopen() {
     let (temp, case, run) = fixture();
     let source = temp.path().join("history.sqlite");
