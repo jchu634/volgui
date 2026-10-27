@@ -82,7 +82,7 @@ fn discovery_probes_user_memory_support_instead_of_assuming_a_version() {
 }
 
 #[test]
-fn vol_rs_commands_supply_cache_and_symbols_without_unix_environment_variables() {
+fn engine_commands_leave_default_cache_and_symbols_to_the_engine() {
     let temp = tempfile::tempdir().unwrap();
     let image = evidence(&temp.path().join("image.raw"));
     let mut engine = Installation {
@@ -97,14 +97,11 @@ fn vol_rs_commands_supply_cache_and_symbols_without_unix_environment_variables()
     let run = engine
         .prepare(&image, "windows.pslist.PsList", vec![], temp.path())
         .unwrap();
-    let cache = run
-        .command
-        .windows(2)
-        .find(|pair| pair[0] == "--cache-path")
-        .unwrap();
-    assert!(std::path::Path::new(&cache[1]).is_dir());
-    let symbols = run.command.windows(2).find(|pair| pair[0] == "-s").unwrap();
-    assert!(std::path::Path::new(&symbols[1]).is_dir());
+    assert!(
+        !run.command
+            .iter()
+            .any(|arg| arg == "--cache-path" || arg == "-s")
+    );
     engine.settings.symbols = temp.path().to_path_buf();
     let custom = engine
         .prepare(&image, "windows.pslist.PsList", vec![], temp.path())

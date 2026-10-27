@@ -154,23 +154,6 @@ impl Installation {
             "-r".into(),
             "json".into(),
         ];
-        if self.version.starts_with("vol-rs ") {
-            // vol-rs 1.0.2's default cache lookup only checks Unix environment variables.
-            let cache = Settings::path()
-                .parent()
-                .ok_or("Settings directory is unavailable")?
-                .join("cache")
-                .join("vol-rs");
-            fs::create_dir_all(&cache)
-                .map_err(|e| format!("Cannot create the vol-rs cache directory: {e}"))?;
-            command.extend(["--cache-path".into(), cache.display().to_string()]);
-            if self.settings.symbols.as_os_str().is_empty() {
-                let symbols = cache.join("symbols");
-                fs::create_dir_all(&symbols)
-                    .map_err(|e| format!("Cannot create the vol-rs symbols directory: {e}"))?;
-                command.extend(["-s".into(), symbols.display().to_string()]);
-            }
-        }
         if self.settings.offline {
             command.push("--offline".into());
         }
