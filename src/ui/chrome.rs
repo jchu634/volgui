@@ -250,7 +250,7 @@ impl Workspace {
             .child(Checkbox::new("show-partial-matches").label("Show partial matches")
                 .checked(self.settings.show_partial_matches)
                 .on_click(cx.listener(|this,_,_,cx|this.toggle_partial_matches(cx))))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Show damaged process candidates with a bright amber background. Partial matches remain unverified and do not establish socket or file ownership. Rerun Download and execution investigation once to recover partial candidates in older cases. Other parsers keep their existing validation rules."))
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Show damaged process candidates with dark amber table highlights and amber text in trees. Partial matches remain unverified and do not establish socket or file ownership. Rerun Download and execution investigation once to recover partial candidates in older cases. Other parsers keep their existing validation rules."))
             .child(heading("ANALYSIS QUEUE",cx))
             .child(heading("Maximum simultaneous jobs",cx))
             .child(div().flex().gap_2()

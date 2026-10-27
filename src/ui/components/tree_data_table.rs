@@ -173,7 +173,7 @@ impl TableDelegate for TreeTable {
                 } else {
                     node.label.clone()
                 })
-                .when(partial, partial_matches::highlight_row)
+                .when(partial, |row| row.text_color(partial_matches::foreground()))
                 .aria_level(depth + 1)
                 .when(
                     state.is_some_and(|state| state.result_tree.has_children(i)),

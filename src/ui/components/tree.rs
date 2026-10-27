@@ -213,21 +213,13 @@ impl Workspace {
                 |row| row.text_color(cx.theme().muted_foreground),
             )
             .cursor_pointer()
-            .bg(if partial {
-                partial_matches::background()
-            } else if selected {
+            .bg(if selected {
                 cx.theme().accent
             } else {
                 cx.theme().background
             })
             .when(partial, |row| row.text_color(partial_matches::foreground()))
-            .hover(|s| {
-                s.bg(if partial {
-                    partial_matches::background()
-                } else {
-                    cx.theme().muted
-                })
-            })
+            .hover(|s| s.bg(cx.theme().muted))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| window.focus(&this.workspace_focus, cx)),

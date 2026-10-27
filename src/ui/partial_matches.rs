@@ -1,11 +1,11 @@
 use super::*;
 
 pub(in crate::ui) fn background() -> Hsla {
-    rgb(0xc5a65a).into()
+    rgb(0x3b321e).into()
 }
 
 pub(in crate::ui) fn foreground() -> Hsla {
-    rgb(0x171300).into()
+    rgb(0xe1ca91).into()
 }
 
 pub(in crate::ui) fn badge(id: &'static str, label: &'static str) -> Stateful<Div> {
@@ -16,9 +16,9 @@ pub(in crate::ui) fn badge(id: &'static str, label: &'static str) -> Stateful<Di
         .py_0p5()
         .rounded_sm()
         .border_1()
-        .border_color(background().opacity(0.5))
-        .bg(background().opacity(0.14))
-        .text_color(rgb(0xe1ca91))
+        .border_color(foreground().opacity(0.5))
+        .bg(foreground().opacity(0.14))
+        .text_color(foreground())
         .text_xs()
         .font_weight(FontWeight::MEDIUM)
         .child(label)
