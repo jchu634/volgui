@@ -67,6 +67,7 @@ impl Workspace {
                 );
             }
         }
-        self.scroll_state.page(scroll_state::ScrollArea::Bookmarks, page)
+        self.scroll_state
+            .page(scroll_state::ScrollArea::Bookmarks, page)
     }
 }

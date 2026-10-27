@@ -22,7 +22,7 @@ use std::{
 };
 
 pub const MAX_FINDINGS: usize = 20_000;
-pub const PARSER_VERSION: &str = "network-v5-program-parsers";
+pub const PARSER_VERSION: &str = "network-v6-partial-configurations";
 pub const SOURCES: &[&str] = &[
     "windows.netscan.NetScan",
     "windows.netstat.NetStat",
@@ -190,6 +190,9 @@ pub fn analyze(
         .ok_or("Missing evidence")?;
     let (mut rows, configuration_coverage, configuration_limited) =
         memory::scan(&evidence.path, cancel, progress)?;
+    let (partial_rows, strict_rows): (Vec<_>, Vec<_>) =
+        rows.into_iter().partition(Record::is_partial_match);
+    rows = strict_rows;
     let mut seen = BTreeSet::new();
     // Pin interpretation to inventories preceding this parser job, never later results.
     let preceding = document.runs.iter().take_while(|r| r.id != run.id);
@@ -216,7 +219,7 @@ pub fn analyze(
         warnings.push(coverage.clone());
     }
     if configuration_limited {
-        warnings.push("Stopped at the acquisition configuration limit. Narrow the inputs to complete coverage.".into());
+        warnings.push("An acquisition configuration limit was reached. Strict and partial limits are independent; see configuration coverage details.".into());
     }
     let coverage = format!("{coverage} {configuration_coverage}");
     let source_runs: Vec<_> = preceding
@@ -274,9 +277,12 @@ pub fn analyze(
                     }
                     rows.push(row);
                     if rows.len() >= MAX_FINDINGS {
+                        rows.extend(partial_rows);
                         for row in &mut rows {
                             row.fields
                                 .insert("Evidence SHA-256".into(), evidence.sha256.clone().into());
+                            row.fields
+                                .insert("Parser version".into(), PARSER_VERSION.into());
                         }
                         let (table, message) = finish(rows, true);
                         return Ok((
@@ -288,10 +294,14 @@ pub fn analyze(
             }
         }
     }
+    // Partial findings have their own budget and cannot trigger this warning.
     let limited = rows.len() >= MAX_FINDINGS;
+    rows.extend(partial_rows);
     for row in &mut rows {
         row.fields
             .insert("Evidence SHA-256".into(), evidence.sha256.clone().into());
+        row.fields
+            .insert("Parser version".into(), PARSER_VERSION.into());
     }
     let (table, message) = finish(rows, limited);
     Ok((

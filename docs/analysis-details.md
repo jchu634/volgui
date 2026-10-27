@@ -4,6 +4,14 @@ This reference lists the plugins and recovery processing that produce investigat
 
 Inventories are analysis inputs, not automatic case-opening scans. Requests reuse compatible results and can collect missing inputs.
 
+**View > Show partial matches** reveals additional candidates from Process Memory,
+Browser activity, executable path discovery, both Network recovery jobs and
+Download residual process recovery. These candidates still require recognizable
+text, URL, path or configuration structure. Independent limits keep partials from
+using strict finding budgets, and details list the failed validation checks.
+Quarantined threats and external engine collection are unchanged. Rerun older
+reports once to collect the new candidate classes. See [filters and limits](architecture/partial-matches-design.md).
+
 ## Processes
 
 ### Inputs

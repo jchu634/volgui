@@ -3,6 +3,7 @@ pub mod application;
 mod browser;
 pub mod downloads;
 pub mod files;
+mod partial;
 mod process_memory;
 pub use browser::memory::recovery_runs as browser_memory_runs;
 pub mod network;

@@ -12,6 +12,7 @@ use std::{
 const CHUNK: usize = 4 * 1024 * 1024;
 const OVERLAP: usize = 8192;
 const LIMIT: usize = 2_000;
+const PARTIAL_LIMIT: usize = 500;
 pub(super) const COMPLETE: &str = "Meterpreter TCP configuration";
 pub(super) const INCOMPLETE: &str = "Incomplete Meterpreter TCP configuration candidate";
 
@@ -104,6 +105,8 @@ pub(super) fn scan(
     let mut base = 0u64;
     let mut scanned = 0u64;
     let mut rows = Vec::new();
+    let mut partial_rows = Vec::new();
+    let mut partial_limited = false;
     let mut limited = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -117,7 +120,13 @@ pub(super) fn scan(
             buffer.len().saturating_sub(OVERLAP)
         };
         let begin = scanned.saturating_sub(base) as usize;
-        for (at, mut row) in super::beacon::scan(&buffer, begin..end) {
+        let beacon_rows = super::beacon::scan(&buffer, begin..end);
+        partial_limited |= beacon_rows
+            .iter()
+            .filter(|(_, row)| row.is_partial_match())
+            .count()
+            >= super::beacon::MAX_PARTIAL_FINDINGS;
+        for (at, mut row) in beacon_rows {
             row.fields
                 .insert("Configuration offset".into(), (base + at as u64).into());
             row.fields
@@ -126,7 +135,12 @@ pub(super) fn scan(
                 .insert("Acquisition offset".into(), (base + at as u64).into());
             row.fields.insert(
                 "Source type".into(),
-                "Validated acquisition configuration".into(),
+                if row.is_partial_match() {
+                    "Partial acquisition configuration"
+                } else {
+                    "Validated acquisition configuration"
+                }
+                .into(),
             );
             row.fields.insert(
                 "Ownership evidence".into(),
@@ -136,7 +150,15 @@ pub(super) fn scan(
                 "Connection evidence".into(),
                 "No process-owned connection established by this configuration".into(),
             );
-            rows.push(row);
+            if row.is_partial_match() {
+                if partial_rows.len() < PARTIAL_LIMIT {
+                    partial_rows.push(row);
+                } else {
+                    partial_limited = true;
+                }
+            } else {
+                rows.push(row);
+            }
             if rows.len() >= LIMIT {
                 limited = true;
                 break;
@@ -255,7 +277,17 @@ pub(super) fn scan(
             ""
         }
     );
-    Ok((rows, message, limited))
+    let partial_count = partial_rows.len();
+    rows.extend(partial_rows);
+    let message = format!(
+        "{message} {partial_count} partial Beacon endpoint candidates retained; hidden unless Show partial matches is enabled.{}",
+        if partial_limited {
+            " Partial configuration window or report limit reached; strict recovery continued."
+        } else {
+            ""
+        }
+    );
+    Ok((rows, message, limited || partial_limited))
 }
 
 #[cfg(test)]

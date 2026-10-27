@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-const VERSION: &str = "browser-profiles-v2";
+const VERSION: &str = "browser-profiles-v3-partial-navigation";
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
 const CACHE_ENTRIES: usize = 4096;
 

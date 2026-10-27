@@ -397,6 +397,9 @@ pub fn analyze(
                 downloads.push((origin, provenance(source, plugin, "Download")));
             }
         } else if *plugin == super::BROWSER {
+            if row.is_partial_match() {
+                continue;
+            }
             if row.text("Kind") == "Download" {
                 downloads.push((row.clone(), provenance(source, plugin, "Download")));
             } else if let Some(name) = executable_url(&row.text("URL")) {
@@ -450,7 +453,7 @@ pub fn analyze(
     for row in profiles
         .rows
         .into_iter()
-        .filter(|r| r.text("Kind") == "Download")
+        .filter(|r| !r.is_partial_match() && r.text("Kind") == "Download")
     {
         let source = profile_provenance(&row);
         downloads.push((row, source));
