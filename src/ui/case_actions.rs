@@ -10,6 +10,7 @@ impl Workspace {
             executable: PathBuf::from(self.engine_path.read(cx).value().trim()),
             symbols: PathBuf::from(self.symbol_path.read(cx).value().trim()),
             offline: self.offline,
+            show_partial_matches: self.settings.show_partial_matches,
             max_concurrent_jobs: self.settings.max_concurrent_jobs,
             recent_cases: self.settings.recent_cases.clone(),
         };

@@ -103,7 +103,31 @@ fn dump(
     run.status = RunStatus::Completed;
     run
 }
+fn complete_sources(case: &mut Case, engine: &Installation) {
+    let missing = analysis::missing_source_inventories(
+        &case.document.runs,
+        &case.document.evidence[0].id,
+        quarantine::SOURCES,
+        false,
+    );
+    for plugin in missing {
+        save(case, engine, 0, plugin, vec![], json!([]));
+    }
+}
 fn execute(case: &mut Case) -> (Run, Outcome) {
+    let engine = Installation {
+        user_memory_dumps: false,
+        settings: Settings::default(),
+        version: "fixture".into(),
+        plugins: quarantine::SOURCES
+            .iter()
+            .map(|id| Plugin {
+                id: (*id).into(),
+                description: String::new(),
+            })
+            .collect(),
+    };
+    complete_sources(case, &engine);
     let run = analysis::prepare(&case.document.evidence[0], analysis::QUARANTINE, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
     let outcome = analysis::execute(
@@ -340,6 +364,7 @@ fn later_filtered_and_other_evidence_never_supply_process_matches() {
             {"PID":20,"ImageFileName":"payload.exe"}
         ]),
     );
+    complete_sources(&mut case, &engine);
     let run = analysis::prepare(&case.document.evidence[0], analysis::QUARANTINE, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
     save(
@@ -437,6 +462,16 @@ fn chooser_and_deferred_recovery_only_extract_metadata_and_preserve_the_report_i
     queued.id = "other".into();
     assert!(analyses::next_queued_run(&[running, queued], NonZeroUsize::new(2).unwrap()).is_none());
     case.queue_batch(runs).unwrap();
+    assert!(
+        analyses::prepare_quarantine_recovery(&case, &engine, &pending)
+            .unwrap_err()
+            .contains("Missing source inventories")
+    );
+    for r in &mut case.document.runs {
+        if r.id != pending.id {
+            r.status = RunStatus::Completed;
+        }
+    }
     let expanded = analyses::prepare_quarantine_recovery(&case, &engine, &pending).unwrap();
     assert_eq!(expanded.len(), 2);
     assert_eq!(expanded[0].plugin, DUMP_FILES);
@@ -484,6 +519,7 @@ fn independently_captured_defender_metadata() {
 fn retry_without_an_engine_uses_collected_evidence_without_a_recovery_barrier() {
     let (_temp, mut case, engine) = fixture();
     scan(&mut case, &engine);
+    complete_sources(&mut case, &engine);
     let report =
         analysis::prepare(&case.document.evidence[0], analysis::QUARANTINE, vec![]).unwrap();
     case.queue(report.clone()).unwrap();

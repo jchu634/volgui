@@ -18,7 +18,7 @@ use std::{
 };
 
 pub const PENDING: &str = "Waiting to recover quarantine metadata after inventories";
-pub const HELP: &str = "Collect available FileScan, Handles, PsList, PsScan, CmdLine and NTFS alternate streams. Recover cached Microsoft Defender Quarantine Entries metadata to identify original paths, threat names and quarantine times. Known folders for other antivirus products are labelled path candidates. Correlate process inventory candidates and download origins from alternate streams or existing browser/download reports. Also list locally blocked or unavailable recovered outputs, with antivirus cause unconfirmed. Missing cached bytes do not establish antivirus detection or non-execution. No quarantined payloads are restored. No custom arguments.";
+pub const HELP: &str = "Requires unfiltered FileScan, Handles, PsList, PsScan, CmdLine and NTFS alternate streams. Queuing this analysis automatically adds missing prerequisites before this job. Completed or preceding queued inventories for this evidence are reused. Missing or failed prerequisites fail the investigation. Recover cached Microsoft Defender Quarantine Entries metadata to identify original paths, threat names and quarantine times. Known folders for other antivirus products are labelled path candidates. Correlate process inventory candidates and download origins from alternate streams or existing browser/download reports. Also list locally blocked or unavailable recovered outputs, with antivirus cause unconfirmed. Missing cached bytes do not establish antivirus detection or non-execution. No quarantined payloads are restored. No custom arguments.";
 pub const SOURCES: &[&str] = &[
     "windows.filescan.FileScan",
     "windows.handles.Handles",
@@ -702,6 +702,9 @@ pub fn analyze(
 ) -> Result<(Table, String), String> {
     cancelled(cancel)?;
     let document = inputs(document, run);
+    if !is_passive(run) {
+        super::require_source_inventories(&document, &run.evidence_id, SOURCES)?;
+    }
     progress("Reading quarantine file objects and local blocked output records".into());
     let records = inventory(directory, &document, &run.evidence_id, cancel)?;
     let mut findings = capture_rows(directory, &document, &run.evidence_id, &records, cancel)?;
@@ -714,28 +717,10 @@ pub fn analyze(
     )?);
     progress("Matching original paths to process and download evidence".into());
     let rows = correlate(findings, &records, cancel)?;
-    let missing = SOURCES
-        .iter()
-        .filter(|plugin| {
-            !document.runs.iter().any(|r| {
-                r.plugin == **plugin
-                    && r.evidence_id == run.evidence_id
-                    && r.arguments.is_empty()
-                    && r.status.has_results()
-            })
-        })
-        .copied()
-        .collect::<Vec<_>>();
     let mut message = format!(
         "{} quarantine and local availability findings. Memory capture and Local computer scopes are separate. Unknown execution or origin means evidence was not recovered. Folder matches and local blocking do not confirm antivirus detection. Defender payloads remain isolated.",
         rows.len()
     );
-    if !missing.is_empty() {
-        message.push_str(&format!(
-            " Missing source inventories: {}.",
-            missing.join(", ")
-        ));
-    }
     if rows.len() >= MAX_ROWS {
         message.push_str(" Result limit reached: 10,000 findings. Narrow the source inventories for further review.");
     }
@@ -750,12 +735,6 @@ pub fn analyze(
     }
     if rows.len() >= MAX_ROWS {
         warnings.push("Result limit reached: 10,000 findings. Narrow the source inventories for further review.".into());
-    }
-    if !missing.is_empty() && !is_passive(run) {
-        warnings.push(format!(
-            "Missing source inventories: {}",
-            missing.join(", ")
-        ));
     }
     Ok((table(rows).with_warnings(warnings), message))
 }

@@ -27,6 +27,54 @@ fn run(id: &str, plugin: &str) -> Run {
 }
 
 #[test]
+fn partial_visibility_is_explicit_and_raw_results_remain_complete() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ResultStore::open(temp.path()).unwrap();
+    let scan = run("partial", "windows.psscan.PsScan");
+    store
+        .insert(
+            &scan,
+            &Table::parse(
+                &json!([
+                    {"PID":100,"ImageFileName":"intact.exe"},
+                    {"PID":200,"ImageFileName":"damaged.exe","Partial match":true}
+                ])
+                .to_string(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let mut query = Query {
+        runs: vec![scan.id.clone()],
+        ..Default::default()
+    };
+    assert_eq!(store.query(&query).unwrap().ids.len(), 1);
+    assert_eq!(store.tree_entries(&query.runs).unwrap().len(), 1);
+    assert_eq!(
+        store.filter_values(&query.runs, "PID").unwrap(),
+        vec!["100"]
+    );
+    assert_eq!(store.table(&scan.id).unwrap().rows.len(), 2);
+    assert!(!store.export_csv(&query).unwrap().contains("damaged.exe"));
+    query.include_partial = true;
+    assert_eq!(store.query(&query).unwrap().ids.len(), 2);
+    assert_eq!(
+        store
+            .tree_entries_with_partial(&query.runs, true)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        store
+            .filter_values_with_partial(&query.runs, "PID", true)
+            .unwrap(),
+        vec!["100", "200"]
+    );
+    assert!(store.export_csv(&query).unwrap().contains("damaged.exe"));
+}
+
+#[test]
 fn combined_network_endpoint_sort_uses_address_then_numeric_port() {
     let temp = tempfile::tempdir().unwrap();
     let store = ResultStore::open(temp.path()).unwrap();

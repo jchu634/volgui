@@ -195,6 +195,11 @@ pub fn prepare_quarantine_recovery(
     if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
         document.runs.truncate(index);
     }
+    crate::analysis::require_source_inventories(
+        &document,
+        &run.evidence_id,
+        crate::analysis::quarantine::SOURCES,
+    )?;
     let mut runs =
         crate::analysis::quarantine::recovery_runs(&case.directory, &document, evidence, engine)?;
     let report = runs.last_mut().ok_or("Missing quarantine report")?;
@@ -218,6 +223,11 @@ pub fn prepare_download_recovery(
     if let Some(index) = document.runs.iter().position(|r| r.id == run.id) {
         document.runs.truncate(index);
     }
+    crate::analysis::require_source_inventories(
+        &document,
+        &run.evidence_id,
+        crate::analysis::downloads::SOURCES,
+    )?;
     let mut runs = if engine
         .plugins
         .iter()
@@ -365,8 +375,8 @@ pub fn queue_retries_with_engine(
                 .iter()
                 .find(|run| run.id == *id)
                 .ok_or("Analysis is no longer available")?;
-            if !matches!(previous.status, RunStatus::Failed | RunStatus::Interrupted) {
-                return Err("Only failed or interrupted analyses can be retried".into());
+            if !previous.status.can_retry() {
+                return Err("Only failed, interrupted or cancelled analyses can be retried".into());
             }
             let evidence = case
                 .document
@@ -398,7 +408,7 @@ pub fn queue_retries_with_engine(
                 if previous.plugin == crate::analysis::FILES {
                     run.message = crate::analysis::files::PENDING.into();
                 }
-                if previous.plugin == crate::analysis::DOWNLOADS {
+                if previous.plugin == crate::analysis::DOWNLOADS && engine.is_some() {
                     run.message = crate::analysis::downloads::PENDING.into();
                 }
                 if previous.plugin == crate::analysis::QUARANTINE
@@ -733,28 +743,19 @@ impl AnalysisDraft {
             if self.os != OperatingSystem::Windows {
                 return Err("Download investigation requires Windows evidence".into());
             }
-            for plugin in crate::analysis::downloads::SOURCES {
-                if engine.plugins.iter().any(|p| p.id == *plugin)
-                    && !case.document.runs.iter().chain(runs.iter()).any(|r| {
-                        r.evidence_id == evidence.id
-                            && r.plugin == *plugin
-                            && r.arguments.is_empty()
-                            && matches!(
-                                r.status,
-                                RunStatus::Completed
-                                    | RunStatus::Warning
-                                    | RunStatus::Queued
-                                    | RunStatus::Running
-                            )
-                    })
-                {
-                    runs.push(engine.prepare(
-                        evidence,
-                        plugin,
-                        vec![],
-                        &case.directory.join("analyses"),
-                    )?);
-                }
+            let missing = crate::analysis::missing_source_inventories(
+                case.document.runs.iter().chain(runs.iter()),
+                &evidence.id,
+                crate::analysis::downloads::SOURCES,
+                true,
+            );
+            for plugin in missing {
+                runs.push(engine.prepare(
+                    evidence,
+                    plugin,
+                    vec![],
+                    &case.directory.join("analyses"),
+                )?);
             }
             let mut report =
                 crate::analysis::prepare(evidence, crate::analysis::DOWNLOADS, vec![])?;
@@ -765,28 +766,19 @@ impl AnalysisDraft {
             if self.os != OperatingSystem::Windows {
                 return Err("Quarantine investigation requires Windows evidence".into());
             }
-            for plugin in crate::analysis::quarantine::SOURCES {
-                if engine.plugins.iter().any(|p| p.id == *plugin)
-                    && !case.document.runs.iter().chain(runs.iter()).any(|r| {
-                        r.evidence_id == evidence.id
-                            && r.plugin == *plugin
-                            && r.arguments.is_empty()
-                            && matches!(
-                                r.status,
-                                RunStatus::Completed
-                                    | RunStatus::Warning
-                                    | RunStatus::Queued
-                                    | RunStatus::Running
-                            )
-                    })
-                {
-                    runs.push(engine.prepare(
-                        evidence,
-                        plugin,
-                        vec![],
-                        &case.directory.join("analyses"),
-                    )?);
-                }
+            let missing = crate::analysis::missing_source_inventories(
+                case.document.runs.iter().chain(runs.iter()),
+                &evidence.id,
+                crate::analysis::quarantine::SOURCES,
+                true,
+            );
+            for plugin in missing {
+                runs.push(engine.prepare(
+                    evidence,
+                    plugin,
+                    vec![],
+                    &case.directory.join("analyses"),
+                )?);
             }
             let mut report =
                 crate::analysis::prepare(evidence, crate::analysis::QUARANTINE, vec![])?;

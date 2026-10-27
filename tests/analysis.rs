@@ -232,6 +232,9 @@ fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifact
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text("Original path"), "");
     assert_eq!(rows[0].text("Source run"), dump.id);
+    for plugin in analysis::downloads::SOURCES {
+        save(&mut case, 0, plugin, vec![], json!([]));
+    }
     let download =
         analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
     let second = analysis::execute(
@@ -241,7 +244,7 @@ fn browser_and_download_share_profile_work_without_hiding_newly_blocked_artifact
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(second.status, RunStatus::Warning);
+    assert_eq!(second.status, RunStatus::Completed, "{}", second.message);
     assert!(
         second.message.contains("Reused 1 immutable artifact"),
         "{}",

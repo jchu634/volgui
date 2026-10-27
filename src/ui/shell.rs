@@ -92,6 +92,10 @@ impl Render for Workspace {
                             .text_sm()
                             .child(case.document.name.clone()),
                     )
+                    .when(self.settings.show_partial_matches, |bar| bar.child(
+                        partial_matches::badge("partial-match-mode", "Partial matches shown")
+                            .tooltip(move |window, cx| Tooltip::new("Partial matches are visible. Toggle them in View > Show partial matches.").build(window, cx)),
+                    ))
                 })
                 .child(div().flex_1())
                 .child(

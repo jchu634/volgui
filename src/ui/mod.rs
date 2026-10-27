@@ -7,6 +7,7 @@ mod exports;
 mod file_actions;
 mod investigation_actions;
 mod navigation;
+mod partial_matches;
 mod popups;
 mod result_actions;
 mod scroll_state;
@@ -880,6 +881,8 @@ impl Workspace {
                     match result {
                         Ok(mut engine) => {
                             engine.settings.max_concurrent_jobs = self.settings.max_concurrent_jobs;
+                            engine.settings.show_partial_matches =
+                                self.settings.show_partial_matches;
                             self.settings = engine.settings.clone();
                             if let Err(e) = self.settings.save() {
                                 self.error = Some(e);

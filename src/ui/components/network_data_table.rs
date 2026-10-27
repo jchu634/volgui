@@ -168,8 +168,17 @@ impl TableDelegate for NetworkTable {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
+        let partial = self.workspace.upgrade().is_some_and(|workspace| {
+            self.order
+                .get(row)
+                .and_then(|i| workspace.read(cx).network.entries.get(*i))
+                .is_some_and(|entry| entry.source.record.is_partial_match())
+        });
         div()
             .id(("network-table-row", row))
+            .when(partial, |row| {
+                partial_matches::highlight_row(row).aria_label("Partial match")
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|state, _, _, _| {

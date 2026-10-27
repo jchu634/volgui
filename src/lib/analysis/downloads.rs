@@ -19,7 +19,7 @@ use std::{
 };
 
 pub const PENDING: &str = "Waiting to recover download evidence after inventories";
-pub const HELP: &str = "Recover download URLs and local filenames from NTFS Zone.Identifier and cached Chromium download history, then find matching executions and remote sockets. Collects available process lists, process scan, hidden-process cross-check, command lines, DLL paths, FileScan, ADS, NetScan and NetStat automatically. Recovers browser profile files when DumpFiles is available. Also scans acquisition bytes for residual process candidates, validating the supported Windows x64 layout against collected processes first. Filename matches, residual bytes and PID-only socket matches retain their limits and sources. Ports alone never establish a reverse shell. No custom arguments.";
+pub const HELP: &str = "Recover download URLs and local filenames from NTFS Zone.Identifier and cached Chromium download history, then find matching executions and remote sockets. Requires unfiltered process lists, process scan, hidden-process cross-check, command lines, DLL paths, FileScan, ADS, NetScan and NetStat. Queuing this analysis automatically adds missing prerequisites before this job. Completed or preceding queued inventories for this evidence are reused. Missing or failed prerequisites fail the investigation. Recovers browser profile files when DumpFiles is available. Also scans acquisition bytes for residual process candidates, validating the supported Windows x64 layout against collected processes first. Filename matches, residual bytes and PID-only socket matches retain their limits and sources. Ports alone never establish a reverse shell. No custom arguments.";
 pub const SOURCES: &[&str] = &[
     "windows.pslist.PsList",
     "windows.psscan.PsScan",
@@ -32,7 +32,7 @@ pub const SOURCES: &[&str] = &[
     "windows.netstat.NetStat",
 ];
 const MAX_ROWS: usize = 10_000;
-const VERSION: &str = "downloads-v2";
+const VERSION: &str = "downloads-v4";
 
 fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
@@ -77,9 +77,20 @@ fn decoded_filename(address: &str) -> Option<String> {
 }
 
 fn executable_url(address: &str) -> Option<String> {
+    // Check before URL normalization: a site list can be parsed as one URL with
+    // an invalid-looking host and a path ending in somebody else's filename.
+    if address.split(['?', '#']).next()?.matches("://").count() != 1 {
+        return None;
+    }
+    let url = url::Url::parse(address).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
     let name = decoded_filename(address)?;
     let lower = name.to_ascii_lowercase();
-    [".exe", ".exe.bin", ".msi", ".scr", ".com", ".bat", ".ps1"]
+    // A .com suffix is ambiguous with domain names in URL paths and site lists.
+    // Keep .com downloads when ADS or browser download records establish a local file.
+    [".exe", ".exe.bin", ".msi", ".scr", ".bat", ".ps1"]
         .iter()
         .any(|extension| lower.ends_with(extension))
         .then_some(name)
@@ -270,6 +281,7 @@ struct Process {
     exit: String,
     source: Value,
     residual: bool,
+    partial: Option<Record>,
 }
 
 fn number(row: &Record, key: &str) -> Option<u64> {
@@ -341,11 +353,7 @@ pub fn analyze(
                 && seen.insert(r.plugin.clone())
         })
         .collect();
-    let missing = SOURCES
-        .iter()
-        .filter(|plugin| !sources.iter().any(|r| r.plugin == **plugin))
-        .copied()
-        .collect::<Vec<_>>();
+    super::require_source_inventories(&preceding, &run.evidence_id, SOURCES)?;
     let store = ResultStore::at(directory);
     let mut records = Vec::new();
     for source in &sources {
@@ -377,12 +385,6 @@ pub fn analyze(
             ));
         }
     }
-    if !missing.is_empty() {
-        warnings.push(format!(
-            "Missing source inventories: {}. Collect these inventories to complete coverage.",
-            missing.join(", ")
-        ));
-    }
     let mut downloads: Vec<(Record, Value)> = Vec::new();
     let mut processes = Vec::new();
     let mut sockets = Vec::new();
@@ -403,6 +405,10 @@ pub fn analyze(
                 lead.fields.insert(
                     "Download evidence".into(),
                     "Executable URL lead; download not established".into(),
+                );
+                lead.fields.insert(
+                    "Interpretation".into(),
+                    "An executable-looking browser URL is a lead only. A local download and execution are not established by the URL.".into(),
                 );
                 // Browser ownership is not payload execution ownership.
                 lead.fields.remove("PID");
@@ -436,6 +442,7 @@ pub fn analyze(
                     exit: first(row, &["ExitTime", "Exit Time"]),
                     source: provenance(source, plugin, "Process"),
                     residual: false,
+                    partial: None,
                 });
             }
         }
@@ -473,27 +480,34 @@ pub fn analyze(
         warnings.push("Residual process scan reached a filename or finding limit. Narrow the inputs to complete coverage.".into());
     }
     for row in residual {
+        let partial = row.is_partial_match().then(|| row.clone());
         processes.push(Process { pid:number(&row,"PID").unwrap(),name:row.text("Process"),path:String::new(),
-            birth:row.text("CreateTime"),exit:row.text("ExitTime"),source:json!({"Role":"Residual process","Offset":row.fields["Acquisition offset"],"Match offset":row.fields["Match offset"],"Profile":row.text("Profile"),"Reference PIDs":row.fields["Profile reference PIDs"],"Inventory runs":sources.iter().filter(|r| r.plugin.ends_with("pslist.PsList") || r.plugin.ends_with("psscan.PsScan")).map(|r| &r.id).collect::<Vec<_>>()}),residual:true });
+            birth:row.text("CreateTime"),exit:row.text("ExitTime"),source:json!({"Role":if partial.is_some() { "Partial residual process" } else { "Residual process" },"Offset":row.fields["Acquisition offset"],"Match offset":row.fields["Match offset"],"Profile":row.text("Profile"),"Reference PIDs":row.fields["Profile reference PIDs"],"Validation failures":row.fields.get("Validation failures"),"Inventory runs":sources.iter().filter(|r| r.plugin.ends_with("pslist.PsList") || r.plugin.ends_with("psscan.PsScan")).map(|r| &r.id).collect::<Vec<_>>()}),residual:true,partial });
     }
     // Prefer the complete inventory identity over duplicate PsScan/cross-check or carved copies.
     let known = processes
         .iter()
-        .filter(|p| !p.birth.is_empty())
+        .filter(|p| !p.birth.is_empty() && p.partial.is_none())
         .map(|p| (p.pid, p.name.to_ascii_lowercase()))
         .collect::<BTreeSet<_>>();
     processes
         .retain(|p| !p.birth.is_empty() || !known.contains(&(p.pid, p.name.to_ascii_lowercase())));
     let mut identities = BTreeSet::new();
-    processes.sort_by_key(|p| p.residual);
+    processes.sort_by_key(|p| (p.partial.is_some(), p.residual));
     processes.retain(|p| identities.insert((p.pid, p.name.to_ascii_lowercase(), p.birth.clone())));
     let mut lifetimes = BTreeMap::<u64, BTreeSet<String>>::new();
-    for p in &processes {
+    for p in processes.iter().filter(|p| p.partial.is_none()) {
         lifetimes.entry(p.pid).or_default().insert(p.birth.clone());
     }
     let mut rows = Vec::new();
     for (download, origin) in downloads {
         cancelled(cancel)?;
+        let url_lead = origin["Role"] == "Browser URL lead";
+        let subject = if url_lead {
+            "Executable URL lead"
+        } else {
+            "Download"
+        };
         let name = download.text("Filename");
         let mut matches = Vec::new();
         for process in &processes {
@@ -525,16 +539,26 @@ pub fn analyze(
                 matches.push((process, candidates));
             }
         }
-        if matches.is_empty() {
+        // A partial candidate must not replace the strict, unresolved origin.
+        if matches.iter().all(|(process, _)| process.partial.is_some()) {
             let mut row = download_row(&download, &origin);
             row.fields.insert(
                 "Finding".into(),
-                "Download origin; execution not recovered".into(),
+                if url_lead {
+                    "Executable URL lead; download and execution not established"
+                } else {
+                    "Download origin; execution not recovered"
+                }
+                .into(),
             );
             rows.push(row);
         }
         for (process, candidates) in matches {
             let mut row = download_row(&download, &origin);
+            if let Some(partial) = &process.partial {
+                row.fields.extend(partial.fields.clone());
+                row.fields.insert("Interpretation".into(), "Partial process structure; the tentative PID and filename association do not establish execution or socket ownership. Inspect Validation failures and source bytes.".into());
+            }
             row.fields.insert("PID".into(), process.pid.into());
             row.fields
                 .insert("Process".into(), process.name.clone().into());
@@ -544,7 +568,9 @@ pub fn analyze(
                 .insert("ExitTime".into(), process.exit.clone().into());
             row.fields.insert(
                 "Execution evidence".into(),
-                if process.residual {
+                if process.partial.is_some() {
+                    "Partial residual process candidate; execution unverified"
+                } else if process.residual {
                     "Residual process candidate; activity at acquisition unknown"
                 } else {
                     "Collected process inventory"
@@ -591,6 +617,7 @@ pub fn analyze(
                 .is_some_and(|times| times.len() > 1);
             let peers = sockets
                 .iter()
+                .filter(|_| process.partial.is_none())
                 .filter(|(socket, _)| {
                     socket_for(process, socket)
                         && (!ambiguous
@@ -613,11 +640,17 @@ pub fn analyze(
             if peers.is_empty() {
                 row.fields.insert(
                     "Finding".into(),
-                    "Download + process candidate; endpoint not recovered".into(),
+                    if process.partial.is_some() {
+                        "Partial process match; execution unverified".into()
+                    } else {
+                        format!("{subject} + process candidate; endpoint not recovered").into()
+                    },
                 );
                 row.fields.insert(
                     "Network evidence".into(),
-                    if ambiguous {
+                    if process.partial.is_some() {
+                        "Tentative PID from partial process bytes; sockets were not joined"
+                    } else if ambiguous {
                         "PID has multiple lifetimes; sockets without timestamps were not joined"
                     } else {
                         "No owned remote socket recovered; unowned sockets remain in Network"
@@ -633,7 +666,7 @@ pub fn analyze(
                     sources.push(source.clone());
                     joined.fields.insert(
                         "Finding".into(),
-                        "Download + process candidate + socket".into(),
+                        format!("{subject} + process candidate + socket").into(),
                     );
                     joined
                         .fields
@@ -676,12 +709,7 @@ pub fn analyze(
         .filter(|(r, _)| number(r, "PID").is_none())
         .count();
     let coverage = format!(
-        "Source inventories unavailable or not successfully collected without filters: {}. {unowned} sockets have no PID and cannot be attributed. {memory_message} {profile_message}",
-        if missing.is_empty() {
-            "none".into()
-        } else {
-            missing.join(", ")
-        }
+        "All required source inventories collected. {unowned} sockets have no PID and cannot be attributed. {memory_message} {profile_message}"
     );
     for row in &mut rows {
         row.fields.insert("Parser version".into(), VERSION.into());

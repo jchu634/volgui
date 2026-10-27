@@ -51,6 +51,17 @@ fn save(case: &mut Case, evidence: usize, plugin: &str, rows: Value) -> Run {
     .unwrap();
     run
 }
+fn complete_sources(case: &mut Case) {
+    let missing = analysis::missing_source_inventories(
+        &case.document.runs,
+        &case.document.evidence[0].id,
+        downloads::SOURCES,
+        false,
+    );
+    for plugin in missing {
+        save(case, 0, plugin, json!([]));
+    }
+}
 fn ads() -> Value {
     json!([{"Filename":"payload.exe","ADS Filename":"Zone.Identifier","Content":"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://example.test/tools\r\nHostUrl=https://cdn.example.test/setup.exe.bin\r\n"}])
 }
@@ -62,8 +73,8 @@ fn execute(case: &mut Case, run: &Run) -> Table {
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(outcome.status, RunStatus::Warning, "{}", outcome.message);
-    assert!(outcome.message.contains("Missing source inventories"));
+    assert!(outcome.status.has_results(), "{}", outcome.message);
+    assert!(!outcome.message.contains("Missing source inventories"));
     case.finish(&run.id, &outcome).unwrap();
     outcome.table.unwrap()
 }
@@ -100,6 +111,7 @@ fn download_execution_and_endpoint_chain_retains_each_source_and_survives_reopen
             {"PID":100,"ForeignAddr":"192.0.2.11","ForeignPort":80,"Created":"2022-01-01T00:00:00Z"}
         ]),
     );
+    complete_sources(&mut case);
     let run = analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
     let table = execute(&mut case, &run);
@@ -176,6 +188,7 @@ fn future_other_evidence_and_argument_text_do_not_create_execution_links() {
         "windows.cmdline.CmdLine",
         json!([{"PID":200,"Args":"notepad.exe C:\\Downloads\\payload.exe"}]),
     );
+    complete_sources(&mut case);
     let run = analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
     save(
@@ -215,6 +228,7 @@ fn reused_pids_need_socket_timestamps_and_different_paths_stay_candidates() {
         "windows.netscan.NetScan",
         json!([{"PID":100,"ForeignAddr":"192.0.2.10","ForeignPort":4444}]),
     );
+    complete_sources(&mut case);
     let run = analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
     case.queue(run.clone()).unwrap();
     let table = execute(&mut case, &run);
@@ -223,6 +237,195 @@ fn reused_pids_need_socket_timestamps_and_different_paths_stay_candidates() {
         2
     );
     assert!(table.rows.iter().all(|r| r.text("Remote IP").is_empty()));
+}
+
+#[test]
+fn browser_url_leads_stay_distinct_from_recorded_downloads() {
+    let (_temp, mut case) = fixture();
+    save(
+        &mut case,
+        0,
+        analysis::BROWSER,
+        json!([
+            {"Kind":"URL","PID":200,"URL":"https://cookiepedia.co.uk/host/.app.onetrust.com"},
+            {"Kind":"URL","PID":200,"URL":"https://vimeo.com;https://jiosaavn.com"},
+            {"Kind":"URL","PID":200,"URL":"https://vimeo.com;https://example.test/fake.exe"},
+            {"Kind":"URL","PID":200,"URL":"https://example.test/unmatched.exe"},
+            {"Kind":"URL","PID":200,"URL":"https://example.test/payload.exe"},
+            {"Kind":"Download","PID":200,"Filename":"utility.com","Path":"C:\\Downloads\\utility.com","URL":"https://example.test/utility.com"}
+        ]),
+    );
+    save(
+        &mut case,
+        0,
+        "windows.mftscan.ADS",
+        json!([
+            {"Filename":"renamed.com","ADS Filename":"Zone.Identifier","Content":"[ZoneTransfer]\nHostUrl=https://example.test/renamed.com"}
+        ]),
+    );
+    save(
+        &mut case,
+        0,
+        "windows.pslist.PsList",
+        json!([
+            {"PID":100,"ImageFileName":"payload.exe"}
+        ]),
+    );
+    complete_sources(&mut case);
+    let run = analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
+    case.queue(run.clone()).unwrap();
+    let table = execute(&mut case, &run);
+    let findings = table
+        .rows
+        .iter()
+        .filter(|r| r.text("Finding") != "Analysis coverage")
+        .collect::<Vec<_>>();
+    assert_eq!(findings.len(), 4);
+    let unmatched = findings
+        .iter()
+        .find(|r| r.text("Filename") == "unmatched.exe")
+        .unwrap();
+    assert_eq!(
+        unmatched.text("Finding"),
+        "Executable URL lead; download and execution not established"
+    );
+    assert!(unmatched.text("PID").is_empty());
+    let matched = findings
+        .iter()
+        .find(|r| r.text("Filename") == "payload.exe")
+        .unwrap();
+    assert_eq!(matched.text("PID"), "100");
+    assert!(
+        matched
+            .text("Finding")
+            .starts_with("Executable URL lead + process candidate")
+    );
+    assert!(
+        matched
+            .text("Download evidence")
+            .contains("download not established")
+    );
+    for name in ["utility.com", "renamed.com"] {
+        let download = findings
+            .iter()
+            .find(|r| r.text("Filename") == name)
+            .unwrap();
+        assert_eq!(
+            download.text("Finding"),
+            "Download origin; execution not recovered"
+        );
+        assert!(download.text("PID").is_empty());
+    }
+}
+
+#[test]
+fn partial_process_preserves_origin_and_never_claims_matching_socket_ownership() {
+    let (_temp, mut case) = fixture();
+    let capture = case.document.evidence[0].path.clone();
+    let mut bytes = vec![0u8; 0x9000];
+    let birth = 133390291766718843u64;
+    let mut inventory = Vec::new();
+    for i in 0..6 {
+        let base = i * 4096;
+        let pid = if i == 5 { 12228 } else { 100 + i as u64 * 4 };
+        let name = if i == 5 {
+            "wbadmin.exe".into()
+        } else {
+            format!("anchor{i}.exe")
+        };
+        bytes[base] = if i == 5 { 0x48 } else { 3 };
+        for (at, value) in [
+            (8, 0xffff800000001008u64),
+            (16, 0xffff800000001008),
+            (0x28, if i == 5 { 0xe4800000800 } else { 0x123000 }),
+            (0x440, pid),
+            (0x540, 4),
+            (0x468, birth),
+            (0x448, 0xffff800000001008),
+            (0x450, 0xffff800000001008),
+        ] {
+            bytes[base + at..base + at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[base + 0x5a8..base + 0x5a8 + name.len()].copy_from_slice(name.as_bytes());
+        if i < 5 {
+            inventory.push(
+                json!({"PID":pid,"ImageFileName":name,"CreateTime":"2023-09-12T21:52:56.671884Z"}),
+            );
+        }
+    }
+    fs::write(&capture, bytes).unwrap();
+    let id = case.document.evidence[0].id.clone();
+    let mut evidence = Evidence::inspect(&capture, &AtomicBool::new(false), |_, _| {}).unwrap();
+    evidence.id = id;
+    evidence.operating_system = OperatingSystem::Windows;
+    case.document.evidence[0] = evidence;
+    case.save().unwrap();
+    save(&mut case, 0, "windows.pslist.PsList", inventory.into());
+    save(
+        &mut case,
+        0,
+        "windows.mftscan.ADS",
+        json!([
+            {"Filename":"wbadmin.exe","ADS Filename":"Zone.Identifier","Content":"[ZoneTransfer]\nHostUrl=http://example.test/wbadmin.exe.bin"}
+        ]),
+    );
+    save(
+        &mut case,
+        0,
+        "windows.netscan.NetScan",
+        json!([
+            {"PID":12228,"ForeignAddr":"192.0.2.9","ForeignPort":4444,"Created":"2023-09-12T21:53:00Z"}
+        ]),
+    );
+    complete_sources(&mut case);
+    let run = analysis::prepare(&case.document.evidence[0], analysis::DOWNLOADS, vec![]).unwrap();
+    case.queue(run.clone()).unwrap();
+    let table = execute(&mut case, &run);
+    let partial = table.rows.iter().find(|r| r.is_partial_match()).unwrap();
+    assert_eq!(partial.text("PID"), "12228");
+    assert_eq!(partial.text("Acquisition offset"), (5 * 4096).to_string());
+    assert!(partial.text("Remote IP").is_empty());
+    assert!(
+        partial
+            .text("Network evidence")
+            .contains("sockets were not joined")
+    );
+    assert!(partial.text("Validation failures").contains("0x48"));
+    let store = ResultStore::at(&case.directory);
+    let mut query = Query {
+        runs: vec![run.id.clone()],
+        ..Default::default()
+    };
+    let strict = store.fetch(&store.query(&query).unwrap().ids).unwrap();
+    assert!(strict.iter().all(|r| !r.record.is_partial_match()));
+    assert!(
+        strict
+            .iter()
+            .any(|r| r.record.text("Filename") == "wbadmin.exe" && r.record.text("PID").is_empty())
+    );
+    query.include_partial = true;
+    assert_eq!(store.query(&query).unwrap().ids.len(), strict.len() + 1);
+    let entries = store
+        .partial_process_entries(&query.runs, "wbadmin")
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    let mut tree = volgui::result_tree::ResultTree::default();
+    tree.append_partial_processes(entries);
+    assert_eq!(tree.visible[0].1, 0);
+    assert!(tree.nodes[0].children.is_empty());
+    assert!(tree.nodes[0].label.contains("Partial match"));
+    assert!(
+        store
+            .partial_process_entries(&query.runs, "unrelated")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .export_csv(&query)
+            .unwrap()
+            .contains("Validation failures")
+    );
 }
 
 #[test]
@@ -250,6 +453,16 @@ fn chooser_collects_prerequisites_reuses_successes_and_expands_a_single_report_b
     let report = runs.last().unwrap().clone();
     assert_eq!(report.message, downloads::PENDING);
     case.queue_batch(runs).unwrap();
+    assert!(
+        analyses::prepare_download_recovery(&case, &engine, &report)
+            .unwrap_err()
+            .contains("Missing source inventories")
+    );
+    for r in &mut case.document.runs {
+        if r.id != report.id {
+            r.status = RunStatus::Completed;
+        }
+    }
     let expanded = analyses::prepare_download_recovery(&case, &engine, &report).unwrap();
     assert_eq!(expanded.len(), 1);
     assert_eq!(expanded[0].id, report.id);

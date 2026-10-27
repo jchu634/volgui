@@ -60,6 +60,8 @@ pub struct EntityRelation {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Query {
+    /// Opt in to findings which failed some producer validation checks.
+    pub include_partial: bool,
     pub filters: std::collections::BTreeMap<String, BTreeSet<String>>,
     pub runs: Vec<String>,
     pub text: String,
@@ -416,6 +418,15 @@ impl ResultStore {
         tx.commit().map_err(|e| e.to_string())
     }
     pub fn filter_values(&self, runs: &[String], column: &str) -> Result<Vec<String>> {
+        self.filter_values_with_partial(runs, column, false)
+    }
+
+    pub fn filter_values_with_partial(
+        &self,
+        runs: &[String],
+        column: &str,
+        include_partial: bool,
+    ) -> Result<Vec<String>> {
         if runs.is_empty() {
             return Ok(vec![]);
         }
@@ -424,7 +435,12 @@ impl ResultStore {
         let marks = std::iter::repeat_n("?", runs.len())
             .collect::<Vec<_>>()
             .join(",");
-        let mut stmt = db.prepare(&format!("SELECT DISTINCT {expression} AS value FROM records r WHERE r.run_id IN ({marks}) ORDER BY value COLLATE NOCASE")).map_err(|e| e.to_string())?;
+        let partial = if include_partial {
+            ""
+        } else {
+            " AND COALESCE(json_extract(r.fields_json,'$.\"Partial match\"'),0) != 1"
+        };
+        let mut stmt = db.prepare(&format!("SELECT DISTINCT {expression} AS value FROM records r WHERE r.run_id IN ({marks}){partial} ORDER BY value COLLATE NOCASE")).map_err(|e| e.to_string())?;
         stmt.query_map(params_from_iter(runs), |row| row.get(0))
             .map_err(|e| e.to_string())?
             .collect::<rusqlite::Result<Vec<String>>>()
@@ -486,6 +502,9 @@ impl ResultStore {
         let mut sql = format!("SELECT r.id FROM records r WHERE r.run_id IN ({marks})");
         let mut values: Vec<SqlValue> = query.runs.iter().cloned().map(SqlValue::Text).collect();
         append_representatives(&mut sql, &mut values, &query.runs, "r");
+        if !query.include_partial {
+            sql.push_str(" AND COALESCE(json_extract(r.fields_json,'$.\"Partial match\"'),0) != 1");
+        }
         if groups.len() == 1 && groups.contains(&ArtifactGroup::Downloads) {
             // Older download reports kept payload configuration alongside download findings.
             // Keep the immutable source row, but present it through Network instead.
@@ -791,6 +810,14 @@ impl ResultStore {
     }
     /// Tree construction needs only hierarchy fields, even for large file scans.
     pub fn tree_entries(&self, runs: &[String]) -> Result<Vec<crate::result_tree::TreeEntry>> {
+        self.tree_entries_with_partial(runs, false)
+    }
+
+    pub fn tree_entries_with_partial(
+        &self,
+        runs: &[String],
+        include_partial: bool,
+    ) -> Result<Vec<crate::result_tree::TreeEntry>> {
         if runs.is_empty() {
             return Ok(vec![]);
         }
@@ -803,6 +830,9 @@ impl ResultStore {
         );
         let mut values = runs.iter().cloned().map(SqlValue::Text).collect();
         append_representatives(&mut sql, &mut values, runs, "r");
+        if !include_partial {
+            sql.push_str(" AND COALESCE(json_extract(r.fields_json,'$.\"Partial match\"'),0) != 1");
+        }
         sql.push_str(" ORDER BY id");
         let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
         stmt.query_map(params_from_iter(values), |r| {
@@ -819,6 +849,52 @@ impl ResultStore {
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())
+    }
+
+    /// Show damaged process leads as independent roots, preserving their report
+    /// provenance. Tentative PIDs never attach file handles or establish parents.
+    pub fn partial_process_entries(
+        &self,
+        runs: &[String],
+        text: &str,
+    ) -> Result<Vec<crate::result_tree::TreeEntry>> {
+        let index = self.query(&Query {
+            runs: runs.to_vec(),
+            text: text.into(),
+            include_partial: true,
+            filters: [(
+                "Partial match kind".into(),
+                ["Residual process".into()].into(),
+            )]
+            .into(),
+            ..Default::default()
+        })?;
+        let mut seen = BTreeSet::new();
+        let mut entries = Vec::new();
+        for chunk in index.ids.chunks(256) {
+            for stored in self.fetch(chunk)? {
+                let row = &stored.record;
+                if !row.is_partial_match()
+                    || !seen.insert((
+                        row.text("PID"),
+                        row.text("CreateTime"),
+                        row.text("Acquisition offset"),
+                    ))
+                {
+                    continue;
+                }
+                entries.push(crate::result_tree::TreeEntry {
+                    id: stored.id,
+                    run_id: stored.run_id,
+                    depth: 0,
+                    title: format!("{} · Partial match", row.text("Process")),
+                    pid: Some(row.text("PID")),
+                    ppid: None,
+                    path: None,
+                });
+            }
+        }
+        Ok(entries)
     }
     /// Load module hierarchy fields without materializing every module's details.
     pub fn module_entries(&self, runs: &[String]) -> Result<Vec<crate::result_tree::ModuleEntry>> {
@@ -1017,6 +1093,7 @@ impl ResultStore {
     }
     pub fn table(&self, run: &str) -> Result<Table> {
         let index = self.query(&Query {
+            include_partial: true,
             runs: vec![run.into()],
             ..Default::default()
         })?;
@@ -1271,7 +1348,7 @@ fn filter_expression(column: &str) -> Result<String> {
     match column {
         "Domain" => Ok("COALESCE(NULLIF(json_extract(r.fields_json,'$.Domain'),''),browser_domain(json_extract(r.fields_json,'$.URL')))".into()),
         "PID" | "Browser" | "Kind" | "Finding" | "Filename" | "Remote IP" | "Remote port"
-        | "Scope" | "Antivirus" | "Evidence status" | "Execution evidence" | "Origin evidence" => Ok(format!("COALESCE(CAST(json_extract(r.fields_json,'$.\"{column}\"') AS TEXT),'')")),
+        | "Scope" | "Antivirus" | "Evidence status" | "Execution evidence" | "Origin evidence" | "Partial match kind" => Ok(format!("COALESCE(CAST(json_extract(r.fields_json,'$.\"{column}\"') AS TEXT),'')")),
         _ => Err("Unknown filter column".into()),
     }
 }

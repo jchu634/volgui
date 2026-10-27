@@ -27,6 +27,22 @@ fn entry(value: serde_json::Value) -> Entry {
 }
 
 #[test]
+fn partial_network_entries_are_hidden_by_default_and_mark_their_addresses() {
+    let mut graph = Graph::default();
+    graph.push(entry(json!({"LocalAddr":"192.0.2.1","ForeignAddr":"192.0.2.2","ForeignPort":4444,"Partial match":true})));
+    let view = graph.overview(&Default::default());
+    assert_eq!(view.matching, 0);
+    assert!(view.partial_addresses.is_empty());
+    let view = graph.overview(&volgui::network::Filter {
+        include_partial: true,
+        ..Default::default()
+    });
+    assert_eq!(view.matching, 1);
+    assert!(view.partial_addresses.contains("192.0.2.1"));
+    assert!(view.partial_addresses.contains("192.0.2.2"));
+}
+
+#[test]
 fn endpoint_selection_matches_address_and_port_on_the_same_side() {
     let e = entry(
         json!({"LocalAddr":"10.0.0.1","LocalPort":50000,"ForeignAddr":"10.0.0.2","ForeignPort":445}),
@@ -787,6 +803,34 @@ fn payload_recovery_belongs_to_network_and_retains_offsets_across_chunk_boundari
         graph.entries[0].remote.as_ref().unwrap().label(),
         "192.0.2.5:5059"
     );
+    let engine = Installation {
+        user_memory_dumps: false,
+        settings: Settings::default(),
+        version: "Fixture".into(),
+        plugins: analysis::downloads::SOURCES
+            .iter()
+            .map(|id| Plugin {
+                id: (*id).into(),
+                description: String::new(),
+            })
+            .collect(),
+    };
+    for plugin in analysis::downloads::SOURCES {
+        let source = engine
+            .prepare(&evidence, plugin, vec![], &case.directory.join("analyses"))
+            .unwrap();
+        case.queue(source.clone()).unwrap();
+        case.finish(
+            &source.id,
+            &Outcome {
+                status: RunStatus::Completed,
+                exit_code: Some(0),
+                message: String::new(),
+                table: Some(Table::parse("[]").unwrap()),
+            },
+        )
+        .unwrap();
+    }
     let download_run = analysis::prepare(&evidence, analysis::DOWNLOADS, vec![]).unwrap();
     case.queue(download_run.clone()).unwrap();
     let downloads = analysis::execute(
@@ -796,12 +840,7 @@ fn payload_recovery_belongs_to_network_and_retains_offsets_across_chunk_boundari
         &AtomicBool::new(false),
         |_| {},
     );
-    assert_eq!(
-        downloads.status,
-        RunStatus::Warning,
-        "{}",
-        downloads.message
-    );
+    assert!(downloads.status.has_results(), "{}", downloads.message);
     assert!(
         downloads
             .table

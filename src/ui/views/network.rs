@@ -134,6 +134,7 @@ impl Workspace {
         label: &'static str,
         id: usize,
         can_switch: bool,
+        partial: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self
@@ -162,7 +163,15 @@ impl Workspace {
             } else {
                 cx.theme().border
             })
-            .bg(cx.theme().background)
+            .bg(if partial {
+                partial_matches::background()
+            } else {
+                cx.theme().background
+            })
+            .when(partial, |node| {
+                node.text_color(partial_matches::foreground())
+                    .aria_label("Contains partial matches")
+            })
             .shadow_sm()
             .child(
                 div()
@@ -174,8 +183,16 @@ impl Workspace {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(label),
+                            .text_color(if partial {
+                                partial_matches::foreground()
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(if partial {
+                                "Contains partial matches"
+                            } else {
+                                label
+                            }),
                     )
                     .when(can_switch, |row| {
                         row.child(
@@ -198,6 +215,7 @@ impl Workspace {
 
     fn network_filter(&self, cx: &App) -> Filter {
         Filter {
+            include_partial: self.settings.show_partial_matches,
             focus: self.network_focus.clone(),
             text: self.query.read(cx).value().to_ascii_lowercase(),
             protocol: self.network_protocol.clone(),
@@ -591,6 +609,7 @@ impl Workspace {
                         },
                         peer_index,
                         true,
+                        overview.partial_addresses.contains(ip),
                         cx,
                     )),
             );
@@ -737,6 +756,7 @@ impl Workspace {
                         },
                         usize::MAX - i,
                         spans.len() > 1,
+                        overview.partial_addresses.contains(source),
                         cx,
                     )),
             );
@@ -901,6 +921,11 @@ impl Workspace {
         let pid = entry.pid.clone();
         let mut card = div()
             .id(key("network-entry", &id.to_string()))
+            .when(entry.source.record.is_partial_match(), |card| {
+                card.bg(partial_matches::background())
+                    .text_color(partial_matches::foreground())
+                    .child("Partial match")
+            })
             .min_w_0()
             .w_full()
             .overflow_hidden()

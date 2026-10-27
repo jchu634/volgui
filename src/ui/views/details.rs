@@ -414,6 +414,7 @@ impl Workspace {
         }
         if self.detail == DetailTab::Overview
             && self.result_group() == Some(ArtifactGroup::Processes)
+            && record.is_none_or(|r| !r.record.is_partial_match())
             && let Some(pid) = record
                 .map(|r| r.record.text("PID"))
                 .filter(|p| p.parse::<u64>().is_ok())
@@ -478,7 +479,7 @@ impl Workspace {
                                         .small()
 
                                         .label(format!("Process {pid}"))
-                                        .disabled(record.record.text("Execution evidence").starts_with("Residual"))
+                                        .disabled(record.record.is_partial_match() || record.record.text("Execution evidence").starts_with("Residual"))
                                         .tooltip("Open a collected process. Residual process candidates can be inspected using their source bytes.")
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.open_process(pid.to_string(), cx)
@@ -489,6 +490,7 @@ impl Workspace {
                                         .small()
 
                                         .label("Network for PID")
+                                        .disabled(record.record.is_partial_match())
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.investigate_pid_network(
                                                 network_pid.clone(),
@@ -1029,13 +1031,22 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .px_3()
-                    .py_1()
+                    .py_2()
                     .child(
-                        div().flex_1().min_w_0().text_sm().truncate().child(
+                        div().flex_1().min_w_0().flex().items_center().gap_2().child(
+                            div().min_w_0().text_base().font_weight(FontWeight::BOLD).truncate().child(
                             record
                                 .map(|r| r.record.title())
                                 .unwrap_or_else(|| "Artifact details".into()),
-                        ),
+                            ),
+                        ).when_some(record.filter(|r| r.record.is_partial_match()), |header, record| {
+                            let failures = record.record.fields.get("Validation failures")
+                                .and_then(|v| v.as_array()).into_iter().flatten()
+                                .filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n");
+                            let explanation = format!("Unverified process identity.\n\n{failures}\n\nThe tentative PID does not establish execution, file ownership or socket ownership.");
+                            header.child(partial_matches::badge("partial-match-item", "Partial Match")
+                                .tooltip(move |window, cx| Tooltip::new(explanation.clone()).build(window, cx)))
+                        }),
                     )
                     .when(record.is_some(), |header| {
                         header.child(

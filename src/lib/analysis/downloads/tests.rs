@@ -73,6 +73,30 @@ fn executable_url_names_decode_without_changing_plus_or_matching_an_argument() {
 }
 
 #[test]
+fn website_names_and_url_lists_are_not_executable_url_leads() {
+    for address in [
+        "https://cookiepedia.co.uk/host/.app.onetrust.com?_ga=123",
+        "https://cookiepedia.co.uk/host/app.onetrust.com",
+        "https://deezer.com;https://liveone.com;https://jiosaavn.com",
+        "https://vimeo.com;https://example.test/payload.exe",
+        "https://vimeo.com;HTTPS://example.test/payload.exe",
+        "https://example.test/sites/https%3A%2F%2Fother.test%2Fpayload.exe",
+        "https://example.test/user-sync%3Fbea4%3D%23%7Buser.id%7D%26done%3Dexample.com",
+        "ftp://example.test/payload.exe",
+        "file:///C:/Downloads/payload.exe",
+    ] {
+        assert!(executable_url(address).is_none(), "{address}");
+    }
+    for address in [
+        "https://www.autohotkey.com/download/ahk-v2.exe",
+        "http://www.juno.it/wbadmin.exe.bin",
+        "https://example.test/installer.MSI?ref=https://example.test/start",
+    ] {
+        assert!(executable_url(address).is_some(), "{address}");
+    }
+}
+
+#[test]
 fn unrelated_downloads_schema_does_not_produce_empty_downloads() {
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("CREATE TABLE downloads(id INTEGER,name TEXT,source TEXT,target TEXT);INSERT INTO downloads VALUES(1,'other','https://example.test/a','file:///C:/a');").unwrap();

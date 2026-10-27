@@ -404,7 +404,7 @@ impl Workspace {
             .case
             .iter()
             .flat_map(|case| case.document.queue_runs())
-            .filter(|run| matches!(run.status, RunStatus::Failed | RunStatus::Interrupted))
+            .filter(|run| run.status.can_retry())
             .map(|run| run.id.clone())
             .collect();
         if !ids.is_empty() {
@@ -503,10 +503,9 @@ impl Workspace {
                 || case.document.runs[i].plugin == volgui::analysis::BROWSER
                     && case.document.runs[i].message == volgui::analyses::BROWSER_RECOVERY_PENDING
             {
-                let Some(engine) = engine.as_ref() else {
-                    return;
-                };
-                let prepared = if attribution_pending {
+                let prepared = engine.as_ref().ok_or_else(|| {
+                    "Cannot prepare recovery without an analysis engine. Configure the engine in Settings, then retry this analysis.".to_string()
+                }).and_then(|engine| if attribution_pending {
                     volgui::analyses::prepare_network_attribution(
                         case,
                         engine,
@@ -534,7 +533,7 @@ impl Workspace {
                     volgui::analyses::prepare_file_recovery(case, engine, &case.document.runs[i])
                 } else {
                     volgui::analyses::prepare_browser_recovery(case, engine, &case.document.runs[i])
-                };
+                });
                 match prepared {
                     Ok(runs) => {
                         let previous = case.document.runs.clone();

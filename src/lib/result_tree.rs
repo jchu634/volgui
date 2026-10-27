@@ -463,6 +463,24 @@ impl ResultTree {
         i
     }
 
+    /// Add already-filtered, tentative identities without linking them to the
+    /// validated hierarchy or using their PID to assign file ownership.
+    pub fn append_partial_processes(&mut self, entries: Vec<TreeEntry>) {
+        for entry in entries {
+            let i = self.push_node(TreeNode {
+                keys: vec![TreeNodeKey::Record(entry.id)],
+                kind: TreeNodeKind::Process,
+                record_id: Some(entry.id),
+                label: entry.title,
+                pid: entry.pid,
+                children: vec![],
+                parent: None,
+            });
+            self.included.insert(i);
+        }
+        self.refresh();
+    }
+
     fn filter(&mut self, matches: &[i64]) {
         let matches: HashSet<_> = matches.iter().copied().collect();
         for i in 0..self.nodes.len() {

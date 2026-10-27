@@ -56,9 +56,14 @@ impl ColumnFilter {
         .detach();
         let runs = scope.clone();
         let field = column.clone();
-        let load = cx
-            .background_executor()
-            .spawn(async move { store.filter_values(&runs, &field).map(Arc::new) });
+        let include_partial = workspace
+            .upgrade()
+            .is_some_and(|w| w.read(cx).settings.show_partial_matches);
+        let load = cx.background_executor().spawn(async move {
+            store
+                .filter_values_with_partial(&runs, &field, include_partial)
+                .map(Arc::new)
+        });
         cx.spawn(async move |this, cx| {
             let values = load.await;
             let _ = this.update(cx, |this, cx| {
@@ -415,11 +420,19 @@ impl TableDelegate for ResultTable {
                 }
             });
         }
+        let partial = record.as_ref().is_some_and(|r| r.record.is_partial_match());
         div()
             .id(("result-row", row))
+            .when(partial, partial_matches::highlight_row)
             .aria_label(
                 record
-                    .map(|record| record.record.title())
+                    .map(|record| {
+                        if partial {
+                            format!("Partial match · {}", record.record.title())
+                        } else {
+                            record.record.title()
+                        }
+                    })
                     .unwrap_or_else(|| "Loading artifact".into()),
             )
             .on_mouse_down(
@@ -476,6 +489,7 @@ impl TableDelegate for ResultTable {
             && value
                 .as_ref()
                 .is_some_and(|value| value.parse::<u64>().is_ok_and(|pid| pid != 0))
+            && !state.is_partial_record(id)
             && !state.group_runs(ArtifactGroup::Processes).is_empty();
         let value = value.unwrap_or_else(|| "...".into());
         let cell = div().text_xs().whitespace_nowrap().overflow_hidden();
