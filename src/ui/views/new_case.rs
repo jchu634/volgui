@@ -9,9 +9,8 @@ impl Workspace {
         let name = self.case_name.read(cx).value().trim().to_string();
         let location = (!parent.is_empty() && !name.is_empty())
             .then(|| Path::new(&parent).join(&name).display().to_string());
-        let page = div()
-            .p_6()
-            .child(
+        let page =
+            div().p_6().child(
                 div()
                     .max_w(px(720.))
                     .flex()
@@ -90,6 +89,13 @@ impl Workspace {
                             }),
                     ),
             );
-        self.scroll_state.page(scroll_state::ScrollArea::NewCase, page)
+        if self.welcome_open {
+            // The dialog provides scrolling and measures its content's height.
+            // A viewport-sized page here collapses in the auto-sized dialog.
+            page.into_any_element()
+        } else {
+            self.scroll_state
+                .page(scroll_state::ScrollArea::NewCase, page)
+        }
     }
 }
