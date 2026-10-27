@@ -1,5 +1,3 @@
-`defender-entry.bin` is synthetic encrypted Microsoft Defender Entries metadata.
-It contains one file resource, `C:\Users\Alice\Downloads\payload.exe`, the
-invented threat `Trojan:Win32/SyntheticTest`, a resource ID and a file size field.
-It contains no executable content. The independently encrypted sections include
-CRC-32 checksums. Tests use it to exercise the complete recovery and storage flow.
+# Test fixtures
+
+`defender-entry.bin` contains synthetic encrypted Defender Entries metadata for one file resource and the invented threat `Trojan:Win32/SyntheticTest`. It includes a resource ID, file size and independently encrypted sections with CRC-32 checksums. It contains no executable content. Tests exercise metadata recovery and storage.

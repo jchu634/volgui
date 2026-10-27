@@ -2,37 +2,36 @@
 
 A native Rust/GPUI workspace for investigating memory captures with separately installed Volatility 3 or vol-rs engines.
 
-VolGUI queues analyses and keeps results, evidence fingerprints, recovered outputs and bookmarks in case directories. The analysis engine and acquisition images remain external to the case. Volatility is not bundled.
+VolGUI queues analyses and stores results, evidence fingerprints, recovered outputs and bookmarks in cases. Engines and acquisition images remain external.
 
-## Download
+## Get started
 
-Download the Windows application from [Releases](https://github.com/jchu634/volgui/releases). Volatility 3 or vol-rs must be installed separately. Select the engine in Settings, create or open a case, and add a memory capture.
+Download the Windows application from [Releases](https://github.com/jchu634/volgui/releases).
+Point it to a engine, select it in Settings, create a case and add a memory capture.
 
 ## Investigation views
 
-| View | What it provides |
-| --- | --- |
-| Processes | Parent/child process trees, command context, collected handles and process file children. |
-| Network | Socket graph and table, endpoint details, command correlation, validated Meterpreter TCP configurations and incomplete configuration candidates. Payload UUIDs, session GUIDs and ownership limits remain visible. |
-| Files | Directory trees, per-file extraction, recovery status and recovered content inspection. Bulk file recovery is an extended analysis. |
-| Download investigation | Download origins, filename-based execution candidates, residual process candidates and related socket records, with separate evidence labels. |
-| Quarantined threats | Defender quarantine metadata, known antivirus folder candidates, process matches and download origins. Local blocked outputs have a separate scope. |
-| Browser activity | URLs and searches from browser process memory, recovered history and saved sessions. |
-| Process Memory | Text recovery for a chosen PID, source addresses, match navigation and a virtualized hex reader. |
-| Registry | Hive/key trees and typed values, with targeted or recursive PrintKey collection. |
-| Global string search | Literal UTF-8 and UTF-16 searches of the acquisition, with byte offsets and context. |
-| Bookmarks | Saved record annotations for later review. |
+| View                   | Data                                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| Processes              | Process trees, command context, handles and file children.                              |
+| Network                | Socket graph/table, endpoint details, command correlation and recovered configurations. |
+| Files                  | Directory trees, extraction, recovery status and content inspection.                    |
+| Download investigation | Download origins, execution candidates and related sockets.                             |
+| Quarantined threats    | Defender metadata, antivirus folder candidates and related processes/downloads.         |
+| Browser activity       | URLs, searches, recovered history and saved sessions.                                   |
+| Process Memory         | Text recovery for a PID, source addresses and hex inspection.                           |
+| Registry               | Hive/key trees, typed values and targeted or recursive collection.                      |
+| Global string search   | Literal UTF-8/UTF-16 matches with offsets and context.                                  |
+| Bookmarks              | Saved record annotations.                                                               |
 
-Recovered files can be inspected as hex, text or read-only SQLite tables. Findings retain source references and support CSV export and bookmarks. Recovery depends on the bytes present in the capture; a filename match, memory string or recovered configuration does not by itself prove execution or a connection.
+Findings retain sources and support CSV export. Recovered files can be inspected as hex, text or read-only SQLite tables. Recovery depends on captured bytes; strings, filename matches and configurations alone do not prove execution or a connection.
 
-Scroll positions are remembered while switching views and using Back during a session. Closing the application or switching cases resets them.
-
-The specialized recovery workflows currently require Windows evidence. Available engine plugins also supply Linux and macOS artifact views. See [Analysis Details](docs/analysis-details.md) for the plugins and recovery processing behind each analysis.
+Specialized recovery requires Windows evidence. Engine plugins also provide Linux and macOS views. Scroll positions persist within a session and reset when closing the app or switching cases.
 
 ## Documentation
 
 - [Building and running](docs/building.md)
-- [Case storage and copying cases](docs/case-storage.md)
-- [Validation commands and capture checks](docs/validation.md)
-- [Analysis Details](docs/analysis-details.md)
-- [Technical architecture](docs/architecture/)
+- [Case storage](docs/case-storage.md)
+- [Validation](docs/validation.md)
+- [Analysis details](docs/analysis-details.md)
+- [Architecture](docs/architecture/README.md)

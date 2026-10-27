@@ -37,16 +37,9 @@ columns also omit Base, LoadCount and Size, with raw fields retained in details.
 Module construction still groups records by source scan and process PID, and
 keeps kernel records in a separate source group.
 
-## Decision and tradeoffs
+## Tradeoffs
 
-The earlier custom tree columns duplicated table layout and resize behavior and
-made the tree too narrow. A pinned hierarchy column gives the requested left tree
-and right table using the standard component. Independent tree and table widgets
-would need two virtual lists, matching row heights, bidirectional scroll syncing
-and selection reconciliation. Pinning keeps those responsibilities in DataTable.
-
-Tree columns preserve hierarchy order rather than sorting individual rows across
-branches. The file browser does not acquire a detail table.
+One DataTable owns layout, virtualization and selection, keeping hierarchy and details aligned. Tree columns preserve hierarchy order rather than sorting rows across branches. Files retains its existing tree.
 
 ## Verification
 

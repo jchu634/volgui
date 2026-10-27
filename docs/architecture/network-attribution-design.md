@@ -2,31 +2,11 @@
 
 The caller queues Network investigation as before. Supported Windows engines also receive a separate `volgui.network.ProcessAttribution` job. The chooser exposes Network process attribution independently, with an optional `--pid PID`. Browser recovery and Process Memory retain their existing interpretation and memory-region scope.
 
-## Grounding and design comparison
+## Design
 
-The original Network parser scans acquisition bytes and selected engine inventories. Its output has no process mapping. Process Memory already recovered the dxdiag endpoint, but it scans only private writable VADs and produces text candidates. Browser's memory collector and Process Memory both validate Memmap dumps through `analysis/process_memory.rs`. Native jobs are queue barriers, and deferred jobs expand into prerequisites while preserving their original report identity.
+Mapped process dumps reuse existing recovery and reconstruct virtual sequences across fragmented physical pages. Capture-layer translation remains in the engine. This can recover configurations missed by acquisition scanning.
 
-Two whole designs were considered. Reverse-mapping acquisition offsets would be efficient for known hits, but requires native knowledge of ELF and other capture layers that VolGUI currently delegates to its engine. It would also miss strings or configurations visible only after virtual page reconstruction. Scanning mapped process dumps reuses existing full/user dumps, reads virtual sequences across fragmented physical pages, and can discover endpoints absent from acquisition-level findings. This implementation chooses mapped dumps and keeps capture-layer translation in the engine.
-
-The architect skill's referenced `how` and `arena` skills are not installed. The source flow was traced locally, and a separate design runner compared the two approaches. No human checkpoint was requested.
-
-## Interface sketch and ownership
-
-```rust
-// analysis/network_attribution.rs owns selection, provenance and interpretation.
-pub fn recovery_runs(directory, document, evidence, engine, arguments, cancel)
-    -> Result<Vec<Run>, String>;
-pub fn analyze(directory, document, run, cancel, progress)
-    -> Result<(Table, String), String>;
-
-// process_memory.rs owns validated user mappings and bounded reads.
-fn scan_windows(reader, ranges, cancel, max_bytes, visit)
-    -> Result<(u64, bool), String>;
-
-// network/memory.rs owns the existing legacy payload format.
-fn meterpreter_config(bytes, endpoint_offset, uri)
-    -> Option<serde_json::Value>;
-```
+## Collection and provenance
 
 A selected PID uses pinned unfiltered process/command inventories directly. Broad discovery first runs or reuses an exact VAD regex request for ASCII/UTF-16 TCP and supported program markers, plus stock Beacon TLV headers under the supported XOR keys. Only discovered PIDs present in PsList are collected. This avoids dumping every process merely to find a small number of configuration candidates. The engine can miss unreadable processes or objects absent from PsList; this limitation is retained in the report. Engines without VAD regex discovery can still use an explicit PID.
 
@@ -40,9 +20,9 @@ The process limit is 256, the finding limit 20,000, the per-process read limit 1
 
 ## Validation and profiling
 
-Unit and integration checks cover image/read-only memory, configurations crossing scan windows and physical-page boundaries, missing virtual ranges, IPv6, encoding ambiguity, cancellation, read limits, compatible dump reuse and exact source identity. Real-capture verification uses `examples/reparse_attribution.rs` without writing the source case. The dxdiag capture produces five endpoint locations and four configurations that pass complete virtual-memory validation.
+Unit and integration checks cover image/read-only memory, configurations crossing scan windows and physical-page boundaries, missing virtual ranges, IPv6, encoding ambiguity, cancellation, read limits, compatible dump reuse and exact source identity. Real-capture verification uses `examples/reparse_attribution.rs` without writing the source case.
 
-`examples/profile_native_jobs.rs` profiles native parsing, the production result writer, object-store capture and SQLite import separately. It reads the source case, writes only temporary benchmark cases, compares imported rows and retains output hashes for baseline/treatment comparisons. Measurements and resulting optimisations are documented in `analysis-performance.md`.
+`examples/profile_native_jobs.rs` profiles native parsing, the production result writer, object-store capture and SQLite import separately. It reads the source case, writes only temporary benchmark cases, compares imported rows and retains output hashes for baseline/treatment comparisons.
 
 ## Additional program parsing
 

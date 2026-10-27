@@ -1,45 +1,27 @@
 # Case storage
 
-Create a case by choosing its parent location and entering a case name. VolGUI creates a new folder named after the case. Existing folders are never replaced.
+Choose a parent location and case name to create a new folder. Existing folders are never replaced. Open a case folder or its `case.sqlite` database.
 
-```text
-chosen-location/
-  case-name/
-    case.sqlite          authoritative case database, format v4
-    case.sqlite-wal      SQLite write-ahead log while connections are active
-    .volgui.lock         exclusive application writer lock
-    objects/
-      chunks.pack        shared, compressed 4 KiB analysis chunks
-      blobs/
-        <uuid>           complete ordinary files recovered by DumpFiles
-    analyses/
-      <run-uuid>/        temporary CLI capture until archived
-```
+SQLite format v4 owns metadata, evidence fingerprints, analysis history, bookmarks, observations, entity facts and output references. Older formats are rejected without modification. Repeated findings share immutable payloads while retaining each run and source row. Conflicting facts retain provenance; ambiguous identities remain separate.
 
-SQLite owns case metadata, evidence fingerprints, analysis history, bookmarks, immutable observations, entity facts and output references. It also owns the shared chunk catalog and authenticated object manifests. Each output reference retains its byte count and complete SHA-256. No JSON case manifest is written. This pre-alpha format deliberately rejects older cases without converting or deleting them. Open the case folder or its `case.sqlite` file.
+## Recovered outputs
 
-Analyses append observations to the case. Repeated identical findings share an immutable payload while retaining each run and source-row reference. Identifiable entities accumulate facts from multiple analyses. Conflicting facts retain their provenance, and ambiguous identities remain separate. The in-memory workspace holds a snapshot of database metadata, not a second persistent source of truth.
+Process dumps and most analysis outputs share compressed, SHA-256-addressed 4 KiB chunks. DumpFiles outputs remain independent ordinary files. Every output retains its size and complete SHA-256; exported files are standalone copies.
 
-Current identity adapters associate process inventories and command lines conservatively, preserve handle ownership, and associate Windows file objects by explicit address space and object address. Other findings remain independent observations until an adapter can establish their identity safely. Enriched fields and conflicting values include their contributing observations and run-row sources in the details view.
+Publication synchronizes bytes before committing references. Cancellation rolls back unpublished data and preserves staging captures. A crash can leave unreferenced bytes; automatic garbage collection is not implemented. The CLI needs staging space for complete outputs. Chunked outputs are limited to 32 GiB; ordinary DumpFiles outputs have no manifest limit.
 
-Numeric memory-map ranges retain their immutable records and literal search, without expanding each range into general entity-fact rows or trigram text postings. This avoids indexing millions of numeric ranges as ordinary text findings.
+Readers verify manifests and requested chunks. Complete sequential reads also verify the whole-file hash; ordinary files are fully verified before opening. SQLite previews and external viewers receive disposable verified copies. Missing or damaged requested bytes fail closed. Listings and viewer preparation run on background workers.
 
-Process dumps and other analysis outputs share identical 4 KiB chunks across paths and runs in `objects/chunks.pack`. Each chunk is compressed with LZ4 and identified by SHA-256. Ordered manifests retain every original byte and offset, including shared kernel mappings. Identical complete outputs share one object while retaining separate run/name provenance. This storage shares analysis outputs with each other; external acquisition images remain separate references.
+## Copying and reopening
 
-Files recovered by `windows.dumpfiles.DumpFiles` remain independent ordinary files in `objects/blobs`, identified by UUID with a complete SHA-256. These files can duplicate bytes in process dumps, other recovered files and cache variants. DumpFiles diagnostics still use shared chunk storage. Exported files are complete standalone files.
+Close the app before copying the entire case folder so SQLite checkpoints its log. Keep the database and managed outputs together. Acquisition images remain external and must be copied separately. Their import-time fingerprints support explicit integrity checks.
 
-Ingestion hashes outputs outside a database transaction. A cancellable per-case pack lock serializes archivers while result imports and metadata saves can continue. Buffered I/O and a publication-local chunk cache avoid repeated lookups and verification of shared pages. Bytes are synchronized before their references commit; only then are unchanged staging files removed. Failed or cancelled publication removes unpublished ordinary files and truncates the unpublished pack tail. A crash can leave unreferenced bytes; automatic garbage collection is not implemented.
+Reopening marks queued/running jobs interrupted without restarting them. Clearing the queue preserves findings, history and binary provenance. Exports cannot overwrite case data or registered evidence.
 
-Hex and browser parsers use the same logical dump offsets. Chunk readers verify the manifest on opening and verify each requested chunk before returning its bytes. Manifest entries contain pack locations, so reading requires no per-page SQL. Browser scanning skips kernel ranges without first reading and hashing an entire dump. A sequential complete read also verifies the whole-file SHA-256. Ordinary files are size- and SHA-256-verified before opening. SQLite and ImHex receive disposable verified copies outside the case, removed when their consumer closes. The output list and case report expose recorded hashes. Damaged or missing requested bytes fail closed.
+## Rescan a case
 
-The desktop loads extracted-file listings and prepares external viewers on background workers. Rendering uses the loaded listing without reading SQLite, traversing directories or reparsing output JSON. Changing the selected run or its status refreshes the listing; Refresh files also reloads availability after filesystem changes.
+Finish or cancel active and queued jobs, then choose **New analysis > Advanced > Rescan case**. This reruns each distinct previous scan configuration across all evidence, including dismissed and unsuccessful jobs, using the current app and engine.
 
-Evidence images remain external references with import-time SHA-256 fingerprints and explicit integrity verification. Copying a case does not copy its acquisition files. Close the application before copying the whole case directory so SQLite checkpoints its log. Keep the database and `objects` directory together.
+Rescanning replaces findings, history, notes and bookmarks after saving a backup of the previous database and managed outputs. Open the backup as a case to inspect earlier results. Evidence remains external. Preparation, backup and cancellation failures preserve current results; existing chunks remain available for reuse.
 
-Reopening marks queued or running analyses interrupted and does not restart them. Queue clearing dismisses entries while preserving observations, history and binary provenance. Reports and CSV exports run on background workers. Exports cannot replace the database, its sidecars, managed binary storage, captured analysis output or registered evidence.
-
-To rebuild results after an application update, open New analysis, enable Advanced and choose Rescan case. Finish or cancel queued and running jobs first. Rescan case reruns each distinct previous scan configuration across all case evidence, including dismissed and unsuccessful jobs. It preserves scan options and prepares native recovery dependencies again using the current application and engine. Current checkbox selections are separate; queue new analyses after the rescan.
-
-The rebuild replaces current findings, history, notes and bookmarks after saving the previous database, managed outputs and remaining captures under `backups/rescan-<timestamp>-<suffix>/`. Open that folder or its `case.sqlite` to inspect the previous case. Evidence files remain at their original paths. Preparation, backup and cancellation failures preserve the current results. The rebuild and backup run on a worker. Existing binary chunks remain available for deduplication when scans recover the same bytes again.
-
-The external CLI still creates complete staging files before publication, so staging space is required and Volatility's extraction time remains. Chunked outputs above 32 GiB are rejected with captures retained, using the same bound on writing and reading. Ordinary DumpFiles outputs have no manifest limit. See [the design rationale](architecture/authoritative-case-design.md) for ownership and validation requirements.
+See [storage architecture](architecture/authoritative-case-design.md) for publication and integrity details.
